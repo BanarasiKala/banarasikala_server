@@ -1,0 +1,676 @@
+const Product = require("../models/Product");
+const Material = require("../models/Material");
+const Variety = require("../models/Variety");
+const Occasion = require("../models/Occasion");
+const Color = require("../models/Color");
+const Feedback = require("../models/Feedback");
+const { Op } = require("sequelize");
+const { fn, col } = require("sequelize");
+const { formatProductCode, formatVariantItemCode } = require("../utils/codes");
+
+const productIncludes = [
+  { model: Material, attributes: ["id", "name", "slug"] },
+  { model: Variety, attributes: ["id", "name", "slug"] },
+  { model: Occasion, attributes: ["id", "name", "slug"] },
+];
+const HOME_PRODUCT_ATTRIBUTES = [
+  "id",
+  "sku",
+  "variant_skus",
+  "name",
+  "slug",
+  "selling_price",
+  "mrp_price",
+  "discount_percent",
+  "images",
+  "is_new_arrival",
+  "color_stocks",
+  "stock_quantity",
+  "low_stock_threshold",
+  "status",
+];
+const COLLECTION_PRODUCT_ATTRIBUTES = [
+  "id",
+  "sku",
+  "variant_skus",
+  "name",
+  "slug",
+  "short_description",
+  "selling_price",
+  "mrp_price",
+  "discount_percent",
+  "images",
+  "is_new_arrival",
+  "color_stocks",
+  "stock_quantity",
+  "low_stock_threshold",
+  "status",
+];
+
+const toIntOrNull = (value) => {
+  if (value === "" || value === null || value === undefined) return null;
+  const num = parseInt(value, 10);
+  return Number.isNaN(num) ? null : num;
+};
+
+const toIntOrZero = (value) => {
+  const num = parseInt(value, 10);
+  return Number.isNaN(num) ? 0 : num;
+};
+
+const toFloatOrNull = (value) => {
+  if (value === "" || value === null || value === undefined) return null;
+  const num = parseFloat(value);
+  return Number.isNaN(num) ? null : num;
+};
+
+const normalizeStringArray = (value = [], allowed = []) => {
+  const raw = Array.isArray(value) ? value : String(value || "").split(",");
+  return [...new Set(
+    raw
+      .map((item) => String(item || "").trim().toLowerCase())
+      .filter((item) => allowed.includes(item)),
+  )];
+};
+
+const normalizeImages = (images = [], coverColorId = null) => {
+  const cleanImages = (Array.isArray(images) ? images : [])
+    .map((image, index) => ({
+      color_id: toIntOrNull(image.color_id),
+      url: image.url || image.image_url,
+      display_order: toIntOrZero(image.display_order ?? index),
+      is_cover: Boolean(image.is_cover),
+    }))
+    .filter((image) => image.color_id && (image.url || image.image_url));
+
+  const grouped = cleanImages.reduce((acc, image) => {
+    const key = String(image.color_id);
+    if (!acc[key]) acc[key] = [];
+    if (acc[key].length < 6) acc[key].push(image);
+    return acc;
+  }, {});
+
+  Object.values(grouped).forEach((items) => {
+    items.sort((a, b) => (a.display_order || 0) - (b.display_order || 0));
+  });
+
+  const finalImages = Object.values(grouped).flat();
+  const requestedCoverColor = toIntOrNull(coverColorId);
+  const coverColor =
+    requestedCoverColor && finalImages.some((image) => image.color_id === requestedCoverColor)
+      ? requestedCoverColor
+      : finalImages.find((image) => image.is_cover)?.color_id || finalImages[0]?.color_id || null;
+
+  return finalImages.map((image, index) => ({
+    ...image,
+    display_order: image.display_order ?? index,
+    is_cover: Boolean(coverColor && image.color_id === coverColor),
+  }));
+};
+
+const validateColorMedia = (colorStocks = {}, images = []) => {
+  const selectedColorIds = Object.entries(colorStocks)
+    .filter(([, qty]) => toIntOrZero(qty) > 0)
+    .map(([colorId]) => parseInt(colorId, 10));
+
+  if (selectedColorIds.length === 0) throw new Error("At least one product color is required");
+  if (images.length === 0) throw new Error("At least one product image is required");
+
+  selectedColorIds.forEach((colorId) => {
+    const count = images.filter((image) => image.color_id === colorId).length;
+    if (count < 1) throw new Error(`Color ${colorId} must have at least 1 image`);
+    if (count > 6) throw new Error("Each color can have maximum 6 images");
+  });
+};
+
+const buildVariantSkus = async (productId, colorStocks = {}) => {
+  const productCode = formatProductCode(productId);
+  const colorIds = Object.entries(colorStocks)
+    .filter(([, qty]) => toIntOrZero(qty) > 0)
+    .map(([colorId]) => toIntOrZero(colorId))
+    .filter(Boolean);
+  if (!colorIds.length) return {};
+
+  const colors = await Color.findAll({
+    where: { id: { [Op.in]: colorIds } },
+    attributes: ["id", "name", "slug"],
+  });
+  const colorMap = Object.fromEntries(colors.map((color) => {
+    const plain = typeof color.toJSON === "function" ? color.toJSON() : color;
+    return [String(plain.id), plain];
+  }));
+
+  return Object.fromEntries(colorIds.map((colorId) => {
+    const color = colorMap[String(colorId)];
+    return [String(colorId), formatVariantItemCode(productCode, color?.slug || color?.name, colorId)];
+  }));
+};
+
+const normalizeProduct = (product) => {
+  const plain = typeof product?.toJSON === "function" ? product.toJSON() : product;
+  if (!plain) return plain;
+  const images = normalizeImages(plain.images || []);
+  return {
+    ...plain,
+    images,
+  };
+};
+
+const attachReviewSummaries = async (products = []) => {
+  const ids = products.map((product) => product.id).filter(Boolean);
+  if (!ids.length) return products;
+
+  try {
+    const rows = await Feedback.findAll({
+      attributes: [
+        "product_id",
+        [fn("COUNT", col("id")), "review_count"],
+        [fn("AVG", col("rating")), "average_rating"],
+      ],
+      where: {
+        product_id: { [Op.in]: ids },
+        is_approved: true,
+      },
+      group: ["product_id"],
+      raw: true,
+    });
+
+    const summaries = new Map(rows.map((row) => {
+      const count = Number(row.review_count || 0);
+      const average = count ? Math.round(Number(row.average_rating || 0) * 10) / 10 : 0;
+      return [Number(row.product_id), { average, count }];
+    }));
+
+    return products.map((product) => {
+      const summary = summaries.get(Number(product.id)) || { average: 0, count: 0 };
+      return {
+        ...product,
+        review_summary: summary,
+        rating: summary.average,
+        review_count: summary.count,
+      };
+    });
+  } catch (error) {
+    console.error("[ProductService] review summary warning:", error.message);
+    return products;
+  }
+};
+
+const getStockStatus = (quantity, threshold = 5) => {
+  const stock = toIntOrZero(quantity);
+  const low = toIntOrZero(threshold || 5);
+  if (stock <= 0) return "out_of_stock";
+  if (stock < low) return "low_stock";
+  return "in_stock";
+};
+
+const keepOnlyCoverColorImages = (product) => {
+  const coverColorId = product.images.find((image) => image.is_cover)?.color_id || product.images[0]?.color_id;
+  if (!coverColorId) return product;
+
+  const images = product.images.filter((image) => image.color_id === coverColorId);
+  return {
+    ...product,
+    images,
+  };
+};
+
+const toHomeProduct = (product) => {
+  const coverProduct = keepOnlyCoverColorImages(product);
+  return {
+    id: coverProduct.id,
+    name: coverProduct.name,
+    slug: coverProduct.slug,
+    selling_price: coverProduct.selling_price,
+    mrp_price: coverProduct.mrp_price,
+    discount_percent: coverProduct.discount_percent,
+    images: coverProduct.images,
+    is_new_arrival: Boolean(coverProduct.is_new_arrival),
+    stock_quantity: coverProduct.stock_quantity,
+    variant_skus: coverProduct.variant_skus || {},
+    low_stock_threshold: coverProduct.low_stock_threshold,
+    status: coverProduct.status,
+    stock_status: getStockStatus(coverProduct.stock_quantity, coverProduct.low_stock_threshold),
+    review_summary: coverProduct.review_summary || { average: 0, count: 0 },
+    rating: coverProduct.rating || 0,
+    review_count: coverProduct.review_count || 0,
+  };
+};
+
+const toCollectionProduct = (product) => {
+  const coverProduct = keepOnlyCoverColorImages(product);
+  return {
+    id: coverProduct.id,
+    name: coverProduct.name,
+    slug: coverProduct.slug,
+    short_description: coverProduct.short_description,
+    selling_price: coverProduct.selling_price,
+    mrp_price: coverProduct.mrp_price,
+    discount_percent: coverProduct.discount_percent,
+    images: coverProduct.images,
+    is_new_arrival: Boolean(coverProduct.is_new_arrival),
+    stock_quantity: coverProduct.stock_quantity,
+    variant_skus: coverProduct.variant_skus || {},
+    low_stock_threshold: coverProduct.low_stock_threshold,
+    status: coverProduct.status,
+    stock_status: getStockStatus(coverProduct.stock_quantity, coverProduct.low_stock_threshold),
+    review_summary: coverProduct.review_summary || { average: 0, count: 0 },
+    rating: coverProduct.rating || 0,
+    review_count: coverProduct.review_count || 0,
+  };
+};
+
+const sanitizeProductPayload = (data = {}) => {
+  const selling_price = toFloatOrNull(data.selling_price || data.price) ?? 0;
+  const mrp_price = toFloatOrNull(data.mrp_price || data.old_price);
+  const cost_price = toFloatOrNull(data.cost_price);
+
+  let discount_percent = null;
+  if (mrp_price && selling_price < mrp_price) {
+    discount_percent = Math.round(((mrp_price - selling_price) / mrp_price) * 100);
+  }
+
+  const color_stocks = data.color_stocks && typeof data.color_stocks === "object" ? data.color_stocks : {};
+  const images = normalizeImages(data.images || [], data.cover_color_id);
+  const totalStock = Object.values(color_stocks).reduce((sum, qty) => sum + toIntOrZero(qty), 0);
+  const payment_options = normalizeStringArray(data.payment_options, ["prepaid", "cod"]);
+  const service_options = normalizeStringArray(data.service_options, ["return", "exchange"]);
+
+  validateColorMedia(color_stocks, images);
+  if (payment_options.length === 0) throw new Error("Choose at least one payment option");
+  if (service_options.length === 0) throw new Error("Choose at least one return/exchange option");
+
+  const sanitized = {
+    ...data,
+    selling_price,
+    mrp_price,
+    cost_price,
+    discount_percent: discount_percent ?? toIntOrNull(data.discount_percent),
+    weight: toFloatOrNull(data.weight),
+    length: toFloatOrNull(data.length),
+    width: toFloatOrNull(data.width),
+    height: toFloatOrNull(data.height),
+    stock_quantity: totalStock,
+    low_stock_threshold: toIntOrZero(data.low_stock_threshold),
+    material_id: toIntOrNull(data.material_id),
+    variety_id: toIntOrNull(data.variety_id),
+    occasion_id: toIntOrNull(data.occasion_id),
+    color_stocks,
+    variant_skus: data.variant_skus && typeof data.variant_skus === "object" ? data.variant_skus : {},
+    images,
+    status: ["active", "inactive"].includes(String(data.status)) ? String(data.status) : "active",
+    payment_options,
+    service_options,
+    care_instructions: String(data.care_instructions || "").trim() || null,
+  };
+
+  if (!sanitized.slug || String(sanitized.slug).trim() === "") {
+    sanitized.slug = `${sanitized.name || "product"}`
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)+/g, "") + `-${Date.now()}`;
+  }
+
+  sanitized.sku = null;
+
+  delete sanitized.price;
+  delete sanitized.old_price;
+  delete sanitized.cover_color_id;
+  delete sanitized.cover_image_selection;
+  delete sanitized.image_url;
+  delete sanitized.cover_image_url;
+  delete sanitized.productColors;
+  delete sanitized.id;
+  delete sanitized.Material;
+  delete sanitized.Variety;
+  delete sanitized.Occasion;
+  delete sanitized.productImages;
+  delete sanitized.product_images;
+  delete sanitized.createdAt;
+  delete sanitized.updatedAt;
+
+  return sanitized;
+};
+
+class ProductService {
+  parseCommaSeparated(value) {
+    if (!value) return null;
+    const values = String(value)
+      .split(",")
+      .map((item) => parseInt(item.trim(), 10))
+      .filter((item) => !Number.isNaN(item));
+    return values.length ? values : null;
+  }
+
+  async getAllProducts(filters = {}) {
+    const {
+      color,
+      material,
+      variety,
+      occasion,
+      status,
+      stockStatus,
+      page = 1,
+      pageSize = 10,
+      paginated = false,
+      search = "",
+      minPrice,
+      maxPrice,
+      limit: rawLimit,
+      sortBy = "newest",
+      specialCollection,
+      storeFrontVisibility,
+      coverImagesOnly,
+      view,
+      newArrival,
+    } = filters;
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(pageSize, 10) || 10));
+    const offset = (pageNum - 1) * limit;
+
+    const needsSearchIncludes = Boolean(search && String(search).trim());
+    const queryOptions = {
+      include: view === "home" || (view === "collection" && !needsSearchIncludes) ? [] : productIncludes,
+      where: {},
+      order: [],
+    };
+
+    if (view === "home") queryOptions.attributes = HOME_PRODUCT_ATTRIBUTES;
+    if (view === "collection") queryOptions.attributes = COLLECTION_PRODUCT_ATTRIBUTES;
+
+    if (sortBy === "price_asc") {
+      queryOptions.order.push(["selling_price", "ASC"]);
+      queryOptions.order.push(["id", "DESC"]);
+    } else if (sortBy === "price_desc") {
+      queryOptions.order.push(["selling_price", "DESC"]);
+      queryOptions.order.push(["id", "DESC"]);
+    } else if (sortBy === "special") {
+      queryOptions.order.push(["special_collection", "DESC"]);
+      queryOptions.order.push(["id", "DESC"]);
+    } else if (sortBy === "newest") {
+      queryOptions.order.push(["is_new_arrival", "DESC"]);
+      queryOptions.order.push(["id", "DESC"]);
+    } else queryOptions.order.push(["id", "DESC"]);
+
+    const materials = this.parseCommaSeparated(material);
+    if (materials) queryOptions.where.material_id = { [Op.in]: materials };
+
+    const varieties = this.parseCommaSeparated(variety);
+    if (varieties) queryOptions.where.variety_id = { [Op.in]: varieties };
+
+    const occasions = this.parseCommaSeparated(occasion);
+    if (occasions) queryOptions.where.occasion_id = { [Op.in]: occasions };
+
+    if (minPrice || maxPrice) {
+      const priceFilter = {};
+      if (minPrice && !Number.isNaN(parseInt(minPrice, 10))) priceFilter[Op.gte] = parseInt(minPrice, 10);
+      if (maxPrice && !Number.isNaN(parseInt(maxPrice, 10))) priceFilter[Op.lte] = parseInt(maxPrice, 10);
+      if (Object.keys(priceFilter).length) queryOptions.where.selling_price = priceFilter;
+    }
+
+    if (status && ["active", "inactive"].includes(String(status))) queryOptions.where.status = String(status);
+    if (specialCollection === "true") {
+      queryOptions.where.special_collection = true;
+    } else if (specialCollection === "false") {
+      queryOptions.where.special_collection = false;
+    }
+    if (storeFrontVisibility === "true" || storeFrontVisibility === "false") queryOptions.where.store_front_visibility = storeFrontVisibility === "true";
+    if (newArrival === "true" || newArrival === "false") queryOptions.where.is_new_arrival = newArrival === "true";
+
+    if (search && String(search).trim()) {
+      const { literal } = require("sequelize");
+      const text = String(search).trim();
+      const words = text.split(/\s+/).filter(Boolean);
+      const buildWordConditions = (word) => {
+        const escaped = word.replace(/'/g, "''");
+        return [
+          { name: { [Op.iLike]: `%${word}%` } },
+          { short_description: { [Op.iLike]: `%${word}%` } },
+          { description: { [Op.iLike]: `%${word}%` } },
+          { "$Material.name$": { [Op.iLike]: `%${word}%` } },
+          { "$Variety.name$": { [Op.iLike]: `%${word}%` } },
+          { "$Occasion.name$": { [Op.iLike]: `%${word}%` } },
+          literal(`similarity("Product"."name", '${escaped}') > 0.1`),
+          literal(`similarity("Product"."short_description", '${escaped}') > 0.1`),
+        ];
+      };
+      queryOptions.where[Op.or] = [...words.flatMap(buildWordConditions), ...buildWordConditions(text)];
+      queryOptions.subQuery = false;
+    }
+
+    if (stockStatus === "in_stock") queryOptions.where.stock_quantity = { [Op.gt]: 0 };
+    else if (stockStatus === "out_of_stock") queryOptions.where.stock_quantity = { [Op.lte]: 0 };
+    else if (stockStatus === "low_stock") {
+      queryOptions.where.stock_quantity = { [Op.and]: [{ [Op.gt]: 0 }, { [Op.lt]: 5 }] };
+    }
+
+    // For color-filtered queries, we must fetch all and filter in JS (color_stocks is JSONB).
+    // For all other queries, use DB-level pagination to avoid loading all rows.
+    const targetColors = this.parseCommaSeparated(color);
+    const useDbPagination = !targetColors && (paginated === "true" || paginated === true);
+
+    if (useDbPagination) {
+      queryOptions.limit = limit;
+      queryOptions.offset = offset;
+    } else if (rawLimit && !targetColors) {
+      queryOptions.limit = Math.max(1, parseInt(rawLimit, 10) || 50);
+    }
+
+    const allRows = await attachReviewSummaries((await Product.findAll(queryOptions)).map(normalizeProduct));
+    const filteredRows = targetColors
+      ? allRows.filter((product) => targetColors.some((colorId) => toIntOrZero(product.color_stocks?.[String(colorId)]) > 0))
+      : allRows;
+    const responseRows = view === "home"
+      ? filteredRows.map(toHomeProduct)
+      : view === "collection"
+        ? filteredRows.map(toCollectionProduct)
+        : coverImagesOnly === "true"
+          ? filteredRows.map(keepOnlyCoverColorImages)
+          : filteredRows;
+    const responseLimit = rawLimit ? Math.max(1, parseInt(rawLimit, 10) || 0) : null;
+    const limitedRows = responseLimit ? responseRows.slice(0, responseLimit) : responseRows;
+
+    if (!paginated || paginated === "false") return limitedRows;
+
+    // For DB-paginated queries, get the total count separately
+    let count;
+    let pagedItems;
+    if (useDbPagination) {
+      const total = await Product.count({ where: queryOptions.where });
+      count = total;
+      pagedItems = responseRows;
+    } else {
+      count = responseRows.length;
+      pagedItems = responseRows.slice(offset, offset + limit);
+    }
+
+    if (view === "collection") {
+      return {
+        items: pagedItems,
+        meta: {
+          totalItems: count,
+          currentPage: pageNum,
+          pageSize: limit,
+          totalPages: Math.max(1, Math.ceil(count / limit)),
+          currentPageCount: pagedItems.length,
+        },
+      };
+    }
+
+    const stockCounts = await Product.findAll({ attributes: ["stock_quantity", "low_stock_threshold"] });
+    const summary = stockCounts.reduce(
+      (acc, product) => {
+        const stock = toIntOrZero(product.stock_quantity);
+        const low = toIntOrZero(product.low_stock_threshold);
+        if (stock <= 0) acc.outOfStock += 1;
+        else if (stock < low) acc.lowStock += 1;
+        else acc.inStock += 1;
+        return acc;
+      },
+      { outOfStock: 0, lowStock: 0, inStock: 0 },
+    );
+
+    return {
+      items: pagedItems,
+      meta: {
+        totalItems: count,
+        currentPage: pageNum,
+        pageSize: limit,
+        totalPages: Math.max(1, Math.ceil(count / limit)),
+        currentPageCount: pagedItems.length,
+      },
+      summary,
+    };
+  }
+
+  async getProductSummary() {
+    const products = await Product.findAll({ attributes: ["stock_quantity", "low_stock_threshold", "status"] });
+    const summary = products.reduce(
+      (acc, product) => {
+        const stock = toIntOrZero(product.stock_quantity);
+        const low = toIntOrZero(product.low_stock_threshold || 5);
+        if (stock <= 0) acc.outOfStock += 1;
+        else if (stock < low) acc.lowStock += 1;
+        else acc.inStock += 1;
+        return acc;
+      },
+      { outOfStock: 0, lowStock: 0, inStock: 0 },
+    );
+    summary.totalProducts = products.length;
+    return summary;
+  }
+
+  async getProductById(id) {
+    return normalizeProduct(await Product.findByPk(id, { include: productIncludes }));
+  }
+
+  async getProductBySlug(slug) {
+    return normalizeProduct(await Product.findOne({ where: { slug }, include: productIncludes }));
+  }
+
+  async getProductDetailBySlug(slug, requestedColorId = null) {
+    const product = normalizeProduct(await Product.findOne({
+      where: { slug },
+      attributes: [
+        "id",
+        "name",
+        "slug",
+        "description",
+        "short_description",
+        "sku",
+        "variant_skus",
+        "selling_price",
+        "mrp_price",
+        "discount_percent",
+        "images",
+        "videos",
+        "color_stocks",
+        "stock_quantity",
+        "low_stock_threshold",
+        "status",
+        "weight",
+        "length",
+        "width",
+        "blouse_piece",
+        "payment_options",
+        "service_options",
+        "care_instructions",
+        "material_id",
+        "variety_id",
+        "occasion_id",
+      ],
+      include: productIncludes,
+    }));
+
+    if (!product) return null;
+
+    const images = normalizeImages(product.images || []);
+    const coverColorId = images.find((image) => image.is_cover)?.color_id || images[0]?.color_id || null;
+    const colorIds = [...new Set(images.map((image) => image.color_id).filter(Boolean))];
+    const selectedColorId =
+      requestedColorId && colorIds.includes(toIntOrZero(requestedColorId))
+        ? toIntOrZero(requestedColorId)
+        : coverColorId;
+
+    const colors = await Color.findAll({
+      where: { id: { [Op.in]: colorIds.length ? colorIds : [0] } },
+      attributes: ["id", "name", "hex_code", "slug"],
+    });
+
+    const selectedImages = images
+      .filter((image) => image.color_id === selectedColorId)
+      .sort((a, b) => toIntOrZero(a.display_order) - toIntOrZero(b.display_order));
+
+    const colorMeta = colors.map((color) => {
+      const plain = typeof color.toJSON === "function" ? color.toJSON() : color;
+      const qty = product.color_stocks?.[String(plain.id)] ?? 0;
+      return {
+        ...plain,
+        stock_quantity: toIntOrZero(qty),
+        stock_status: getStockStatus(qty, product.low_stock_threshold),
+        sku: product.variant_skus?.[String(plain.id)] || formatVariantItemCode(product.sku, plain.slug || plain.name, plain.id),
+      };
+    });
+
+    delete product.color_stocks;
+
+    return {
+      ...product,
+      images: selectedImages,
+      selected_color_id: selectedColorId,
+      colors: colorMeta,
+      stock_status: getStockStatus(product.stock_quantity, product.low_stock_threshold),
+    };
+  }
+
+  async getProductColorImages(slug, colorId) {
+    const product = normalizeProduct(await Product.findOne({
+      where: { slug },
+      attributes: ["id", "slug", "images", "color_stocks", "low_stock_threshold"],
+    }));
+
+    if (!product) return null;
+
+    const targetColorId = toIntOrZero(colorId);
+    const images = normalizeImages(product.images || [])
+      .filter((image) => image.color_id === targetColorId)
+      .sort((a, b) => toIntOrZero(a.display_order) - toIntOrZero(b.display_order));
+    const stock = product.color_stocks?.[String(targetColorId)] ?? 0;
+
+    return {
+      product_id: product.id,
+      color_id: targetColorId,
+      stock_quantity: toIntOrZero(stock),
+      stock_status: getStockStatus(stock, product.low_stock_threshold),
+      images,
+    };
+  }
+
+  async createProduct(data) {
+    const product = await Product.create(sanitizeProductPayload(data));
+    await product.update({
+      sku: formatProductCode(product.id),
+      variant_skus: await buildVariantSkus(product.id, product.color_stocks || {}),
+    });
+    return this.getProductById(product.id);
+  }
+
+  async updateProduct(id, data) {
+    const product = await Product.findByPk(id);
+    if (!product) throw new Error("Product not found");
+    const payload = sanitizeProductPayload(data);
+    payload.sku = formatProductCode(product.id);
+    payload.variant_skus = await buildVariantSkus(product.id, payload.color_stocks || {});
+    await product.update(payload);
+    return this.getProductById(id);
+  }
+
+  async deleteProduct(id) {
+    const product = await Product.findByPk(id);
+    if (!product) throw new Error("Product not found");
+    return product.destroy();
+  }
+}
+
+module.exports = new ProductService();

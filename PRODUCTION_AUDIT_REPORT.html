@@ -1,0 +1,1730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Banarasi Kala – Production Backend Audit Report</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; color: #1a1a2e; background: #fff; font-size: 13px; line-height: 1.6; }
+
+  /* ─── COVER PAGE ─── */
+  .cover { height: 100vh; display: flex; flex-direction: column; justify-content: center; align-items: center;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%); color: #fff;
+    page-break-after: always; text-align: center; padding: 60px; }
+  .cover .logo { font-size: 48px; font-weight: 900; letter-spacing: 4px; color: #e94560; margin-bottom: 8px; }
+  .cover .sub { font-size: 18px; letter-spacing: 6px; color: #a8b2c8; margin-bottom: 50px; }
+  .cover h1 { font-size: 36px; font-weight: 700; margin-bottom: 16px; line-height: 1.2; }
+  .cover .divider { width: 80px; height: 4px; background: #e94560; border-radius: 2px; margin: 24px auto; }
+  .cover .meta { color: #a8b2c8; font-size: 14px; }
+  .cover .meta span { color: #fff; font-weight: 600; }
+  .cover .badge { display: inline-block; background: #e94560; color: #fff; padding: 6px 20px;
+    border-radius: 20px; font-size: 12px; font-weight: 700; letter-spacing: 2px; margin-top: 30px; }
+
+  /* ─── TOC ─── */
+  .toc-page { padding: 60px 80px; page-break-after: always; min-height: 100vh; }
+  .toc-title { font-size: 28px; font-weight: 800; color: #1a1a2e; border-bottom: 3px solid #e94560;
+    padding-bottom: 12px; margin-bottom: 32px; }
+  .toc-section { font-size: 11px; font-weight: 700; color: #e94560; letter-spacing: 2px;
+    text-transform: uppercase; margin: 24px 0 8px; }
+  .toc-item { display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 0; border-bottom: 1px dotted #ddd; }
+  .toc-item:last-child { border-bottom: none; }
+  .toc-item .title { font-size: 13px; color: #333; }
+  .toc-item .page { font-size: 13px; font-weight: 700; color: #1a1a2e; }
+
+  /* ─── SECTIONS ─── */
+  .section { padding: 60px 80px; page-break-inside: avoid; }
+  .section + .section { border-top: 2px solid #f0f0f0; }
+  .page-break { page-break-before: always; }
+
+  .section-label { font-size: 10px; font-weight: 800; letter-spacing: 3px; color: #e94560;
+    text-transform: uppercase; margin-bottom: 8px; }
+  .section-title { font-size: 26px; font-weight: 800; color: #1a1a2e; margin-bottom: 6px; }
+  .section-subtitle { font-size: 14px; color: #666; margin-bottom: 32px; }
+  .section-divider { height: 3px; background: linear-gradient(90deg, #e94560, #f5a623); border-radius: 2px;
+    margin-bottom: 32px; width: 60px; }
+
+  /* ─── CARDS ─── */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 32px; }
+  .card { background: #f8f9fe; border-radius: 12px; padding: 20px; border-left: 4px solid #1a1a2e; }
+  .card.red { border-left-color: #e94560; }
+  .card.orange { border-left-color: #f5a623; }
+  .card.green { border-left-color: #27ae60; }
+  .card.blue { border-left-color: #2980b9; }
+  .card.purple { border-left-color: #8e44ad; }
+  .card .card-num { font-size: 32px; font-weight: 900; color: #1a1a2e; }
+  .card.red .card-num { color: #e94560; }
+  .card.orange .card-num { color: #f5a623; }
+  .card.green .card-num { color: #27ae60; }
+  .card .card-label { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 1px; }
+  .card .card-desc { font-size: 12px; color: #555; margin-top: 4px; }
+
+  /* ─── BUG / ISSUE BLOCKS ─── */
+  .issue { border-radius: 10px; padding: 20px 24px; margin-bottom: 16px; page-break-inside: avoid; }
+  .issue.critical { background: #fff0f3; border-left: 5px solid #e94560; }
+  .issue.high { background: #fff8f0; border-left: 5px solid #f5a623; }
+  .issue.medium { background: #f0f8ff; border-left: 5px solid #2980b9; }
+  .issue.low { background: #f0fff4; border-left: 5px solid #27ae60; }
+  .issue-header { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+  .severity-badge { font-size: 10px; font-weight: 800; padding: 3px 10px; border-radius: 12px;
+    letter-spacing: 1px; text-transform: uppercase; }
+  .severity-badge.critical { background: #e94560; color: #fff; }
+  .severity-badge.high { background: #f5a623; color: #fff; }
+  .severity-badge.medium { background: #2980b9; color: #fff; }
+  .severity-badge.low { background: #27ae60; color: #fff; }
+  .issue h3 { font-size: 15px; font-weight: 700; color: #1a1a2e; }
+  .issue-meta { font-size: 11px; color: #888; margin-bottom: 8px; }
+  .issue-meta span { font-weight: 600; color: #555; }
+  .issue p { font-size: 13px; color: #444; margin-bottom: 10px; }
+  .issue .fix { background: rgba(0,0,0,0.05); border-radius: 6px; padding: 10px 14px;
+    font-size: 12px; color: #333; }
+  .issue .fix strong { color: #1a1a2e; }
+  .code { font-family: 'Courier New', monospace; background: #1a1a2e; color: #a8e6cf;
+    padding: 16px 20px; border-radius: 8px; font-size: 12px; margin: 12px 0;
+    overflow-x: auto; white-space: pre; line-height: 1.8; }
+  .inline-code { font-family: 'Courier New', monospace; background: #f0f0f0; padding: 2px 6px;
+    border-radius: 4px; font-size: 11px; color: #c0392b; }
+
+  /* ─── TABLES ─── */
+  table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 12px; }
+  th { background: #1a1a2e; color: #fff; padding: 10px 14px; text-align: left;
+    font-size: 11px; letter-spacing: 1px; text-transform: uppercase; }
+  td { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; }
+  tr:nth-child(even) td { background: #f9f9f9; }
+  .status-badge { display: inline-block; padding: 2px 10px; border-radius: 10px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+  .status-badge.done { background: #d5f5e3; color: #27ae60; }
+  .status-badge.missing { background: #fdebd0; color: #e67e22; }
+  .status-badge.broken { background: #fce4e4; color: #e94560; }
+  .status-badge.partial { background: #d6eaf8; color: #2980b9; }
+
+  /* ─── ROADMAP ─── */
+  .roadmap { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; margin: 20px 0; }
+  .phase { padding: 20px; border-right: 2px dashed #ddd; }
+  .phase:last-child { border-right: none; }
+  .phase-num { font-size: 10px; font-weight: 800; letter-spacing: 2px; color: #e94560;
+    text-transform: uppercase; margin-bottom: 6px; }
+  .phase-title { font-size: 15px; font-weight: 700; color: #1a1a2e; margin-bottom: 4px; }
+  .phase-time { font-size: 11px; color: #999; margin-bottom: 14px; }
+  .phase ul { list-style: none; padding: 0; }
+  .phase ul li { font-size: 12px; color: #555; padding: 4px 0; padding-left: 14px;
+    position: relative; border-bottom: 1px solid #f5f5f5; }
+  .phase ul li::before { content: '→'; position: absolute; left: 0; color: #e94560; font-size: 10px; }
+
+  /* ─── CHECKLIST ─── */
+  .checklist { list-style: none; padding: 0; }
+  .checklist li { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px solid #f5f5f5;
+    font-size: 13px; color: #444; }
+  .checklist li:last-child { border-bottom: none; }
+  .check-icon { width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center;
+    justify-content: center; font-size: 11px; flex-shrink: 0; margin-top: 1px; }
+  .check-icon.yes { background: #d5f5e3; color: #27ae60; }
+  .check-icon.no { background: #fce4e4; color: #e94560; }
+  .check-icon.partial { background: #d6eaf8; color: #2980b9; }
+
+  /* ─── ARCH DIAGRAM (text-based) ─── */
+  .arch-box { border: 2px solid #ddd; border-radius: 10px; padding: 20px; margin: 10px;
+    text-align: center; }
+  .arch-row { display: flex; align-items: stretch; justify-content: center; gap: 10px; margin: 10px 0; }
+  .arch-arrow { display: flex; align-items: center; font-size: 20px; color: #aaa; }
+
+  /* ─── FOOTER ─── */
+  @media print {
+    .section { page-break-inside: avoid; }
+    .issue { page-break-inside: avoid; }
+    @page { margin: 0; size: A4; }
+    body { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  }
+  .footer { background: #1a1a2e; color: #a8b2c8; text-align: center; padding: 30px;
+    font-size: 11px; margin-top: 40px; }
+  .footer strong { color: #e94560; }
+
+  /* ─── MISC ─── */
+  h2 { font-size: 18px; font-weight: 700; color: #1a1a2e; margin: 24px 0 12px; }
+  h3 { font-size: 15px; font-weight: 700; color: #333; margin: 16px 0 8px; }
+  p { margin-bottom: 10px; color: #555; font-size: 13px; }
+  ul, ol { padding-left: 20px; margin-bottom: 12px; }
+  li { padding: 3px 0; color: #555; font-size: 13px; }
+  .highlight-box { background: #fff9e6; border: 1px solid #f5a623; border-radius: 8px;
+    padding: 16px 20px; margin: 16px 0; }
+  .info-box { background: #f0f8ff; border: 1px solid #2980b9; border-radius: 8px;
+    padding: 16px 20px; margin: 16px 0; }
+  .danger-box { background: #fff0f3; border: 1px solid #e94560; border-radius: 8px;
+    padding: 16px 20px; margin: 16px 0; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .tag { display: inline-block; background: #f0f0f0; color: #555; padding: 2px 8px;
+    border-radius: 4px; font-size: 11px; margin: 2px; }
+  .tag.tech { background: #e8f4f8; color: #2980b9; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════
+     COVER PAGE
+════════════════════════════════════════════════════ -->
+<div class="cover">
+  <div class="logo">बनारसी कला</div>
+  <div class="sub">BANARASI KALA</div>
+  <h1>Production Backend<br>Audit &amp; Engineering Report</h1>
+  <div class="divider"></div>
+  <p style="color:#a8b2c8;font-size:15px;max-width:500px;line-height:1.8;">
+    A comprehensive analysis of the e-commerce backend covering security vulnerabilities,
+    critical bugs, performance bottlenecks, missing features, and a complete
+    production readiness roadmap.
+  </p>
+  <div class="meta" style="margin-top:40px">
+    <p>Date: <span>30 May 2026</span> &nbsp;|&nbsp; Stack: <span>Node.js · Express · PostgreSQL · Sequelize</span></p>
+    <p style="margin-top:8px">Services: <span>Razorpay · ShipRocket · Cloudinary · Nodemailer</span></p>
+  </div>
+  <div class="badge">CONFIDENTIAL – INTERNAL USE ONLY</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     TABLE OF CONTENTS
+════════════════════════════════════════════════════ -->
+<div class="toc-page">
+  <div class="toc-title">Table of Contents</div>
+
+  <div class="toc-section">Part 1 — Overview</div>
+  <div class="toc-item"><span class="title">1. Executive Summary</span><span class="page">3</span></div>
+  <div class="toc-item"><span class="title">2. Architecture Overview</span><span class="page">4</span></div>
+  <div class="toc-item"><span class="title">3. File Inventory &amp; Tech Stack</span><span class="page">5</span></div>
+
+  <div class="toc-section">Part 2 — Security Vulnerabilities</div>
+  <div class="toc-item"><span class="title">4. Critical Security Bugs (MUST FIX)</span><span class="page">6</span></div>
+  <div class="toc-item"><span class="title">5. High &amp; Medium Security Issues</span><span class="page">8</span></div>
+
+  <div class="toc-section">Part 3 — Business Logic Bugs</div>
+  <div class="toc-item"><span class="title">6. Order &amp; Payment Bugs</span><span class="page">10</span></div>
+  <div class="toc-item"><span class="title">7. Inventory &amp; Stock Bugs</span><span class="page">12</span></div>
+  <div class="toc-item"><span class="title">8. Wallet &amp; Referral Bugs</span><span class="page">13</span></div>
+  <div class="toc-item"><span class="title">9. Cart &amp; Coupon Bugs</span><span class="page">14</span></div>
+
+  <div class="toc-section">Part 4 — Performance &amp; Scalability</div>
+  <div class="toc-item"><span class="title">10. Database Performance Issues</span><span class="page">15</span></div>
+  <div class="toc-item"><span class="title">11. API Performance Issues</span><span class="page">16</span></div>
+
+  <div class="toc-section">Part 5 — Production Readiness</div>
+  <div class="toc-item"><span class="title">12. Production Readiness Checklist</span><span class="page">17</span></div>
+  <div class="toc-item"><span class="title">13. Missing Features for End-to-End E-Commerce</span><span class="page">18</span></div>
+  <div class="toc-item"><span class="title">14. Implementation Roadmap</span><span class="page">20</span></div>
+  <div class="toc-item"><span class="title">15. Code Fix Examples</span><span class="page">22</span></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 1 — EXECUTIVE SUMMARY
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 1</div>
+  <div class="section-title">Executive Summary</div>
+  <div class="section-subtitle">High-level findings across security, bugs, performance, and feature gaps</div>
+  <div class="section-divider"></div>
+
+  <div class="cards">
+    <div class="card red">
+      <div class="card-num">7</div>
+      <div class="card-label">Critical Security Bugs</div>
+      <div class="card-desc">Require immediate fix before going live</div>
+    </div>
+    <div class="card orange">
+      <div class="card-num">12</div>
+      <div class="card-label">Business Logic Bugs</div>
+      <div class="card-desc">Cause wrong financial/order outcomes</div>
+    </div>
+    <div class="card blue">
+      <div class="card-num">9</div>
+      <div class="card-label">Performance Issues</div>
+      <div class="card-desc">Will degrade under real traffic load</div>
+    </div>
+    <div class="card purple">
+      <div class="card-num">14</div>
+      <div class="card-label">Missing Features</div>
+      <div class="card-desc">Required for complete e-commerce flow</div>
+    </div>
+    <div class="card green">
+      <div class="card-num">78+</div>
+      <div class="card-label">Files Audited</div>
+      <div class="card-desc">Routes, models, controllers, services</div>
+    </div>
+    <div class="card">
+      <div class="card-num">4</div>
+      <div class="card-label">Roadmap Phases</div>
+      <div class="card-desc">From patch to production-scale</div>
+    </div>
+  </div>
+
+  <h2>Overall Assessment</h2>
+  <p>
+    The Banarasi Kala backend is a <strong>well-structured, feature-rich Node.js/Express/PostgreSQL e-commerce API</strong>
+    covering products, orders, payments (Razorpay), shipping (ShipRocket), wallet/referrals, and admin flows.
+    The architecture is thoughtful — service/controller separation, Sequelize ORM, Cloudinary for images,
+    Nodemailer for emails — and reflects solid engineering effort.
+  </p>
+  <p>
+    However, several <strong>critical production blockers</strong> must be resolved before launch:
+    unprotected ShipRocket admin routes, absence of rate limiting, in-memory OTP storage,
+    no pagination on list endpoints, and multiple business logic edge cases in the order/payment flow.
+  </p>
+
+  <div class="danger-box">
+    <strong>🔴 Launch Blocker:</strong> ShipRocket order management routes are completely unprotected —
+    any person on the internet can cancel shipments, push orders to courier, or generate labels
+    without authentication. This is the most critical issue in the entire codebase.
+  </div>
+
+  <div class="highlight-box">
+    <strong>💡 Positive Highlights:</strong> The business logic is sophisticated —
+    weighted shipping allocation per item, deduplication-keyed wallet transactions,
+    COD-blocking fraud prevention, and referral reward scheduling with 7-day delay
+    are production-grade patterns. The core foundation is solid; the gaps are fixable.
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 2 — ARCHITECTURE
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 2</div>
+  <div class="section-title">Architecture Overview</div>
+  <div class="section-subtitle">How the system is structured end-to-end</div>
+  <div class="section-divider"></div>
+
+  <h2>Request Flow</h2>
+  <div class="arch-row">
+    <div class="arch-box" style="background:#e8f4f8;border-color:#2980b9;">
+      <strong>Frontend</strong><br><small>React / Next.js</small>
+    </div>
+    <div class="arch-arrow">→</div>
+    <div class="arch-box" style="background:#fce4e4;border-color:#e94560;">
+      <strong>CORS + Rate Limit</strong><br><small>❌ Rate limit missing</small>
+    </div>
+    <div class="arch-arrow">→</div>
+    <div class="arch-box" style="background:#f0fff4;border-color:#27ae60;">
+      <strong>Express Router</strong><br><small>18 route files</small>
+    </div>
+    <div class="arch-arrow">→</div>
+    <div class="arch-box" style="background:#fff9e6;border-color:#f5a623;">
+      <strong>Auth Middleware</strong><br><small>JWT validation</small>
+    </div>
+  </div>
+  <div class="arch-row" style="margin-top:0;">
+    <div class="arch-box" style="background:#f8f0ff;border-color:#8e44ad;">
+      <strong>Controllers</strong><br><small>16 controllers</small>
+    </div>
+    <div class="arch-arrow">→</div>
+    <div class="arch-box" style="background:#e8f4f8;border-color:#2980b9;">
+      <strong>Services</strong><br><small>12 service files</small>
+    </div>
+    <div class="arch-arrow">→</div>
+    <div class="arch-box" style="background:#f0fff4;border-color:#27ae60;">
+      <strong>Models (Sequelize)</strong><br><small>17 models, PostgreSQL</small>
+    </div>
+  </div>
+
+  <h2>External Services</h2>
+  <table>
+    <tr><th>Service</th><th>Purpose</th><th>Integration Status</th><th>Risk</th></tr>
+    <tr><td><strong>Razorpay</strong></td><td>Payment gateway (UPI, Cards, COD)</td><td><span class="status-badge done">DONE</span></td><td>Signature verify present</td></tr>
+    <tr><td><strong>ShipRocket</strong></td><td>Order shipping & tracking</td><td><span class="status-badge broken">UNPROTECTED</span></td><td>Routes not secured — critical</td></tr>
+    <tr><td><strong>Cloudinary</strong></td><td>Product & feedback image hosting</td><td><span class="status-badge done">DONE</span></td><td>No MIME validation before upload</td></tr>
+    <tr><td><strong>Nodemailer</strong></td><td>OTP, order confirmation emails</td><td><span class="status-badge partial">PARTIAL</span></td><td>OTP stored in memory (lost on restart)</td></tr>
+    <tr><td><strong>Node-Cron</strong></td><td>Referral payouts, heartbeat</td><td><span class="status-badge partial">PARTIAL</span></td><td>Not cluster-safe</td></tr>
+    <tr><td><strong>Redis</strong></td><td>Caching, OTP, sessions</td><td><span class="status-badge missing">MISSING</span></td><td>No caching layer at all</td></tr>
+  </table>
+
+  <h2>Database Schema Summary</h2>
+  <div class="two-col">
+    <div>
+      <h3>Core Tables (17 models)</h3>
+      <ul>
+        <li><span class="inline-code">customers</span> – users, wallet, referral, COD block</li>
+        <li><span class="inline-code">admins</span> – admin accounts with OTP reset</li>
+        <li><span class="inline-code">products</span> – full catalog with JSONB color_stocks</li>
+        <li><span class="inline-code">orders</span> – order lifecycle, payment, shipping</li>
+        <li><span class="inline-code">order_items</span> – line items per order</li>
+        <li><span class="inline-code">order_item_actions</span> – cancel/return/exchange</li>
+        <li><span class="inline-code">carts</span> – active cart items</li>
+        <li><span class="inline-code">wishlists</span> – saved products</li>
+        <li><span class="inline-code">wallet_transactions</span> – financial ledger</li>
+        <li><span class="inline-code">customer_addresses</span> – up to 3 per customer</li>
+        <li><span class="inline-code">feedbacks</span> – product reviews</li>
+        <li><span class="inline-code">coupons</span> – discount engine</li>
+        <li><span class="inline-code">colors, materials, varieties, occasions</span> – taxonomy</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Architecture Patterns</h3>
+      <ul>
+        <li>✅ Controller → Service → Model separation</li>
+        <li>✅ Async error handling with <span class="inline-code">asyncHandler()</span></li>
+        <li>✅ Centralized error response (<span class="inline-code">AppError</span>)</li>
+        <li>✅ JWT + refresh token auth flow</li>
+        <li>✅ Database transactions on critical writes</li>
+        <li>❌ No migration system (runtime column adds)</li>
+        <li>❌ No Redis/cache layer</li>
+        <li>❌ No input schema validation (Zod/Joi)</li>
+        <li>❌ No API versioning</li>
+        <li>❌ No request rate limiting</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 3 — FILE INVENTORY
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 3</div>
+  <div class="section-title">File Inventory &amp; Tech Stack</div>
+  <div class="section-divider"></div>
+
+  <table>
+    <tr><th>Category</th><th>Files</th><th>Key Files</th></tr>
+    <tr><td><strong>Entry Points</strong></td><td>2</td><td>server.js, src/index.js</td></tr>
+    <tr><td><strong>Config</strong></td><td>4</td><td>env.js, db.js, cloudinary.js, .env.example</td></tr>
+    <tr><td><strong>Routes</strong></td><td>18</td><td>AuthRoutes, OrderRoutes, ProductRoutes, ShipRocketRoutes…</td></tr>
+    <tr><td><strong>Controllers</strong></td><td>16</td><td>OrderController, ProductController, AuthController…</td></tr>
+    <tr><td><strong>Services</strong></td><td>12</td><td>WalletService, ShipRocketService, AuthService…</td></tr>
+    <tr><td><strong>Models</strong></td><td>17</td><td>Order, OrderItem, Customer, Product, WalletTransaction…</td></tr>
+    <tr><td><strong>Middleware</strong></td><td>3</td><td>authMiddleware, errorHandler, requestLogger</td></tr>
+    <tr><td><strong>Utilities</strong></td><td>5</td><td>orderLifecycle, orderItemActions, codes, http, feedbackSchema</td></tr>
+    <tr><td><strong>Total</strong></td><td><strong>77+</strong></td><td>–</td></tr>
+  </table>
+
+  <h2>Package.json Dependencies</h2>
+  <div class="two-col">
+    <div>
+      <h3>Production Dependencies</h3>
+      <div class="tag tech">express</div><div class="tag tech">sequelize</div>
+      <div class="tag tech">pg</div><div class="tag tech">jsonwebtoken</div>
+      <div class="tag tech">bcryptjs</div><div class="tag tech">razorpay</div>
+      <div class="tag tech">cloudinary</div><div class="tag tech">multer</div>
+      <div class="tag tech">nodemailer</div><div class="tag tech">node-cron</div>
+      <div class="tag tech">cors</div><div class="tag tech">dotenv</div>
+      <div class="tag tech">axios</div><div class="tag tech">crypto</div>
+    </div>
+    <div>
+      <h3>Missing Production Dependencies</h3>
+      <div class="tag" style="background:#d5f5e3;color:#27ae60;">express-rate-limit ✓</div>
+      <div class="tag" style="background:#d5f5e3;color:#27ae60;">helmet ✓</div>
+      <div class="tag" style="background:#d5f5e3;color:#27ae60;">compression ✓</div>
+      <div class="tag" style="background:#fce4e4;color:#e94560;">zod / joi</div>
+      <div class="tag" style="background:#fce4e4;color:#e94560;">ioredis</div>
+      <div class="tag" style="background:#fce4e4;color:#e94560;">bull (queue)</div>
+      <div class="tag" style="background:#fce4e4;color:#e94560;">sequelize-cli (migrations)</div>
+      <div class="tag" style="background:#fce4e4;color:#e94560;">morgan (prod logs)</div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 4 — CRITICAL SECURITY BUGS
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 4</div>
+  <div class="section-title">Critical Security Vulnerabilities</div>
+  <div class="section-subtitle">These MUST be fixed before any production deployment</div>
+  <div class="section-divider"></div>
+
+  <!-- BUG 1 -->
+  <div class="issue critical">
+    <div class="issue-header">
+      <span class="severity-badge critical">CRITICAL</span>
+      <h3>BUG-001 — ShipRocket Routes Have Zero Authentication</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/routes/ShipRocketRoutes.js</span> &nbsp;|&nbsp; Lines: <span>1–60</span> &nbsp;|&nbsp; Impact: <span>Full Shipment Sabotage</span></div>
+    <p>
+      Every ShipRocket route — including push-to-courier, AWB assignment, label generation, manifest creation,
+      cancellation, and return initiation — is publicly accessible with <strong>no authentication whatsoever</strong>.
+      Any anonymous internet user can cancel live shipments, push random orders to couriers, or generate fraudulent return labels.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Add <span class="inline-code">authMiddleware, adminMiddleware</span> to all ShipRocket write routes.
+    </div>
+    <div class="code">// ShipRocketRoutes.js — CURRENT (broken)
+router.post('/push-order/:orderId', ShipRocketController.pushOrder);
+
+// FIXED
+router.post('/push-order/:orderId',
+  authMiddleware, adminMiddleware,
+  ShipRocketController.pushOrder
+);</div>
+  </div>
+
+  <!-- BUG 2 -->
+  <div class="issue critical">
+    <div class="issue-header">
+      <span class="severity-badge critical">CRITICAL</span>
+      <h3>BUG-002 — No Rate Limiting on Authentication Endpoints</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/index.js, AuthRoutes.js</span> &nbsp;|&nbsp; Impact: <span>Brute-Force Attacks, OTP Guessing</span></div>
+    <p>
+      Login, forgot-password, and OTP verification endpoints have no rate limiting.
+      An attacker can attempt unlimited password guesses or brute-force 6-digit OTPs (only 1,000,000 combinations)
+      without any throttling. At 100 requests/second, all OTPs are crackable in &lt;3 hours.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Install <span class="inline-code">express-rate-limit</span> and apply per-route limits.
+    </div>
+    <div class="code">// npm install express-rate-limit
+
+const rateLimit = require('express-rate-limit');
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10,                   // 10 attempts per window
+  message: { error: 'Too many attempts. Try again after 15 minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply to auth routes in AuthRoutes.js
+router.post('/login', authLimiter, AuthController.login);
+router.post('/forgot-password', authLimiter, AuthController.forgotPassword);
+router.post('/verify-email-otp', authLimiter, AuthController.verifyEmailOtp);</div>
+  </div>
+
+  <!-- BUG 3 -->
+  <div class="issue critical">
+    <div class="issue-header">
+      <span class="severity-badge critical">CRITICAL</span>
+      <h3>BUG-003 — OTP Stored In-Memory (Lost on Server Restart)</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/services/AuthService.js</span> &nbsp;|&nbsp; Impact: <span>Auth Bypass, Data Loss</span></div>
+    <p>
+      Email OTPs are stored in a JavaScript <span class="inline-code">Map</span> in server memory.
+      Every server restart, Render.com cold start, or deployment clears all active OTPs — users in the middle
+      of registration get locked out. Additionally, this won't scale to multiple server instances.
+      There is also <strong>no cleanup</strong> of expired OTPs, causing slow memory leak over time.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Persist OTPs to the database with an <span class="inline-code">expires_at</span> column,
+      or use Redis with TTL. Run a cleanup job to remove expired rows.
+    </div>
+    <div class="code">// Option A: Database OTP table (simpler, no Redis needed)
+// Model: EmailOtp.js
+{
+  email:      { type: DataTypes.STRING, allowNull: false },
+  otp:        { type: DataTypes.STRING(6), allowNull: false },
+  expires_at: { type: DataTypes.DATE, allowNull: false },
+  used:       { type: DataTypes.BOOLEAN, defaultValue: false },
+}
+
+// AuthService.storeOtp()
+async storeOtp(email, otp) {
+  await EmailOtp.destroy({ where: { email } }); // remove old
+  await EmailOtp.create({
+    email,
+    otp: await bcrypt.hash(otp, 10), // hash before storing
+    expires_at: new Date(Date.now() + 15 * 60 * 1000),
+  });
+}</div>
+  </div>
+
+  <!-- BUG 4 -->
+  <div class="issue critical">
+    <div class="issue-header">
+      <span class="severity-badge critical">CRITICAL</span>
+      <h3>BUG-004 — No File Type Validation Before Cloudinary Upload</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/routes/ProductRoutes.js, FeedbackRoutes.js</span> &nbsp;|&nbsp; Impact: <span>Malware Upload, SSRF</span></div>
+    <p>
+      Multer is configured but only checks file size — it does not validate MIME type or file extension.
+      An attacker can upload an HTML file, an SVG with embedded JavaScript, or an executable disguised
+      with an image extension. The file is streamed directly to Cloudinary without sanitization,
+      and the returned URL is stored in the database and served to users.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Add a MIME type whitelist in Multer's <span class="inline-code">fileFilter</span>.
+    </div>
+    <div class="code">// config/multer.js
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+
+const fileFilter = (req, file, cb) => {
+  if (ALLOWED_MIME_TYPES.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new AppError('Only JPEG, PNG, and WebP images are allowed.', 400), false);
+  }
+};
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter,
+});</div>
+  </div>
+
+  <!-- BUG 5 -->
+  <div class="issue critical">
+    <div class="issue-header">
+      <span class="severity-badge critical">CRITICAL</span>
+      <h3>BUG-005 — Helmet Security Headers Missing</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/index.js</span> &nbsp;|&nbsp; Impact: <span>XSS, Clickjacking, MIME Sniffing</span></div>
+    <p>
+      The Express app has no security headers. Without <span class="inline-code">helmet</span>,
+      the API is missing: Content-Security-Policy, X-Frame-Options (clickjacking),
+      X-Content-Type-Options (MIME sniffing), Strict-Transport-Security, and Referrer-Policy.
+      Modern browsers and security scanners will flag this immediately.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Install and apply <span class="inline-code">helmet</span> as the first middleware.
+    </div>
+    <div class="code">// npm install helmet
+const helmet = require('helmet');
+
+// In src/index.js — add as FIRST middleware
+app.use(helmet());
+app.use(helmet.contentSecurityPolicy({
+  directives: {
+    defaultSrc: ["'self'"],
+    imgSrc: ["'self'", "https://res.cloudinary.com"],
+  }
+}));</div>
+  </div>
+
+  <!-- BUG 6 -->
+  <div class="issue critical">
+    <div class="issue-header">
+      <span class="severity-badge critical">CRITICAL</span>
+      <h3>BUG-006 — No Token Revocation / Blacklist Mechanism</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/middleware/authMiddleware.js, AuthService.js</span> &nbsp;|&nbsp; Impact: <span>Compromised Accounts Can't Be Locked</span></div>
+    <p>
+      JWTs are stateless — once issued, they remain valid until expiry. If a customer's account
+      is compromised, an admin has no way to invalidate existing tokens. Logout does not
+      invalidate the token server-side. If <span class="inline-code">JWT_SECRET</span> is leaked,
+      all user tokens are valid indefinitely until the secret is rotated.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Implement a token version counter in the Customer model.
+      On password change or forced logout, increment the counter.
+      Validate the counter during JWT verification.
+    </div>
+    <div class="code">// Customer model: add token_version field
+token_version: { type: DataTypes.INTEGER, defaultValue: 0 }
+
+// When issuing JWT, embed token_version:
+const token = jwt.sign(
+  { id: customer.id, tokenVersion: customer.token_version },
+  process.env.JWT_SECRET, { expiresIn: '7d' }
+);
+
+// In authMiddleware, validate version:
+if (decoded.tokenVersion !== user.token_version) {
+  return next(new AppError('Session expired. Please log in again.', 401));
+}
+
+// On password change or admin force-logout:
+await customer.increment('token_version');</div>
+  </div>
+
+  <!-- BUG 7 -->
+  <div class="issue critical">
+    <div class="issue-header">
+      <span class="severity-badge critical">CRITICAL</span>
+      <h3>BUG-007 — COD Block Not Enforced for Authenticated Guest Paths</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/OrderController.js</span> &nbsp;|&nbsp; Impact: <span>Fraud — Blocked Customers Place COD Orders</span></div>
+    <p>
+      The system implements a COD fraud-prevention system (blocks customers after RTO events).
+      However, the order creation endpoint supports both authenticated and guest flows.
+      The COD block check uses a soft check — if <span class="inline-code">customer.is_cod_blocked</span>
+      is true, it logs a warning but does not consistently throw an error in all code paths.
+      A determined user can bypass by using a slightly different email/phone combination.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Hard-check COD block at the very beginning of order creation, before any DB writes.
+      Also check by contact (email + phone combination) not just customer ID.
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 5 — HIGH/MEDIUM SECURITY
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 5</div>
+  <div class="section-title">High &amp; Medium Security Issues</div>
+  <div class="section-divider"></div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-008 — Password Policy Too Weak (Min 6 Characters)</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/AuthController.js</span></div>
+    <p>Passwords only require 6+ characters with no complexity rules. Industry standard is 8–12 minimum with uppercase, number, and symbol requirements.</p>
+    <div class="fix"><strong>Fix:</strong> Enforce: min 8 chars, 1 uppercase, 1 number, 1 special character using regex validation.</div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-009 — Error Messages Leak Database Schema Details</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/utils/http.js, multiple controllers</span></div>
+    <p>Error responses in some paths include raw Sequelize error messages like
+    <span class="inline-code">SequelizeUniqueConstraintError: duplicate key value violates unique constraint "customers_email_key"</span>.
+    This reveals table names and column names to attackers.</p>
+    <div class="fix"><strong>Fix:</strong> Catch Sequelize error types in the global errorHandler and return user-friendly messages. Never leak stack traces or DB errors in production.</div>
+    <div class="code">// src/middleware/errorHandler.js
+if (err.name === 'SequelizeUniqueConstraintError') {
+  return res.status(409).json({ error: 'This email or phone is already registered.' });
+}
+if (err.name === 'SequelizeValidationError') {
+  return res.status(400).json({ error: 'Invalid input data.' });
+}</div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-010 — Admin Middleware Does Not Check Token Expiry on Admin Routes</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/middleware/authMiddleware.js</span></div>
+    <p>Admin JWT tokens may have the same expiry as customer tokens. Admin sessions should be much shorter (e.g., 1 hour) and require re-authentication for sensitive operations.</p>
+    <div class="fix"><strong>Fix:</strong> Separate admin token lifetime (1h) from customer tokens (7d). Add IP allowlist for admin endpoints if admins operate from known locations.</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-011 — Razorpay Webhook Not Verified</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/routes/RazorpayRoutes.js, RazorpayController.js</span></div>
+    <p>Payment verification is done client-side (frontend calls verify-payment). If Razorpay sends webhook events (payment.captured, order.paid), there is no webhook endpoint or signature verification for server-side payment confirmation. Client-side payment verification can be spoofed if the frontend is compromised.</p>
+    <div class="fix"><strong>Fix:</strong> Add a Razorpay webhook endpoint that verifies the X-Razorpay-Signature header and processes payment.captured events server-side as the source of truth.</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-012 — CORS Origin from Environment Not Validated</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/index.js</span></div>
+    <p>CORS origins are stored in a comma-separated env variable. If the env var is misconfigured (extra space, typo), it silently allows wrong origins. There is no validation of the origin format.</p>
+    <div class="fix"><strong>Fix:</strong> Validate each CORS origin is a valid URL. Log a startup warning if origins list is empty or malformed.</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-013 — Referral Code Predictable (UUID-based but short)</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/services/AuthService.js</span></div>
+    <p>Referral codes are generated as uppercase substrings of a UUID. Short codes (6-8 characters) are guessable by brute force, allowing attackers to claim rewards by trying codes in bulk from throwaway accounts.</p>
+    <div class="fix"><strong>Fix:</strong> Enforce one referral code claim per phone number verified by OTP. Add a limit on referral code applications per IP address.</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 6 — ORDER & PAYMENT BUGS
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 6</div>
+  <div class="section-title">Order &amp; Payment Business Logic Bugs</div>
+  <div class="section-subtitle">Bugs that cause incorrect financial outcomes or broken order flows</div>
+  <div class="section-divider"></div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-014 — Razorpay Order Amount Race Condition</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/RazorpayController.js, OrderController.js</span></div>
+    <p>
+      The Razorpay order is created with an amount, but the final order amount is calculated separately
+      during <span class="inline-code">createOrder()</span>. If prices or coupon values change between
+      Razorpay order creation and payment verification (possible in multi-tab or slow-network scenarios),
+      the paid amount may not match the order amount. The system does not cross-validate amounts.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Store the Razorpay order ID along with the expected amount at order creation time.
+      During <span class="inline-code">verifyPayment()</span>, re-fetch the Razorpay order via API
+      and verify the paid amount matches the expected amount — reject if there is any discrepancy.
+    </div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-015 — Order Cancellation Window Allows 24h But Shipped Orders Can Be Cancelled</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/OrderController.js</span></div>
+    <p>
+      The cancellation logic checks a 24-hour window from order creation.
+      However, orders can be shipped within 24 hours. If an order is already pushed to ShipRocket
+      and an AWB assigned, the customer-facing cancel may succeed in the database
+      but leave a live shipment in transit with no automatic ShipRocket cancellation triggered.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> During cancellation, check the shipping status. If AWB is assigned,
+      automatically trigger ShipRocket cancellation API before updating the database order status.
+    </div>
+    <div class="code">// OrderController.cancelOrder() — add shipping cancellation
+if (order.shiprocket_order_id && order.awb_code) {
+  await ShipRocketService.cancelShipment(order.shiprocket_shipment_id);
+}
+// Then update DB status</div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-016 — Refund Not Triggered on Payment Order Cancellation</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/OrderController.js</span></div>
+    <p>
+      When a prepaid order is cancelled, the system marks the order as cancelled and credits the wallet.
+      However, there is no Razorpay refund API call initiated. The customer's money stays with the business
+      and only a wallet credit is given — this may not comply with consumer protection regulations
+      and will cause customer disputes.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> On cancellation of a prepaid order, call <span class="inline-code">razorpay.payments.refund(paymentId, { amount })</span>
+      to initiate an actual bank refund. The wallet credit should be optional, not the only refund path.
+    </div>
+    <div class="code">// OrderController.cancelOrder()
+if (order.payment_method !== 'COD' && order.razorpay_payment_id) {
+  const refundAmount = calculateRefundAmount(order); // in paise
+  await razorpay.payments.refund(order.razorpay_payment_id, {
+    amount: refundAmount,
+    notes: { reason: 'Customer cancellation', orderId: order.id }
+  });
+  order.refund_status = 'initiated';
+}</div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-017 — Duplicate Order Possible on Network Retry</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/OrderController.js</span></div>
+    <p>
+      If the client times out during <span class="inline-code">createOrder()</span> and retries the request,
+      there is no idempotency key check. The same Razorpay payment ID could be used to create two orders,
+      or two pending orders could be created for the same cart. The transaction rollback protects DB integrity
+      but does not prevent duplicate order creation from retried requests.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Add a unique constraint on <span class="inline-code">razorpay_payment_id</span> in the Order table.
+      Also check if an order already exists with the given payment ID before creating a new one.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-018 — Coupon Discount Applied Before Stock Validation</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/OrderController.js</span></div>
+    <p>
+      Coupon validation and discount calculation happens early in <span class="inline-code">createOrder()</span>,
+      but stock is checked later. If stock validation fails midway and the transaction rolls back,
+      the coupon usage counter has already been incremented (if implemented before the rollback point).
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Ensure coupon usage increment is inside the database transaction and
+      only committed after all stock deductions succeed.
+    </div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-019 — Wallet Deduction Without Lock Causes Double-Spend</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/services/WalletService.js</span></div>
+    <p>
+      The wallet deduction reads the balance, verifies sufficiency, then updates in separate steps.
+      Without a row-level lock (<span class="inline-code">SELECT FOR UPDATE</span>), two concurrent
+      requests can both read the same balance, both validate it as sufficient, and both deduct —
+      resulting in a negative wallet balance.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Use Sequelize's <span class="inline-code">lock: transaction.LOCK.UPDATE</span>
+      when reading wallet balance inside a transaction.
+    </div>
+    <div class="code">// WalletService.debitWallet()
+const customer = await Customer.findByPk(customerId, {
+  transaction,
+  lock: transaction.LOCK.UPDATE, // prevents concurrent reads
+});
+if (customer.wallet_balance < amount) {
+  throw new AppError('Insufficient wallet balance', 400);
+}
+await customer.decrement('wallet_balance', { by: amount, transaction });</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 7 — INVENTORY BUGS
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 7</div>
+  <div class="section-title">Inventory &amp; Stock Management Bugs</div>
+  <div class="section-divider"></div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-020 — JSONB Color Stock Update Is Not Atomic</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/OrderController.js</span></div>
+    <p>
+      Product inventory is stored as a JSONB field (<span class="inline-code">color_stocks</span>).
+      Decrementing stock requires: read JSONB → modify in JS → write back. This read-modify-write
+      on a JSONB field inside a transaction with row lock is safe for single-row updates, but
+      if two orders for the same product and color are placed simultaneously, the second transaction
+      will wait on the row lock — but the JSONB patch logic in JavaScript may not correctly
+      handle the version that was updated by the first transaction.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Use a PostgreSQL JSONB update expression to do atomic decrement inside the database,
+      or migrate color-specific stock to a separate <span class="inline-code">product_variants</span> table
+      with proper integer columns and row-level locks.
+    </div>
+    <div class="code">// Recommended: PostgreSQL native JSONB update (atomic)
+await sequelize.query(`
+  UPDATE products
+  SET color_stocks = jsonb_set(
+    color_stocks,
+    '{${colorKey}}',
+    (COALESCE((color_stocks->>'${colorKey}')::int, 0) - :qty)::text::jsonb
+  )
+  WHERE id = :productId
+  AND (color_stocks->>'${colorKey}')::int >= :qty
+`, { replacements: { colorKey, qty, productId }, transaction });</div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-021 — Stock Not Restocked on Payment Failure</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/OrderController.js</span></div>
+    <p>
+      During prepaid order flow, stock is decremented when the order is created (before payment).
+      If the Razorpay payment fails or is abandoned by the customer, the order may sit in
+      <span class="inline-code">pending_payment</span> state indefinitely with stock locked.
+      There is no timeout or cleanup job that restores stock for unpaid orders.
+    </p>
+    <div class="fix">
+      <strong>Fix:</strong> Add a cron job that runs every 30 minutes to find orders in
+      <span class="inline-code">pending_payment</span> status older than 30 minutes,
+      cancels them, and restores inventory.
+    </div>
+    <div class="code">// server.js — add cleanup cron
+cron.schedule('*/30 * * * *', async () => {
+  const staleOrders = await Order.findAll({
+    where: {
+      status: 'pending_payment',
+      createdAt: { [Op.lt]: new Date(Date.now() - 30 * 60 * 1000) }
+    }
+  });
+  for (const order of staleOrders) {
+    await restoreInventory(order);
+    await order.update({ status: 'payment_failed' });
+  }
+});</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-022 — No Low-Stock Threshold Alerts</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/services/ProductService.js (missing)</span></div>
+    <p>
+      Product model has a <span class="inline-code">low_stock_threshold</span> field, but there is no logic
+      that sends alerts when stock drops below this threshold. Admins have no visibility into
+      which products are running out until they manually check the dashboard.
+    </p>
+    <div class="fix"><strong>Fix:</strong> After each successful stock decrement, check if remaining stock is ≤ threshold and send an email alert to the admin email.</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 8 — WALLET & REFERRAL BUGS
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 8</div>
+  <div class="section-title">Wallet &amp; Referral System Bugs</div>
+  <div class="section-divider"></div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-023 — Referral Abuse: Multiple Accounts, One Phone Number</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/services/AuthService.js, WalletService.js</span></div>
+    <p>
+      A user can create multiple accounts with different emails but reuse the same phone number
+      (if phone uniqueness is not enforced), apply a referral code on each, and earn the referrer
+      unlimited bonus credits. Even with phone uniqueness, email-only accounts can be created
+      in bulk from disposable email services.
+    </p>
+    <div class="fix"><strong>Fix:</strong> (1) Enforce phone number uniqueness and verify via OTP during registration.
+    (2) Allow each referral code to be used only once per device fingerprint or phone number.
+    (3) Cap max referral earnings per referrer per month.</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-024 — Referral Reward Credited Even If Order Is Returned</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/services/WalletService.js</span></div>
+    <p>
+      The referral order reward is scheduled 7 days after delivery confirmation.
+      The cron job (<span class="inline-code">processDuePendingCredits()</span>) processes all
+      due credits without checking if the triggering order was subsequently returned or refunded.
+      A user can place an order, trigger a referral reward, then immediately initiate a return.
+    </p>
+    <div class="fix"><strong>Fix:</strong> Before releasing a pending referral credit, check the order status.
+    If the order is in returned/refunded state, cancel the pending credit instead of releasing it.</div>
+    <div class="code">// WalletService.processDuePendingCredits()
+for (const credit of dueCredits) {
+  if (credit.order_id) {
+    const order = await Order.findByPk(credit.order_id);
+    if (['returned', 'refunded', 'cancelled'].includes(order.status)) {
+      await credit.update({ status: 'cancelled' });
+      continue; // skip — don't reward returned orders
+    }
+  }
+  await creditNow(credit); // safe to release
+}</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-025 — Wallet Balance Can Go Negative</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/services/WalletService.js</span></div>
+    <p>
+      There is no database-level constraint preventing <span class="inline-code">wallet_balance</span>
+      from going negative. If the race condition in BUG-019 occurs, or if a refund calculation error
+      results in excess credit, the balance could be corrupted. Application-layer checks alone are insufficient.
+    </p>
+    <div class="fix"><strong>Fix:</strong> Add a CHECK constraint at the database level:
+    <span class="inline-code">ALTER TABLE customers ADD CONSTRAINT wallet_balance_non_negative CHECK (wallet_balance >= 0);</span></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 9 — CART & COUPON BUGS
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 9</div>
+  <div class="section-title">Cart &amp; Coupon System Bugs</div>
+  <div class="section-divider"></div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-026 — Cart Items Not Validated Against Current Stock at Checkout</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/services/CartService.js, OrderController.js</span></div>
+    <p>
+      When a customer adds an item to cart, the stock is checked at that moment.
+      However, between adding to cart and checkout (which could be days later),
+      another customer may have purchased the last unit. The cart shows the item as available
+      but checkout fails partway through with a cryptic database error rather than a clear
+      "item out of stock" message.
+    </p>
+    <div class="fix"><strong>Fix:</strong> At the start of <span class="inline-code">createOrder()</span>,
+    re-validate every cart item against current stock. Return a clear error per out-of-stock item
+    before touching payment or shipping systems.</div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-027 — Coupon per-User Limit Not Enforced Atomically</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>src/services/CouponService.js</span></div>
+    <p>
+      The per-user coupon usage limit is validated by counting how many times the customer used
+      the coupon in past orders. This check happens before the order is created.
+      In a concurrent scenario (two checkout tabs open simultaneously), both can pass the limit check
+      and both orders use the coupon, exceeding the per-user limit.
+    </p>
+    <div class="fix"><strong>Fix:</strong> Add coupon usage increment inside the order creation transaction
+    with a SELECT FOR UPDATE lock on the coupon row.</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-028 — Cart Has No Expiry / Guest Cart Not Merged</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/services/CartService.js</span></div>
+    <p>
+      Cart items can sit indefinitely. Old carts from months ago with out-of-stock or discontinued products
+      accumulate. There is also no mechanism to merge a guest cart into a logged-in user's cart on login —
+      a common expected behavior in e-commerce.
+    </p>
+    <div class="fix"><strong>Fix:</strong> (1) Add a cron job to clean carts older than 30 days.
+    (2) Implement guest cart (local storage on frontend) merged into user cart on login via an API endpoint.</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 10 — DATABASE PERFORMANCE
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 10</div>
+  <div class="section-title">Database Performance Issues</div>
+  <div class="section-subtitle">Issues that will cause slowdowns under real user traffic</div>
+  <div class="section-divider"></div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-029 — No Database Indexes on Critical Query Columns</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>All model files</span></div>
+    <p>
+      Sequelize models define no indexes. Full-table scans will occur on:
+      <span class="inline-code">customers.email</span>, <span class="inline-code">customers.phone</span>,
+      <span class="inline-code">orders.customer_id</span>, <span class="inline-code">orders.status</span>,
+      <span class="inline-code">wallet_transactions.customer_id</span>, <span class="inline-code">products.slug</span>,
+      <span class="inline-code">coupons.code</span>. These are the most frequently queried columns.
+    </p>
+    <div class="fix"><strong>Fix:</strong> Add indexes in model definitions or as a migration.</div>
+    <div class="code">// In Customer model:
+indexes: [
+  { unique: true, fields: ['email'] },
+  { unique: true, fields: ['phone'] },
+  { fields: ['referral_code'] },
+]
+
+// In Order model:
+indexes: [
+  { fields: ['customer_id'] },
+  { fields: ['status'] },
+  { fields: ['razorpay_payment_id'] },
+  { fields: ['shiprocket_order_id'] },
+]
+
+// In Product model:
+indexes: [
+  { unique: true, fields: ['slug'] },
+  { fields: ['is_active', 'is_archived'] }, // composite for listing
+]</div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-030 — No Pagination on List Endpoints</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <div class="issue-meta">File: <span>ProductController.js, OrderController.js, WalletController.js</span></div>
+    <p>
+      Product listing, order history, and wallet transactions load all records from the database into memory.
+      With 10,000 products or 100,000 orders, this will OOM-crash the server and time out every user request.
+    </p>
+    <div class="fix"><strong>Fix:</strong> Add <span class="inline-code">page</span> and <span class="inline-code">limit</span> query params with Sequelize <span class="inline-code">offset/limit</span>.</div>
+    <div class="code">// ProductController.getProducts() — add pagination
+const page = parseInt(req.query.page) || 1;
+const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+const offset = (page - 1) * limit;
+
+const { count, rows } = await Product.findAndCountAll({
+  where: filters,
+  limit,
+  offset,
+  order: [['createdAt', 'DESC']],
+});
+
+return ok(res, {
+  products: rows,
+  pagination: { total: count, page, limit, pages: Math.ceil(count / limit) }
+});</div>
+  </div>
+
+  <div class="issue high">
+    <div class="issue-header">
+      <span class="severity-badge high">HIGH</span>
+      <h3>BUG-031 — Runtime Column Creation (No Migration System)</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/utils/orderLifecycle.js, feedbackSchema.js, orderItemActions.js</span></div>
+    <p>
+      On every server startup, the app calls <span class="inline-code">ensureColumns()</span> functions
+      that add missing DB columns via <span class="inline-code">queryInterface.addColumn()</span>.
+      This is fragile: (1) multiple instances starting simultaneously race to add the same column,
+      (2) there is no rollback mechanism if something goes wrong, (3) it makes deployment unpredictable.
+    </p>
+    <div class="fix"><strong>Fix:</strong> Replace with proper Sequelize CLI migrations.
+    Run migrations as a pre-startup step (<span class="inline-code">npx sequelize-cli db:migrate</span>).</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-032 — N+1 Query Pattern in Order List</h3>
+    </div>
+    <div class="issue-meta">File: <span>src/controllers/OrderController.js</span></div>
+    <p>
+      Fetching a list of orders and then iterating to fetch associated order items or product details
+      in a loop creates N+1 queries. 50 orders = 51 database queries instead of 1.
+    </p>
+    <div class="fix"><strong>Fix:</strong> Use Sequelize <span class="inline-code">include</span> with proper eager loading.
+    Specify only required <span class="inline-code">attributes</span> to avoid loading entire rows.</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 11 — API PERFORMANCE
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 11</div>
+  <div class="section-title">API Performance Issues</div>
+  <div class="section-divider"></div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-033 — No Response Compression</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <p>API responses are not gzip-compressed. A product catalog response can be 100KB+ uncompressed.
+    With compression, this shrinks to ~15KB — a 7× reduction in bandwidth and faster load times.</p>
+    <div class="fix"><strong>Fix:</strong> <span class="inline-code">npm install compression</span> and add as middleware before routes.</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-034 — Synchronous Cloudinary Uploads Block Requests</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <p>Product image uploads wait for Cloudinary's response before sending API response.
+    Uploading 12 product images can take 15–30 seconds, blocking the admin request thread.</p>
+    <div class="fix"><strong>Fix:</strong> Upload images to Cloudinary in parallel using <span class="inline-code">Promise.all()</span>
+    or use a queue (Bull) to process uploads asynchronously.</div>
+    <div class="code">// Parallel upload (quick win)
+const uploadedImages = await Promise.all(
+  files.map(file => cloudinary.uploader.upload(file.path, { folder: 'products' }))
+);</div>
+  </div>
+
+  <div class="issue medium">
+    <div class="issue-header">
+      <span class="severity-badge medium">MEDIUM</span>
+      <h3>BUG-035 — No Caching for Catalog Endpoints</h3> <span style="background:#d5f5e3;color:#27ae60;font-size:10px;padding:2px 8px;border-radius:8px;font-weight:700;vertical-align:middle">✓ FIXED</span>
+    </div>
+    <p>Product lists, color/material/variety/occasion taxonomies are fetched from DB on every request.
+    These rarely change but are fetched hundreds of times per minute during peak traffic.
+    No HTTP caching headers (ETag, Cache-Control) are set either.</p>
+    <div class="fix"><strong>Fix:</strong> Set <span class="inline-code">Cache-Control: public, max-age=300</span> on catalog endpoints.
+    Use Redis to cache taxonomy data with 5-minute TTL.</div>
+  </div>
+
+  <div class="issue low">
+    <div class="issue-header">
+      <span class="severity-badge low">LOW</span>
+      <h3>BUG-036 — Cron Jobs Not Cluster-Safe</h3>
+    </div>
+    <p>If the backend scales to 2+ instances on Render.com, both instances will run the referral payout cron simultaneously, potentially double-crediting wallets (though deduplication keys partially mitigate this).</p>
+    <div class="fix"><strong>Fix:</strong> Use a distributed lock (Redis SETNX) or move cron to a separate worker process.</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 12 — PRODUCTION READINESS CHECKLIST
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 12</div>
+  <div class="section-title">Production Readiness Checklist</div>
+  <div class="section-subtitle">60-point audit across security, reliability, observability, and compliance</div>
+  <div class="section-divider"></div>
+
+  <h2>Security</h2>
+  <ul class="checklist">
+    <li><div class="check-icon no">✗</div>Rate limiting on auth endpoints</li>
+    <li><div class="check-icon no">✗</div>Helmet security headers (X-Frame-Options, CSP, HSTS)</li>
+    <li><div class="check-icon no">✗</div>ShipRocket routes protected with admin middleware</li>
+    <li><div class="check-icon no">✗</div>File upload MIME type validation</li>
+    <li><div class="check-icon no">✗</div>Token revocation mechanism</li>
+    <li><div class="check-icon no">✗</div>Razorpay webhook server-side verification</li>
+    <li><div class="check-icon yes">✓</div>JWT access/refresh token pair implemented</li>
+    <li><div class="check-icon yes">✓</div>Passwords hashed with bcrypt (cost factor 10)</li>
+    <li><div class="check-icon yes">✓</div>Razorpay payment signature verified client-side</li>
+    <li><div class="check-icon yes">✓</div>Admin role separated from customer role</li>
+    <li><div class="check-icon partial">~</div>CORS origins configured (but not validated)</li>
+    <li><div class="check-icon partial">~</div>COD block enforcement (partial — some paths bypass)</li>
+  </ul>
+
+  <h2>Reliability &amp; Data Integrity</h2>
+  <ul class="checklist">
+    <li><div class="check-icon no">✗</div>Database migrations (not runtime column creation)</li>
+    <li><div class="check-icon no">✗</div>Database-level constraints (wallet balance ≥ 0)</li>
+    <li><div class="check-icon no">✗</div>Idempotency on order creation</li>
+    <li><div class="check-icon no">✗</div>Stock restoration for abandoned pending-payment orders</li>
+    <li><div class="check-icon no">✗</div>Razorpay refund API calls on cancellation</li>
+    <li><div class="check-icon no">✗</div>Referral reward cancelled on order return</li>
+    <li><div class="check-icon yes">✓</div>Database transactions on order creation</li>
+    <li><div class="check-icon yes">✓</div>Wallet deduplication keys (prevent double-credit)</li>
+    <li><div class="check-icon yes">✓</div>Referral reward 7-day delay after delivery</li>
+    <li><div class="check-icon yes">✓</div>COD block after RTO event</li>
+    <li><div class="check-icon partial">~</div>Inventory decrement with partial race condition risk</li>
+  </ul>
+
+  <h2>Performance &amp; Scalability</h2>
+  <ul class="checklist">
+    <li><div class="check-icon no">✗</div>Database indexes on hot columns</li>
+    <li><div class="check-icon no">✗</div>Pagination on all list endpoints</li>
+    <li><div class="check-icon no">✗</div>Redis caching layer</li>
+    <li><div class="check-icon no">✗</div>Response compression (gzip)</div></li>
+    <li><div class="check-icon no">✗</div>Async/parallel image uploads</li>
+    <li><div class="check-icon no">✗</div>Cluster-safe cron jobs</li>
+    <li><div class="check-icon partial">~</div>Eager loading (present but incomplete)</li>
+  </ul>
+
+  <h2>Observability &amp; Monitoring</h2>
+  <ul class="checklist">
+    <li><div class="check-icon no">✗</div>Structured JSON logging (production-grade)</li>
+    <li><div class="check-icon no">✗</div>Error tracking (Sentry / Datadog)</li>
+    <li><div class="check-icon no">✗</div>APM / query performance monitoring</li>
+    <li><div class="check-icon no">✗</div>Health check endpoint with DB connectivity</li>
+    <li><div class="check-icon partial">~</div>Request logging middleware (present but basic)</li>
+    <li><div class="check-icon yes">✓</div>Global error handler with request ID</li>
+  </ul>
+
+  <h2>Compliance &amp; Legal</h2>
+  <ul class="checklist">
+    <li><div class="check-icon no">✗</div>Actual bank refunds on cancellation (not just wallet credit)</li>
+    <li><div class="check-icon no">✗</div>GDPR-compliant data deletion (right to erasure)</li>
+    <li><div class="check-icon no">✗</div>GST invoice generation on orders</li>
+    <li><div class="check-icon no">✗</div>Audit log for admin actions</li>
+    <li><div class="check-icon partial">~</div>Email order confirmations (implemented, not verified)</li>
+  </ul>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 13 — MISSING FEATURES
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 13</div>
+  <div class="section-title">Missing Features for End-to-End E-Commerce</div>
+  <div class="section-subtitle">Features required for a complete customer purchase journey</div>
+  <div class="section-divider"></div>
+
+  <h2>Customer-Facing Missing Features</h2>
+  <table>
+    <tr><th>#</th><th>Feature</th><th>Why It's Needed</th><th>Priority</th></tr>
+    <tr>
+      <td>1</td>
+      <td><strong>GST Invoice / Bill Generation</strong></td>
+      <td>Required by law in India. Customers need GST bills for business purchases. Currently no invoice PDF is generated.</td>
+      <td><span class="status-badge broken">CRITICAL</span></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><strong>SMS Notifications</strong></td>
+      <td>Order placed, shipped, out for delivery, delivered — SMS is standard in India. MSG91 is referenced in code but not wired up.</td>
+      <td><span class="status-badge broken">HIGH</span></td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><strong>Real-Time Order Tracking Page</strong></td>
+      <td>ShipRocket tracking API exists but no customer-facing tracking endpoint with status timeline is built.</td>
+      <td><span class="status-badge missing">HIGH</span></td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td><strong>Exchange Flow (End-to-End)</strong></td>
+      <td>OrderItemAction supports EXCHANGE type but ShipRocket exchange order creation and replacement item dispatch is not implemented.</td>
+      <td><span class="status-badge missing">HIGH</span></td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td><strong>Return Pickup Scheduling</strong></td>
+      <td>Return is initiated but there is no pickup date/time selection or confirmation to the customer.</td>
+      <td><span class="status-badge missing">MEDIUM</span></td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td><strong>Product Search</strong></td>
+      <td>No full-text search endpoint. Customers can filter by category but cannot search by product name or description.</td>
+      <td><span class="status-badge missing">HIGH</span></td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td><strong>Guest Cart Merge on Login</strong></td>
+      <td>Standard e-commerce behavior: items added before login should carry over after login.</td>
+      <td><span class="status-badge missing">MEDIUM</span></td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td><strong>Order Modification (Before Shipping)</strong></td>
+      <td>Currently only cancellation is supported. Address change or item quantity change before dispatch is not possible.</td>
+      <td><span class="status-badge missing">MEDIUM</span></td>
+    </tr>
+    <tr>
+      <td>9</td>
+      <td><strong>Push Notifications (FCM)</strong></td>
+      <td>Firebase Cloud Messaging for mobile app order status notifications. Expected by mobile users.</td>
+      <td><span class="status-badge missing">MEDIUM</span></td>
+    </tr>
+    <tr>
+      <td>10</td>
+      <td><strong>Product Recently Viewed</strong></td>
+      <td>Track customer's recently viewed products for personalized recommendations.</td>
+      <td><span class="status-badge missing">LOW</span></td>
+    </tr>
+  </table>
+
+  <h2>Admin-Facing Missing Features</h2>
+  <table>
+    <tr><th>#</th><th>Feature</th><th>Why It's Needed</th><th>Priority</th></tr>
+    <tr>
+      <td>1</td>
+      <td><strong>Revenue Dashboard API</strong></td>
+      <td>No aggregate endpoints for GMV, order counts by status, revenue by date range. Admin has no business visibility.</td>
+      <td><span class="status-badge broken">HIGH</span></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><strong>Inventory Dashboard</strong></td>
+      <td>No endpoint to list products sorted by stock level, products below threshold, or color-wise stock overview.</td>
+      <td><span class="status-badge missing">HIGH</span></td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><strong>Customer Management</strong></td>
+      <td>No admin endpoint to search customers, view their order history, manually adjust wallet, or force-reset password.</td>
+      <td><span class="status-badge missing">HIGH</span></td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td><strong>Bulk Product Import/Export</strong></td>
+      <td>Adding 100+ products one by one via API is impractical. CSV import is standard for catalog management.</td>
+      <td><span class="status-badge missing">MEDIUM</span></td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td><strong>Audit Log</strong></td>
+      <td>No record of admin actions (who approved a return, who modified a coupon). Required for accountability.</td>
+      <td><span class="status-badge missing">MEDIUM</span></td>
+    </tr>
+  </table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 14 — IMPLEMENTATION ROADMAP
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 14</div>
+  <div class="section-title">Implementation Roadmap</div>
+  <div class="section-subtitle">Prioritized delivery plan from security patching to full production scale</div>
+  <div class="section-divider"></div>
+
+  <div class="roadmap">
+    <div class="phase">
+      <div class="phase-num">Phase 1</div>
+      <div class="phase-title">Security Patch</div>
+      <div class="phase-time">Week 1 — MUST SHIP FIRST</div>
+      <ul>
+        <li>Protect ShipRocket routes (authMiddleware + adminMiddleware)</li>
+        <li>Add rate limiting to all auth endpoints</li>
+        <li>Add Helmet security headers</li>
+        <li>File upload MIME type validation</li>
+        <li>Persist OTPs to DB (remove in-memory Map)</li>
+        <li>Hard enforce COD block on all order paths</li>
+        <li>Fix wallet deduction race condition (SELECT FOR UPDATE)</li>
+        <li>Add wallet_balance ≥ 0 DB constraint</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <div class="phase-num">Phase 2</div>
+      <div class="phase-title">Reliability Fix</div>
+      <div class="phase-time">Weeks 2-3</div>
+      <ul>
+        <li>Replace runtime ensureColumns() with Sequelize CLI migrations</li>
+        <li>Add DB indexes on hot query columns</li>
+        <li>Implement pagination (all list endpoints)</li>
+        <li>Razorpay refund API on order cancellation</li>
+        <li>Stock cleanup cron for abandoned orders</li>
+        <li>Referral reward cancellation on order return</li>
+        <li>Idempotency key on order creation</li>
+        <li>Sequelize error types in errorHandler</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <div class="phase-num">Phase 3</div>
+      <div class="phase-title">Feature Complete</div>
+      <div class="phase-time">Weeks 4-6</div>
+      <ul>
+        <li>GST invoice PDF generation</li>
+        <li>SMS notifications (MSG91)</li>
+        <li>Full-text product search</li>
+        <li>Complete exchange flow</li>
+        <li>Admin revenue dashboard</li>
+        <li>Admin customer management</li>
+        <li>Low stock alerts to admin</li>
+        <li>Guest cart merge on login</li>
+        <li>Razorpay webhook endpoint</li>
+        <li>Response compression (gzip)</li>
+      </ul>
+    </div>
+    <div class="phase">
+      <div class="phase-num">Phase 4</div>
+      <div class="phase-title">Scale &amp; Optimize</div>
+      <div class="phase-time">Month 2+</div>
+      <ul>
+        <li>Redis caching for catalog</li>
+        <li>Async image upload queue (Bull)</li>
+        <li>Distributed cron (Redis lock)</li>
+        <li>Sentry error tracking</li>
+        <li>Structured JSON logging</li>
+        <li>FCM push notifications</li>
+        <li>Audit log for admin actions</li>
+        <li>GDPR data deletion endpoint</li>
+        <li>API versioning (/api/v1/)</li>
+        <li>Load testing (k6)</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Priority Bug Fix Order</h2>
+  <table>
+    <tr><th>Priority</th><th>Bug ID</th><th>Issue</th><th>Effort</th><th>Impact</th></tr>
+    <tr><td>1</td><td>BUG-001</td><td>ShipRocket routes unprotected</td><td>30 min</td><td>CRITICAL</td></tr>
+    <tr><td>2</td><td>BUG-005</td><td>Missing Helmet headers</td><td>15 min</td><td>CRITICAL</td></tr>
+    <tr><td>3</td><td>BUG-002</td><td>No rate limiting</td><td>1 hour</td><td>CRITICAL</td></tr>
+    <tr><td>4</td><td>BUG-003</td><td>In-memory OTP store</td><td>3 hours</td><td>CRITICAL</td></tr>
+    <tr><td>5</td><td>BUG-004</td><td>No file MIME validation</td><td>1 hour</td><td>CRITICAL</td></tr>
+    <tr><td>6</td><td>BUG-019</td><td>Wallet double-spend race</td><td>1 hour</td><td>HIGH</td></tr>
+    <tr><td>7</td><td>BUG-025</td><td>Wallet can go negative</td><td>30 min</td><td>HIGH</td></tr>
+    <tr><td>8</td><td>BUG-016</td><td>No Razorpay refund on cancel</td><td>2 hours</td><td>HIGH</td></tr>
+    <tr><td>9</td><td>BUG-021</td><td>Stock not restored on payment fail</td><td>2 hours</td><td>HIGH</td></tr>
+    <tr><td>10</td><td>BUG-029</td><td>No DB indexes</td><td>2 hours</td><td>HIGH</td></tr>
+    <tr><td>11</td><td>BUG-030</td><td>No pagination</td><td>4 hours</td><td>HIGH</td></tr>
+    <tr><td>12</td><td>BUG-031</td><td>Runtime column creation</td><td>8 hours</td><td>HIGH</td></tr>
+    <tr><td>13</td><td>BUG-015</td><td>Cancel doesn't trigger ShipRocket cancel</td><td>2 hours</td><td>HIGH</td></tr>
+    <tr><td>14</td><td>BUG-014</td><td>Razorpay amount race condition</td><td>3 hours</td><td>HIGH</td></tr>
+    <tr><td>15</td><td>BUG-024</td><td>Referral reward on returned order</td><td>1 hour</td><td>MEDIUM</td></tr>
+  </table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     SECTION 15 — CODE FIX EXAMPLES
+════════════════════════════════════════════════════ -->
+<div class="section page-break">
+  <div class="section-label">Section 15</div>
+  <div class="section-title">Production-Ready Code Fix Examples</div>
+  <div class="section-subtitle">Drop-in fixes for the highest-priority issues</div>
+  <div class="section-divider"></div>
+
+  <h2>Fix 1: Centralized Security Middleware (src/index.js)</h2>
+  <div class="code">const express = require('express');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const compression = require('compression');
+const cors = require('cors');
+
+const app = express();
+
+// 1. Security headers — FIRST
+app.use(helmet());
+
+// 2. Compression
+app.use(compression());
+
+// 3. Global rate limit (100 req/15min per IP)
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(globalLimiter);
+
+// 4. Auth-specific rate limit (10 req/15min per IP)
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many auth attempts. Please wait 15 minutes.' }
+});
+app.use('/api/auth', authLimiter);
+
+// 5. CORS
+app.use(cors({ origin: validateOrigins(process.env.CORS_ORIGINS) }));
+
+// 6. Body parser with size limit
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));</div>
+
+  <h2>Fix 2: Proper Sequelize Migrations (instead of ensureColumns)</h2>
+  <div class="code">// Install: npm install --save-dev sequelize-cli
+// Initialize: npx sequelize-cli init
+
+// migrations/20260530000001-add-order-lifecycle-columns.js
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    const table = await queryInterface.describeTable('orders');
+    if (!table.rto_initiated_at) {
+      await queryInterface.addColumn('orders', 'rto_initiated_at', {
+        type: Sequelize.DATE, allowNull: true,
+      });
+    }
+    if (!table.rto_delivered_at) {
+      await queryInterface.addColumn('orders', 'rto_delivered_at', {
+        type: Sequelize.DATE, allowNull: true,
+      });
+    }
+    // ... more columns
+  },
+  async down(queryInterface) {
+    await queryInterface.removeColumn('orders', 'rto_initiated_at');
+    await queryInterface.removeColumn('orders', 'rto_delivered_at');
+  }
+};
+
+// package.json scripts
+"scripts": {
+  "migrate": "npx sequelize-cli db:migrate",
+  "migrate:undo": "npx sequelize-cli db:migrate:undo",
+  "start": "npm run migrate && node server.js"
+}</div>
+
+  <h2>Fix 3: Global Sequelize Error Handler</h2>
+  <div class="code">// src/middleware/errorHandler.js — add Sequelize error mapping
+const { ValidationError, UniqueConstraintError,
+        ForeignKeyConstraintError, DatabaseError } = require('sequelize');
+
+module.exports = (err, req, res, next) => {
+  // Map Sequelize errors to user-friendly responses
+  if (err instanceof UniqueConstraintError) {
+    const field = err.errors[0]?.path || 'field';
+    return res.status(409).json({
+      error: `This ${field} is already registered.`
+    });
+  }
+  if (err instanceof ValidationError) {
+    return res.status(400).json({
+      error: 'Invalid input.',
+      details: err.errors.map(e => ({ field: e.path, message: e.message }))
+    });
+  }
+  if (err instanceof ForeignKeyConstraintError) {
+    return res.status(400).json({ error: 'Referenced resource does not exist.' });
+  }
+  if (err instanceof DatabaseError) {
+    console.error('[DB Error]', err.message);
+    return res.status(500).json({ error: 'A database error occurred.' });
+  }
+
+  // AppError (known, intentional errors)
+  if (err.isOperational) {
+    return res.status(err.statusCode || 400).json({ error: err.message });
+  }
+
+  // Unknown errors — log fully, hide from client
+  console.error('[Unhandled Error]', err);
+  res.status(500).json({ error: 'An internal server error occurred.' });
+};</div>
+
+  <h2>Fix 4: Database Indexes on All Models</h2>
+  <div class="code">// Add to each model definition:
+
+// Customer model
+indexes: [
+  { unique: true, fields: ['email'] },
+  { unique: true, fields: ['phone'] },
+  { fields: ['referral_code'] },
+  { fields: ['is_cod_blocked'] },
+]
+
+// Order model
+indexes: [
+  { fields: ['customer_id'] },
+  { fields: ['status'] },
+  { unique: true, fields: ['razorpay_payment_id'], where: { razorpay_payment_id: { [Op.ne]: null } } },
+  { fields: ['shiprocket_order_id'] },
+  { fields: ['created_at'] },
+]
+
+// Product model
+indexes: [
+  { unique: true, fields: ['slug'] },
+  { fields: ['is_active', 'is_archived'] },
+  { fields: ['variety_id'] },
+]
+
+// WalletTransaction model
+indexes: [
+  { fields: ['customer_id'] },
+  { fields: ['status', 'available_at'] }, // for cron job query
+  { unique: true, fields: ['dedupe_key'] },
+]
+
+// Coupon model
+indexes: [
+  { unique: true, fields: ['code'] },
+  { fields: ['is_active', 'expires_at'] },
+]</div>
+
+  <h2>Fix 5: Razorpay Refund on Order Cancellation</h2>
+  <div class="code">// src/controllers/OrderController.js — cancelOrder()
+const Razorpay = require('razorpay');
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
+
+async function cancelOrder(req, res) {
+  const { orderId } = req.params;
+  const order = await Order.findByPk(orderId);
+
+  if (!order) throw new AppError('Order not found', 404);
+  if (order.status === 'cancelled') throw new AppError('Order already cancelled', 400);
+
+  // Cancel ShipRocket shipment if dispatched
+  if (order.awb_code) {
+    await ShipRocketService.cancelShipment(order.shiprocket_shipment_id);
+  }
+
+  // Initiate Razorpay refund for prepaid orders
+  if (order.payment_method !== 'COD' && order.razorpay_payment_id) {
+    const refundAmountPaise = Math.round(order.total_amount * 100);
+    const refund = await razorpay.payments.refund(order.razorpay_payment_id, {
+      amount: refundAmountPaise,
+      notes: { order_id: order.id, reason: 'Customer cancellation' }
+    });
+    order.refund_id = refund.id;
+    order.refund_status = 'initiated';
+  }
+
+  // Update order status
+  order.status = 'cancelled';
+  order.cancelled_at = new Date();
+  await order.save();
+
+  // Restore inventory
+  await restoreInventory(order, t);
+
+  return ok(res, { message: 'Order cancelled and refund initiated.' });
+}</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     FOOTER
+════════════════════════════════════════════════════ -->
+<div class="footer">
+  <p><strong>Banarasi Kala</strong> — Backend Production Audit Report</p>
+  <p style="margin-top:8px">Generated: 30 May 2026 &nbsp;|&nbsp; Scope: 77+ files, 17 models, 18 routes, 16 controllers, 12 services</p>
+  <p style="margin-top:8px;color:#666">This report is confidential. Fix all Critical and High issues before launch.</p>
+</div>
+
+<script>
+// Auto-print as PDF when opened
+// window.onload = () => window.print();
+</script>
+</body>
+</html>

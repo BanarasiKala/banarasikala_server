@@ -1,0 +1,23 @@
+const express = require('express');
+const router = express.Router();
+const ProductController = require('../controllers/ProductController');
+const { authMiddleware, adminMiddleware } = require('../middleware/authMiddleware');
+const { productUpload: upload } = require('../config/multer');
+const { catalogCache } = require('../middleware/cacheHeaders');
+
+// Public routes
+router.get('/', catalogCache, ProductController.getAll);
+router.get('/summary', authMiddleware, adminMiddleware, ProductController.getSummary);
+router.get('/:slug/detail', catalogCache, ProductController.getDetailBySlug);
+router.get('/:slug/colors/:colorId/images', catalogCache, ProductController.getColorImages);
+router.get('/:id(\\d+)', catalogCache, ProductController.getById);
+router.get('/:slug', catalogCache, ProductController.getBySlug);
+
+// Admin only routes
+router.post('/', authMiddleware, adminMiddleware, ProductController.create);
+router.put('/:id', authMiddleware, adminMiddleware, ProductController.update);
+router.post('/with-images', authMiddleware, adminMiddleware, upload.any(), ProductController.createWithImages);
+router.put('/:id/with-images', authMiddleware, adminMiddleware, upload.any(), ProductController.updateWithImages);
+router.delete('/:id', authMiddleware, adminMiddleware, ProductController.delete);
+
+module.exports = router;
