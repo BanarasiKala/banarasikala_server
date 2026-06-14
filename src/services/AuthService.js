@@ -1,5 +1,6 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { OAuth2Client } = require("google-auth-library");
 const Customer = require("../models/Customer");
 const Admin = require("../models/Admin");
 const { Op } = require("sequelize");
@@ -22,6 +23,56 @@ const possiblePhoneValues = (phone) => {
 const otpStore = new Map();
 const OTP_TTL_MS = 10 * 60 * 1000;
 const OTP_PURPOSES = new Set(["signup", "forgot_password"]);
+
+// ── MessageCentral helpers ────────────────────────────────────────────────────
+const phoneOtpStore = new Map();
+const PHONE_OTP_TTL_MS = 10 * 60 * 1000;
+
+const normalizeMobileForMC = (mobile) => {
+  const digits = String(mobile).replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+  if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
+  return digits;
+};
+
+const sendOtpMessageCentral = async (mobile) => {
+  try {
+    if (!config.msgCentralAuthToken) {
+      console.warn("MSG_CENTRAL_AUTH_TOKEN not configured");
+      return { ok: false, reason: "no_auth_token" };
+    }
+    const mobileNumber = normalizeMobileForMC(mobile);
+    const url = `https://cpaas.messagecentral.com/verification/v3/send?countryCode=91&customerId=${config.msgCentralCustomerId}&flowType=SMS&mobileNumber=${mobileNumber}&otpLength=6`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { authToken: config.msgCentralAuthToken, "Content-Type": "application/json" },
+      body: JSON.stringify({ codeLength: 6, otpLength: 6 }),
+    });
+    const json = await resp.json().catch(() => null);
+    return { ok: resp.ok, status: resp.status, body: json };
+  } catch (err) {
+    console.error("MessageCentral send error", err);
+    return { ok: false, reason: err.message };
+  }
+};
+
+const verifyOtpMessageCentral = async (mobile, otp, verificationId) => {
+  try {
+    if (!config.msgCentralAuthToken) return { ok: false, reason: "no_auth_token" };
+    const mobileNumber = normalizeMobileForMC(mobile);
+    const url = `https://cpaas.messagecentral.com/verification/v3/validateOtp?countryCode=91&mobileNumber=${mobileNumber}&verificationId=${verificationId}&customerId=${config.msgCentralCustomerId}&code=${otp}`;
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: { authToken: config.msgCentralAuthToken },
+    });
+    const json = await resp.json().catch(() => null);
+    const ok = resp.ok && (json?.responseCode === 200 || json?.data?.verificationStatus === "VERIFICATION_COMPLETED");
+    return { ok, status: resp.status, body: json };
+  } catch (err) {
+    console.error("MessageCentral verify error", err);
+    return { ok: false, reason: err.message };
+  }
+};
 
 class AuthService {
   async createOtpSession({ email, purpose, name }) {
@@ -144,9 +195,81 @@ class AuthService {
       throw new Error("Invalid email or password");
     }
 
+    if (!customer.password) {
+      throw new Error("This account uses Google Sign-In. Please log in with Google.");
+    }
+
     const isMatch = await bcrypt.compare(password, customer.password);
     if (!isMatch) {
       throw new Error("Invalid email or password");
+    }
+
+    return this.generateTokens(customer, "customer");
+  }
+
+  async googleLogin(credential) {
+    if (!config.googleClientId) throw new Error("Google Sign-In is not configured.");
+
+    const client = new OAuth2Client(config.googleClientId);
+    let payload;
+    try {
+      const ticket = await client.verifyIdToken({
+        idToken: credential,
+        audience: config.googleClientId,
+      });
+      payload = ticket.getPayload();
+    } catch {
+      throw new Error("Invalid Google credential. Please try again.");
+    }
+
+    const googleId = payload.sub;
+    const email = payload.email;
+    const name = payload.name || email.split("@")[0];
+    const avatar_url = payload.picture || null;
+
+    // Try to find by google_id first, then by email
+    let customer = await Customer.findOne({ where: { google_id: googleId } });
+
+    if (!customer) {
+      customer = await Customer.findOne({ where: { email } });
+      if (customer) {
+        // Link Google to an existing email+password account
+        customer.google_id = googleId;
+        if (!customer.avatar_url) customer.avatar_url = avatar_url;
+        await customer.save();
+      }
+    }
+
+    if (!customer) {
+      // New customer via Google — create account
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          customer = await Customer.create({
+            name,
+            email,
+            google_id: googleId,
+            auth_provider: "google",
+            avatar_url,
+            phone: null,
+            password: null,
+            referral_code: generateReferralCode(),
+            phone_verified: false,
+          });
+          break;
+        } catch (err) {
+          if (err?.name === "SequelizeUniqueConstraintError") continue;
+          throw err;
+        }
+      }
+      if (!customer) throw new Error("Could not create account. Please try again.");
+
+      await WalletService.creditNow({
+        customerId: customer.id,
+        amount: config.welcomeBonus,
+        type: "WELCOME_BONUS",
+        dedupeKey: `welcome:${customer.id}`,
+        meta: null,
+      });
     }
 
     return this.generateTokens(customer, "customer");

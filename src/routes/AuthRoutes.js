@@ -23,6 +23,9 @@ const otpLimiter = rateLimit({
 // Public customer auth
 router.post("/register", authLimiter, AuthController.register);
 router.post("/login", authLimiter, AuthController.login);
+router.post("/google", authLimiter, AuthController.googleLogin);
+router.post("/send-phone-otp", otpLimiter, AuthController.sendPhoneOtp);
+router.post("/verify-phone-otp", authLimiter, AuthController.verifyPhoneOtp);
 
 // Public admin auth entrypoint
 router.post("/admin-login", authLimiter, AuthController.adminLogin);

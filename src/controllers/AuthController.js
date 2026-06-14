@@ -38,6 +38,42 @@ class AuthController {
     }
   }
 
+  async googleLogin(req, res) {
+    try {
+      const { credential } = req.body;
+      if (!credential) return res.status(400).json({ message: "Google credential is required." });
+      const result = await AuthService.googleLogin(credential);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:googleLogin]", error.message);
+      res.status(401).json({ message: error.message || "Google Sign-In failed. Please try again." });
+    }
+  }
+
+  async sendPhoneOtp(req, res) {
+    try {
+      const { pendingToken, phone } = req.body;
+      if (!pendingToken || !phone) return res.status(400).json({ message: "pendingToken and phone are required." });
+      const result = await AuthService.sendPhoneOtp(pendingToken, phone);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:sendPhoneOtp]", error.message);
+      res.status(400).json({ message: error.message || "Failed to send OTP." });
+    }
+  }
+
+  async verifyPhoneOtp(req, res) {
+    try {
+      const { pendingToken, phone, otp, verificationId } = req.body;
+      if (!pendingToken || !phone || !otp) return res.status(400).json({ message: "pendingToken, phone and otp are required." });
+      const result = await AuthService.verifyPhoneOtp(pendingToken, phone, otp, verificationId);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:verifyPhoneOtp]", error.message);
+      res.status(400).json({ message: error.message || "OTP verification failed." });
+    }
+  }
+
   async adminLogin(req, res) {
     try {
       const { email, password } = req.body;

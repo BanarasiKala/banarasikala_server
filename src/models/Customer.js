@@ -23,12 +23,22 @@ const Customer = sequelize.define(
     },
     phone: {
       type: DataTypes.STRING,
-      allowNull: false,
+      allowNull: true,
       unique: true,
     },
     password: {
       type: DataTypes.STRING,
+      allowNull: true,
+    },
+    google_id: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      unique: true,
+    },
+    auth_provider: {
+      type: DataTypes.STRING(20),
       allowNull: false,
+      defaultValue: "local",
     },
     role: {
       type: DataTypes.ENUM("user", "admin"),
