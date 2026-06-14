@@ -22,7 +22,7 @@ const imageFileFilter = (req, file, cb) => {
 
 const productUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 },
+  limits: { fileSize: 1565 * 1024 * 1024 },
   // No MIME filter — mobile browsers (iPhone) send unreliable MIME types.
   // Cloudinary rejects files it cannot process, which is the real guard.
 });
