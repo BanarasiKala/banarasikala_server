@@ -477,7 +477,11 @@ class ProductService {
     let count;
     let pagedItems;
     if (useDbPagination) {
-      const total = await Product.count({ where: queryOptions.where });
+      const total = await Product.count({
+        where: queryOptions.where,
+        include: queryOptions.include,
+        subQuery: false,
+      });
       count = total;
       pagedItems = responseRows;
     } else {

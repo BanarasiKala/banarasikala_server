@@ -39,4 +39,17 @@ const uploadVideoToCloudinary = (buffer, folder = "vns-saree/product-videos") =>
     stream.end(buffer);
   });
 
-module.exports = { cloudinary, uploadBufferToCloudinary, uploadVideoToCloudinary };
+const generateUploadSignature = (folder) => {
+  const timestamp = Math.round(Date.now() / 1000);
+  const paramsToSign = { timestamp, folder };
+  const signature = cloudinary.utils.api_sign_request(paramsToSign, config.cloudinaryApiSecret);
+  return {
+    signature,
+    timestamp,
+    folder,
+    cloudName: config.cloudinaryCloudName,
+    apiKey: config.cloudinaryApiKey,
+  };
+};
+
+module.exports = { cloudinary, uploadBufferToCloudinary, uploadVideoToCloudinary, generateUploadSignature };
