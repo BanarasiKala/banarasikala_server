@@ -272,6 +272,76 @@ class AuthService {
       });
     }
 
+    // If no phone yet, require phone verification before issuing full tokens
+    if (!customer.phone) {
+      const pendingToken = jwt.sign(
+        { customerId: customer.id, purpose: "phone_verification" },
+        config.jwtSecret,
+        { expiresIn: "30m" }
+      );
+      return { requiresPhoneVerification: true, pendingToken };
+    }
+
+    return this.generateTokens(customer, "customer");
+  }
+
+  async sendPhoneOtp(pendingToken, phone) {
+    let decoded;
+    try {
+      decoded = jwt.verify(pendingToken, config.jwtSecret);
+    } catch {
+      throw new Error("Session expired. Please sign in with Google again.");
+    }
+    if (decoded.purpose !== "phone_verification") throw new Error("Invalid session token.");
+
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone || cleanPhone.length !== 10) throw new Error("Please enter a valid 10-digit mobile number.");
+
+    const existing = await Customer.findOne({ where: { phone: { [Op.in]: possiblePhoneValues(cleanPhone) } } });
+    if (existing && existing.id !== decoded.customerId) throw new Error("This phone number is already registered.");
+
+    const result = await sendOtpMessageCentral(cleanPhone);
+    if (!result.ok) throw new Error("Failed to send OTP. Please try again.");
+
+    const verificationId = result.body?.data?.verificationId || result.body?.verificationId;
+    phoneOtpStore.set(`${decoded.customerId}:${cleanPhone}`, {
+      verificationId,
+      expiresAt: Date.now() + PHONE_OTP_TTL_MS,
+    });
+
+    return { message: "OTP sent successfully.", verificationId };
+  }
+
+  async verifyPhoneOtp(pendingToken, phone, otp, verificationId) {
+    let decoded;
+    try {
+      decoded = jwt.verify(pendingToken, config.jwtSecret);
+    } catch {
+      throw new Error("Session expired. Please sign in with Google again.");
+    }
+    if (decoded.purpose !== "phone_verification") throw new Error("Invalid session token.");
+
+    const cleanPhone = normalizePhone(phone);
+    const stored = phoneOtpStore.get(`${decoded.customerId}:${cleanPhone}`);
+    const effectiveVerificationId = verificationId || stored?.verificationId;
+    if (!effectiveVerificationId) throw new Error("OTP session not found. Please request a new OTP.");
+    if (stored?.expiresAt < Date.now()) {
+      phoneOtpStore.delete(`${decoded.customerId}:${cleanPhone}`);
+      throw new Error("OTP expired. Please request a new OTP.");
+    }
+
+    const result = await verifyOtpMessageCentral(cleanPhone, otp, effectiveVerificationId);
+    if (!result.ok) throw new Error("Invalid or expired OTP. Please try again.");
+
+    phoneOtpStore.delete(`${decoded.customerId}:${cleanPhone}`);
+
+    const customer = await Customer.findByPk(decoded.customerId);
+    if (!customer) throw new Error("Account not found.");
+
+    customer.phone = cleanPhone;
+    customer.phone_verified = true;
+    await customer.save();
+
     return this.generateTokens(customer, "customer");
   }
 
