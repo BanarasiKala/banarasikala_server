@@ -485,23 +485,45 @@ class AuthService {
 
   async verifyEmailLink(token) {
     let decoded;
+    let isExpired = false;
+
     try {
       decoded = jwt.verify(token, config.jwtSecret);
     } catch (err) {
-      if (err.name === "TokenExpiredError") throw new Error("Verification link has expired. Please go back and click 'Resend Verification Email'.");
-      throw new Error("Verification link is invalid. Please register again.");
+      if (err.name === "TokenExpiredError") {
+        isExpired = true;
+        decoded = jwt.decode(token); // decode without signature check to get sub
+      } else {
+        throw new Error("Verification link is invalid. Please register again.");
+      }
     }
-    if (decoded.purpose !== "reg_email_verify") throw new Error("Invalid verification link.");
 
+    if (!decoded || decoded.purpose !== "reg_email_verify") throw new Error("Invalid verification link.");
     const customer = await Customer.findByPk(decoded.sub);
     if (!customer) throw new Error("Account not found. Please register again.");
+
+    if (isExpired) {
+      // Case 1: both verified — account is complete
+      if (customer.phone_verified) {
+        throw new Error("Your account has already been created. Please log in.");
+      }
+      // Case 2: email already verified but phone not — skip re-verification, proceed to phone step
+      if (customer.email_verified) {
+        const verifiedToken = jwt.sign({ sub: customer.id, purpose: "reg_phone_verify" }, config.jwtSecret, { expiresIn: "30m" });
+        const maskedPhone = `XXXXXX${customer.phone.slice(-4)}`;
+        return { success: true, email: customer.email, phone: customer.phone, maskedPhone, verifiedToken };
+      }
+      // Case 3: nothing verified and link expired — must resend
+      throw new Error("Your verification link has expired. Please register again to receive a new link.");
+    }
+
+    // Valid (non-expired) token path
     if (customer.phone_verified) throw new Error("Account already created. Please log in.");
 
     if (!customer.email_verified) {
       await customer.update({ email_verified: true });
     }
 
-    // Issue a fresh 30-minute token for the phone OTP step
     const verifiedToken = jwt.sign({ sub: customer.id, purpose: "reg_phone_verify" }, config.jwtSecret, { expiresIn: "30m" });
     const maskedPhone = `XXXXXX${customer.phone.slice(-4)}`;
     return { success: true, email: customer.email, phone: customer.phone, maskedPhone, verifiedToken };
