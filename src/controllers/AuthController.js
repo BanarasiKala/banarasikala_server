@@ -167,6 +167,68 @@ class AuthController {
     }
   }
 
+  async initiateRegistration(req, res) {
+    try {
+      const result = await AuthService.initiateRegistration(req.body);
+      res.status(200).json(result);
+    } catch (error) {
+      console.error("[AuthController:initiateRegistration]", error.message);
+      res.status(400).json({
+        message: toCustomerAuthMessage(error, "We could not start registration right now. Please try again."),
+      });
+    }
+  }
+
+  async verifyEmailLink(req, res) {
+    try {
+      const { token } = req.query;
+      if (!token) return res.status(400).json({ message: "Verification token is required." });
+      const result = await AuthService.verifyEmailLink(token);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:verifyEmailLink]", error.message);
+      res.status(400).json({ message: error.message || "Email verification failed." });
+    }
+  }
+
+  async resendVerificationEmail(req, res) {
+    try {
+      const { registrationToken } = req.body;
+      if (!registrationToken) return res.status(400).json({ message: "registrationToken is required." });
+      const result = await AuthService.resendVerificationEmail(registrationToken);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:resendVerificationEmail]", error.message);
+      res.status(400).json({ message: error.message || "Could not resend verification email." });
+    }
+  }
+
+  async sendRegistrationPhoneOtp(req, res) {
+    try {
+      const { registrationToken, phone } = req.body;
+      if (!registrationToken) return res.status(400).json({ message: "registrationToken is required." });
+      const result = await AuthService.sendRegistrationPhoneOtp(registrationToken, phone);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:sendRegistrationPhoneOtp]", error.message);
+      res.status(400).json({ message: error.message || "Failed to send OTP." });
+    }
+  }
+
+  async completeRegistration(req, res) {
+    try {
+      const { registrationToken, otp } = req.body;
+      if (!registrationToken || !otp) return res.status(400).json({ message: "registrationToken and otp are required." });
+      const result = await AuthService.completeRegistration(registrationToken, otp);
+      res.status(201).json(result);
+    } catch (error) {
+      console.error("[AuthController:completeRegistration]", error.message);
+      res.status(400).json({
+        message: toCustomerAuthMessage(error, "We could not complete registration right now. Please try again."),
+      });
+    }
+  }
+
   async logout(req, res) {
     try {
       await AuthService.logout(req.user.id, req.userRole);

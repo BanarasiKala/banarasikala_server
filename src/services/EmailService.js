@@ -158,6 +158,37 @@ class EmailService {
     }
   }
 
+  async sendEmailVerification(email, name, verificationUrl) {
+    const mailOptions = {
+      from: `"Banarasi Kala" <${config.emailUser}>`,
+      to: email,
+      subject: `Verify your email address | Banarasi Kala`,
+      html: `
+        <div style="font-family: 'Playfair Display', serif; color: #3D2817; max-width: 600px; margin: auto; border: 1px solid #D4AF37; padding: 40px; background-color: #FDFCFB;">
+          <h1 style="color: #800020; text-align: center; border-bottom: 2px solid #D4AF37; padding-bottom: 20px;">Banarasi Kala</h1>
+          <p>Dear ${name || 'Customer'},</p>
+          <p>Thank you for registering with Banarasi Kala. Please verify your email address to complete your registration.</p>
+          <div style="text-align: center; margin: 40px 0;">
+            <a href="${verificationUrl}"
+               style="display: inline-block; padding: 14px 36px; background-color: #800020; color: #ffffff; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: bold; letter-spacing: 0.5px;">
+              Verify My Email
+            </a>
+          </div>
+          <p style="font-size: 13px; color: #888; text-align: center;">This link is valid for 30 minutes. If you did not register with us, please ignore this email.</p>
+          <p style="margin-top: 40px; font-style: italic; text-align: center; color: #D4AF37;">A new heritage begins with you.</p>
+          <p style="text-align: center; font-size: 12px; color: #999; margin-top: 20px;">&copy; 2024 Banarasi Kala. All rights reserved.</p>
+        </div>
+      `,
+    };
+    try {
+      await transporter.sendMail(mailOptions);
+    } catch (error) {
+      console.error('Error sending verification email:', error);
+      if (error.code === 'EAUTH') throw new Error('Email authentication failed. Please check your App Password.');
+      throw new Error(`Failed to send verification email: ${error.message}`);
+    }
+  }
+
   async sendOTP(email, otp, name) {
     const mailOptions = {
       from: `"Banarasi Kala" <${config.emailUser}>`,

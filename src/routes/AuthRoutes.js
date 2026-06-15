@@ -27,6 +27,13 @@ router.post("/google", authLimiter, AuthController.googleLogin);
 router.post("/send-phone-otp", otpLimiter, AuthController.sendPhoneOtp);
 router.post("/verify-phone-otp", authLimiter, AuthController.verifyPhoneOtp);
 
+// New link-based registration flow
+router.post("/initiate-registration", authLimiter, AuthController.initiateRegistration);
+router.get("/verify-email-link", AuthController.verifyEmailLink);
+router.post("/resend-verification-email", otpLimiter, AuthController.resendVerificationEmail);
+router.post("/send-registration-phone-otp", otpLimiter, AuthController.sendRegistrationPhoneOtp);
+router.post("/complete-registration", authLimiter, AuthController.completeRegistration);
+
 // Public admin auth entrypoint
 router.post("/admin-login", authLimiter, AuthController.adminLogin);
 router.post("/admin-forgot-password", otpLimiter, AuthController.adminForgotPassword);

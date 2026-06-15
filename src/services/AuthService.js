@@ -28,6 +28,13 @@ const OTP_PURPOSES = new Set(["signup", "forgot_password"]);
 const phoneOtpStore = new Map();
 const PHONE_OTP_TTL_MS = 10 * 60 * 1000;
 
+// Purge expired entries every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of otpStore) if (val.expiresAt < now) otpStore.delete(key);
+  for (const [key, val] of phoneOtpStore) if (val.expiresAt < now) phoneOtpStore.delete(key);
+}, 5 * 60 * 1000);
+
 const normalizeMobileForMC = (mobile) => {
   const digits = String(mobile).replace(/\D/g, "");
   if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
@@ -35,7 +42,14 @@ const normalizeMobileForMC = (mobile) => {
   return digits;
 };
 
+const DEV_PHONE_OTP = "123456";
+const DEV_VERIFICATION_ID = "dev-mock-id";
+
 const sendOtpMessageCentral = async (mobile) => {
+  if (config.isDevelopment) {
+    console.log(`[DEV] Phone OTP for ${mobile}: ${DEV_PHONE_OTP} (not sent via SMS)`);
+    return { ok: true, body: { data: { verificationId: DEV_VERIFICATION_ID } } };
+  }
   try {
     if (!config.msgCentralAuthToken) {
       console.warn("MSG_CENTRAL_AUTH_TOKEN not configured");
@@ -57,6 +71,9 @@ const sendOtpMessageCentral = async (mobile) => {
 };
 
 const verifyOtpMessageCentral = async (mobile, otp, verificationId) => {
+  if (config.isDevelopment) {
+    return { ok: String(otp) === DEV_PHONE_OTP };
+  }
   try {
     if (!config.msgCentralAuthToken) return { ok: false, reason: "no_auth_token" };
     const mobileNumber = normalizeMobileForMC(mobile);
@@ -80,9 +97,11 @@ class AuthService {
     if (!normalizedEmail) throw new Error("Email is required.");
     if (!OTP_PURPOSES.has(purpose)) throw new Error("Invalid OTP purpose.");
     const otp = EmailService.generateOtp();
-    const token = jwt.sign({ email: normalizedEmail, purpose, nonce: Date.now() }, config.jwtSecret, { expiresIn: "15m" });
-    otpStore.set(token, { email: normalizedEmail, purpose, otp, expiresAt: Date.now() + OTP_TTL_MS, verified: false });
+    const token = jwt.sign({ email: normalizedEmail, purpose, nonce: Date.now() }, config.jwtSecret, { expiresIn: "10m" });
+    // Send email first — only store the entry if the send succeeds.
+    // This prevents orphaned store entries when SMTP fails.
     await EmailService.sendOTP(normalizedEmail, otp, name || "Customer");
+    otpStore.set(token, { email: normalizedEmail, purpose, otp, expiresAt: Date.now() + OTP_TTL_MS, verified: false });
     return { token, email: normalizedEmail, expiresInSeconds: 600 };
   }
 
@@ -96,6 +115,10 @@ class AuthService {
     }
     if (String(record.otp) !== String(otp || "")) throw new Error("Invalid OTP.");
     record.verified = true;
+    // Extend TTL by 30 minutes from the moment of verification so the cleanup
+    // interval cannot evict this entry before the user completes registration
+    // or password reset (avoids race condition when OTP is verified near expiry).
+    record.expiresAt = Date.now() + 30 * 60 * 1000;
     otpStore.set(token, record);
     return record;
   }
@@ -141,6 +164,7 @@ class AuthService {
           email: cleanEmail,
           password: hashedPassword,
           referral_code: generateReferralCode(),
+          email_verified: true,
           phone_verified: true,
         });
         break;
@@ -204,6 +228,12 @@ class AuthService {
       throw new Error("Invalid email or password");
     }
 
+    if (!customer.email_verified) {
+      const err = new Error("Please verify your email before logging in. Check your inbox or register again to resend the link.");
+      err.code = "EMAIL_NOT_VERIFIED";
+      throw err;
+    }
+
     return this.generateTokens(customer, "customer");
   }
 
@@ -233,8 +263,9 @@ class AuthService {
     if (!customer) {
       customer = await Customer.findOne({ where: { email } });
       if (customer) {
-        // Link Google to an existing email+password account
+        // Link Google to an existing email+password account; email is verified by Google
         customer.google_id = googleId;
+        customer.email_verified = true;
         if (!customer.avatar_url) customer.avatar_url = avatar_url;
         await customer.save();
       }
@@ -253,6 +284,7 @@ class AuthService {
             phone: null,
             password: null,
             referral_code: generateReferralCode(),
+            email_verified: true,
             phone_verified: false,
           });
           break;
@@ -341,6 +373,210 @@ class AuthService {
     customer.phone = cleanPhone;
     customer.phone_verified = true;
     await customer.save();
+
+    return this.generateTokens(customer, "customer");
+  }
+
+  async initiateRegistration({ name, email, phone, password, referral_code }) {
+    const cleanName = String(name || "").trim();
+    const cleanEmail = normalizeEmail(email);
+    const cleanPhone = normalizePhone(phone);
+
+     if (!cleanName) throw new Error("Name is required.");
+    if (!cleanEmail) throw new Error("Email is required.");
+    if (!cleanPhone || cleanPhone.length !== 10) throw new Error("Please enter a valid 10 digit mobile number.");
+    if (!password || String(password).length < 8) throw new Error("Password must be at least 8 characters.");
+    if (!/[A-Z]/.test(password)) throw new Error("Password must contain at least one uppercase letter.");
+    if (!/[0-9]/.test(password)) throw new Error("Password must contain at least one number.");
+    if (!/[^A-Za-z0-9]/.test(password)) throw new Error("Password must contain at least one special character.");
+
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    const existingByEmail = await Customer.findOne({ where: { email: cleanEmail } });
+
+    if (existingByEmail) {
+      if (existingByEmail.email_verified) {
+        if (!existingByEmail.phone_verified) {
+          // Email verified but phone OTP was never completed — let them pick up from there
+          const verifiedToken = jwt.sign(
+            { sub: existingByEmail.id, purpose: "reg_phone_verify" },
+            config.jwtSecret,
+            { expiresIn: "30m" }
+          );
+          return {
+            step: "phoneVerification",
+            verifiedToken,
+            email: existingByEmail.email,
+          };
+        }
+        throw new Error("Email already registered.");
+      }
+
+      // Unverified pending customer — update details and resend email
+      const phoneConflict = await Customer.findOne({
+        where: { phone: { [Op.in]: possiblePhoneValues(cleanPhone) }, id: { [Op.ne]: existingByEmail.id } },
+      });
+      if (phoneConflict) throw new Error("Phone number already registered.");
+
+      await existingByEmail.update({ name: cleanName, phone: cleanPhone, password: hashedPassword });
+
+      if (referral_code) {
+        const referrer = await Customer.findOne({ where: { referral_code } });
+        if (referrer && referrer.id !== existingByEmail.id) {
+          await existingByEmail.update({ referred_by_id: referrer.id });
+        }
+      }
+
+      const token = jwt.sign({ sub: existingByEmail.id, purpose: "reg_email_verify" }, config.jwtSecret, { expiresIn: "30m" });
+      await EmailService.sendEmailVerification(cleanEmail, cleanName, `${config.frontendUrl}/verify-email?token=${token}`);
+      return { registrationToken: token, email: cleanEmail };
+    }
+
+    // Brand-new customer
+    const existingByPhone = await Customer.findOne({ where: { phone: { [Op.in]: possiblePhoneValues(cleanPhone) } } });
+    if (existingByPhone) throw new Error("Phone number already registered.");
+
+    let referredById = null;
+    if (referral_code) {
+      const referrer = await Customer.findOne({ where: { referral_code } });
+      if (referrer) referredById = referrer.id;
+    }
+
+    let customer = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        customer = await Customer.create({
+          name: cleanName,
+          email: cleanEmail,
+          phone: cleanPhone,
+          password: hashedPassword,
+          referral_code: generateReferralCode(),
+          email_verified: false,
+          phone_verified: false,
+          referred_by_id: referredById,
+        });
+        break;
+      } catch (err) {
+        if (err?.name === "SequelizeUniqueConstraintError") continue;
+        throw err;
+      }
+    }
+    if (!customer) throw new Error("Failed to create account. Please try again.");
+
+    const token = jwt.sign({ sub: customer.id, purpose: "reg_email_verify" }, config.jwtSecret, { expiresIn: "30m" });
+    await EmailService.sendEmailVerification(cleanEmail, cleanName, `${config.frontendUrl}/verify-email?token=${token}`);
+    return { registrationToken: token, email: cleanEmail };
+  }
+
+  async resendVerificationEmail(registrationToken) {
+    // Use decode (not verify) so resend still works even if the JWT expired
+    const raw = jwt.decode(registrationToken);
+    if (!raw?.sub || raw.purpose !== "reg_email_verify") throw new Error("Invalid session. Please fill the form again.");
+
+    const customer = await Customer.findByPk(raw.sub);
+    if (!customer) throw new Error("Account not found. Please fill the form again.");
+    if (customer.email_verified) throw new Error("Email is already verified. Please continue to phone verification.");
+
+    const newToken = jwt.sign({ sub: customer.id, purpose: "reg_email_verify" }, config.jwtSecret, { expiresIn: "30m" });
+    await EmailService.sendEmailVerification(customer.email, customer.name, `${config.frontendUrl}/verify-email?token=${newToken}`);
+    return { message: "Verification email resent.", registrationToken: newToken };
+  }
+
+  async verifyEmailLink(token) {
+    let decoded;
+    try {
+      decoded = jwt.verify(token, config.jwtSecret);
+    } catch (err) {
+      if (err.name === "TokenExpiredError") throw new Error("Verification link has expired. Please go back and click 'Resend Verification Email'.");
+      throw new Error("Verification link is invalid. Please register again.");
+    }
+    if (decoded.purpose !== "reg_email_verify") throw new Error("Invalid verification link.");
+
+    const customer = await Customer.findByPk(decoded.sub);
+    if (!customer) throw new Error("Account not found. Please register again.");
+    if (customer.phone_verified) throw new Error("Account already created. Please log in.");
+
+    if (!customer.email_verified) {
+      await customer.update({ email_verified: true });
+    }
+
+    // Issue a fresh 30-minute token for the phone OTP step
+    const verifiedToken = jwt.sign({ sub: customer.id, purpose: "reg_phone_verify" }, config.jwtSecret, { expiresIn: "30m" });
+    const maskedPhone = `XXXXXX${customer.phone.slice(-4)}`;
+    return { success: true, email: customer.email, phone: customer.phone, maskedPhone, verifiedToken };
+  }
+
+  async sendRegistrationPhoneOtp(registrationToken, newPhone) {
+    let decoded;
+    try {
+      decoded = jwt.verify(registrationToken, config.jwtSecret);
+    } catch (err) {
+      if (err.name === "TokenExpiredError") throw new Error("Session expired. Please go back and click the verification link again.");
+      throw new Error("Invalid session.");
+    }
+    if (decoded.purpose !== "reg_phone_verify") throw new Error("Invalid session.");
+
+    const customer = await Customer.findByPk(decoded.sub);
+    if (!customer || !customer.email_verified) throw new Error("Email not verified.");
+    if (customer.phone_verified) throw new Error("Account already created. Please log in.");
+
+    if (newPhone) {
+      const normalized = normalizePhone(newPhone);
+      if (!/^[6-9]\d{9}$/.test(normalized)) throw new Error("Please enter a valid 10-digit mobile number.");
+      if (normalized !== customer.phone) {
+        const clash = await Customer.findOne({ where: { phone: normalized, phone_verified: true } });
+        if (clash) throw new Error("This phone number is already registered with another account.");
+        await customer.update({ phone: normalized });
+      }
+    }
+
+    const result = await sendOtpMessageCentral(customer.phone);
+    if (!result.ok) throw new Error("Failed to send OTP. Please try again.");
+
+    const verificationId = result.body?.data?.verificationId || result.body?.verificationId;
+    await customer.update({ phone_otp_verification_id: verificationId });
+    const maskedPhone = `XXXXXX${customer.phone.slice(-4)}`;
+    return { message: "OTP sent successfully.", maskedPhone };
+  }
+
+  async completeRegistration(registrationToken, otp) {
+    let decoded;
+    try {
+      decoded = jwt.verify(registrationToken, config.jwtSecret);
+    } catch (err) {
+      if (err.name === "TokenExpiredError") throw new Error("Session expired. Please go back and click the verification link again.");
+      throw new Error("Invalid session.");
+    }
+    if (decoded.purpose !== "reg_phone_verify") throw new Error("Invalid session.");
+
+    const customer = await Customer.findByPk(decoded.sub);
+    if (!customer || !customer.email_verified) throw new Error("Email not verified.");
+    if (customer.phone_verified) throw new Error("Account already created. Please log in.");
+    if (!customer.phone_otp_verification_id) throw new Error("OTP not sent yet. Please request an OTP first.");
+
+    const result = await verifyOtpMessageCentral(customer.phone, otp, customer.phone_otp_verification_id);
+    if (!result.ok) throw new Error("Invalid or expired OTP. Please try again.");
+
+    await customer.update({ phone_verified: true, phone_otp_verification_id: null });
+
+    await WalletService.creditNow({
+      customerId: customer.id,
+      amount: config.welcomeBonus,
+      type: "WELCOME_BONUS",
+      dedupeKey: `welcome:${customer.id}`,
+      meta: null,
+    });
+
+    if (customer.referred_by_id) {
+      await WalletService.creditNow({
+        customerId: customer.id,
+        amount: config.referralSignupBonus,
+        type: "REFERRAL_SIGNUP_BONUS",
+        dedupeKey: `ref_signup:${customer.id}`,
+        meta: { referrer_id: customer.referred_by_id },
+      });
+    }
 
     return this.generateTokens(customer, "customer");
   }
@@ -461,7 +697,10 @@ class AuthService {
     const cleanEmail = normalizeEmail(email);
     const user = await Customer.findOne({ where: { email: cleanEmail } });
     if (!user) throw new Error("No account found with this email.");
-    if (!newPassword || String(newPassword).length < 6) throw new Error("Password must be at least 6 characters.");
+    if (!newPassword || String(newPassword).length < 8) throw new Error("Password must be at least 8 characters.");
+    if (!/[A-Z]/.test(newPassword)) throw new Error("Password must contain at least one uppercase letter.");
+    if (!/[0-9]/.test(newPassword)) throw new Error("Password must contain at least one number.");
+    if (!/[^A-Za-z0-9]/.test(newPassword)) throw new Error("Password must contain at least one special character.");
     const otpRecord = otpStore.get(emailOtpToken);
     if (!otpRecord || !otpRecord.verified || otpRecord.purpose !== "forgot_password" || otpRecord.email !== cleanEmail) {
       throw new Error("Email OTP verification is required for password reset.");

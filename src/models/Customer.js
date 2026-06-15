@@ -48,10 +48,19 @@ const Customer = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+    email_verified: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
     phone_verified: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
       defaultValue: false,
+    },
+    phone_otp_verification_id: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
     },
     referral_code: {
       type: DataTypes.STRING,

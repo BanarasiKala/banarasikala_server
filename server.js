@@ -8,6 +8,7 @@ const WalletService = require("./src/services/WalletService");
 const { ensureOrderLifecycleColumns } = require("./src/utils/orderLifecycle");
 const { ensureFeedbackColumns } = require("./src/utils/feedbackSchema");
 const { ensureWalletConstraint, ensureIndexes } = require("./src/utils/dbConstraints");
+const { ensureCustomerVerificationColumns, cleanupUnverifiedCustomers } = require("./src/utils/customerVerificationSchema");
 
 const PORT = config.port;
 
@@ -61,9 +62,13 @@ const startServer = async () => {
     await ensureFeedbackColumns();
     await ensureWalletConstraint();
     await ensureIndexes();
+    await ensureCustomerVerificationColumns();
 
     startHeartbeat();
     startReferralPayoutJob();
+
+    // Daily at 3 AM: remove abandoned registrations older than 48 hours
+    cron.schedule("0 3 * * *", cleanupUnverifiedCustomers);
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

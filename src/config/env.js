@@ -66,6 +66,7 @@ const config = {
   referralOrderDelayDays: readNumberEnv("REFERRAL_ORDER_DELAY_DAYS"),
   referralMilestoneCount: readNumberEnv("REFERRAL_MILESTONE_COUNT"),
   referralMilestoneBonus: readNumberEnv("REFERRAL_MILESTONE_BONUS"),
+  frontendUrl: appMode === "development" ? "http://localhost:5173" : process.env.FRONTEND_URL,
   googleClientId: process.env.GOOGLE_CLIENT_ID || null,
   msgCentralAuthToken: process.env.MSG_CENTRAL_AUTH_TOKEN || null,
   msgCentralCustomerId: process.env.MSG_CENTRAL_CUSTOMER_ID || null,
