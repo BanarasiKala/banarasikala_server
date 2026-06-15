@@ -43,6 +43,9 @@ router.post("/admin-reset-password", authLimiter, AuthController.adminResetPassw
 router.post("/refresh-token", AuthController.refreshToken);
 router.post("/forgot-password", otpLimiter, AuthController.forgotPassword);
 router.post("/reset-password", authLimiter, AuthController.resetPassword);
+router.post("/send-password-reset-phone-otp", otpLimiter, AuthController.sendPasswordResetPhoneOtp);
+router.post("/verify-password-reset-phone-otp", authLimiter, AuthController.verifyPasswordResetPhoneOtp);
+router.post("/reset-password-by-phone", authLimiter, AuthController.resetPasswordByPhone);
 router.post("/send-email-otp", otpLimiter, AuthController.sendEmailOtp);
 router.post("/verify-email-otp", authLimiter, AuthController.verifyEmailOtp);
 

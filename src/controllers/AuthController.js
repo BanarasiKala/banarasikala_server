@@ -229,6 +229,44 @@ class AuthController {
     }
   }
 
+  async sendPasswordResetPhoneOtp(req, res) {
+    try {
+      const { phone } = req.body;
+      if (!phone) return res.status(400).json({ message: "Phone number is required." });
+      const result = await AuthService.sendPasswordResetPhoneOtp(phone);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:sendPasswordResetPhoneOtp]", error.message);
+      res.status(400).json({ message: error.message || "Failed to send OTP." });
+    }
+  }
+
+  async verifyPasswordResetPhoneOtp(req, res) {
+    try {
+      const { phone, verificationId, otp } = req.body;
+      if (!phone || !otp) return res.status(400).json({ message: "phone and otp are required." });
+      const result = await AuthService.verifyPasswordResetPhoneOtp(phone, verificationId, otp);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:verifyPasswordResetPhoneOtp]", error.message);
+      res.status(400).json({ message: error.message || "OTP verification failed." });
+    }
+  }
+
+  async resetPasswordByPhone(req, res) {
+    try {
+      const { resetToken, newPassword } = req.body;
+      if (!resetToken || !newPassword) return res.status(400).json({ message: "resetToken and newPassword are required." });
+      const result = await AuthService.resetPasswordByPhone(resetToken, newPassword);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:resetPasswordByPhone]", error.message);
+      res.status(400).json({
+        message: toCustomerAuthMessage(error, "Password reset failed. Please try again."),
+      });
+    }
+  }
+
   async logout(req, res) {
     try {
       await AuthService.logout(req.user.id, req.userRole);

@@ -716,7 +716,11 @@ class AuthService {
   }
 
   async resetPasswordWithEmailOtp(email, emailOtpToken, newPassword) {
-    const cleanEmail = normalizeEmail(email);
+    let cleanEmail = normalizeEmail(email);
+    if (!cleanEmail && emailOtpToken) {
+      try { const d = jwt.decode(emailOtpToken); if (d?.email) cleanEmail = normalizeEmail(d.email); } catch { /* ignore */ }
+    }
+    if (!cleanEmail) throw new Error("Email is required to reset your password.");
     const user = await Customer.findOne({ where: { email: cleanEmail } });
     if (!user) throw new Error("No account found with this email.");
     if (!newPassword || String(newPassword).length < 8) throw new Error("Password must be at least 8 characters.");
@@ -732,6 +736,78 @@ class AuthService {
     await user.save();
     otpStore.delete(emailOtpToken);
     return { message: "Password reset successfully" };
+  }
+
+  async sendPasswordResetPhoneOtp(phone) {
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      throw new Error("Please enter a valid 10-digit mobile number.");
+    }
+    const customer = await Customer.findOne({
+      where: { phone: { [Op.in]: possiblePhoneValues(cleanPhone) }, phone_verified: true },
+    });
+    if (!customer) throw new Error("No account found with this mobile number.");
+
+    const result = await sendOtpMessageCentral(cleanPhone);
+    if (!result.ok) throw new Error("Failed to send OTP. Please try again.");
+
+    const verificationId = result.body?.data?.verificationId || result.body?.verificationId;
+    phoneOtpStore.set(`reset:${cleanPhone}`, {
+      verificationId,
+      expiresAt: Date.now() + PHONE_OTP_TTL_MS,
+    });
+    return { message: "OTP sent successfully.", verificationId };
+  }
+
+  async verifyPasswordResetPhoneOtp(phone, verificationId, otp) {
+    const cleanPhone = normalizePhone(phone);
+    const stored = phoneOtpStore.get(`reset:${cleanPhone}`);
+    const effectiveVerifId = verificationId || stored?.verificationId;
+    if (!effectiveVerifId) throw new Error("OTP session not found. Please request a new OTP.");
+    if (!stored || stored.expiresAt < Date.now()) {
+      phoneOtpStore.delete(`reset:${cleanPhone}`);
+      throw new Error("OTP expired. Please request a new OTP.");
+    }
+
+    const result = await verifyOtpMessageCentral(cleanPhone, otp, effectiveVerifId);
+    if (!result.ok) throw new Error("Invalid or expired OTP. Please try again.");
+
+    phoneOtpStore.delete(`reset:${cleanPhone}`);
+
+    const customer = await Customer.findOne({
+      where: { phone: { [Op.in]: possiblePhoneValues(cleanPhone) } },
+    });
+    if (!customer) throw new Error("Account not found.");
+
+    const resetToken = jwt.sign(
+      { sub: customer.id, purpose: "phone_password_reset" },
+      config.jwtSecret,
+      { expiresIn: "15m" }
+    );
+    return { resetToken };
+  }
+
+  async resetPasswordByPhone(resetToken, newPassword) {
+    let decoded;
+    try {
+      decoded = jwt.verify(resetToken, config.jwtSecret);
+    } catch {
+      throw new Error("Reset session expired. Please request a new OTP.");
+    }
+    if (decoded.purpose !== "phone_password_reset") throw new Error("Invalid reset token.");
+
+    if (!newPassword || String(newPassword).length < 8) throw new Error("Password must be at least 8 characters.");
+    if (!/[A-Z]/.test(newPassword)) throw new Error("Password must contain at least one uppercase letter.");
+    if (!/[0-9]/.test(newPassword)) throw new Error("Password must contain at least one number.");
+    if (!/[^A-Za-z0-9]/.test(newPassword)) throw new Error("Password must contain at least one special character.");
+
+    const customer = await Customer.findByPk(decoded.sub);
+    if (!customer) throw new Error("Account not found.");
+
+    const salt = await bcrypt.genSalt(10);
+    customer.password = await bcrypt.hash(newPassword, salt);
+    await customer.save();
+    return { message: "Password reset successfully." };
   }
 
   async logout(userId, role = "customer") {
