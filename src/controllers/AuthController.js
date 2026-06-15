@@ -267,6 +267,30 @@ class AuthController {
     }
   }
 
+  async sendLoginOtp(req, res) {
+    try {
+      const { identifier } = req.body;
+      if (!identifier) return res.status(400).json({ message: "identifier is required." });
+      const result = await AuthService.sendLoginOtp(identifier);
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:sendLoginOtp]", error.message);
+      res.status(400).json({ message: error.message || "Failed to send OTP." });
+    }
+  }
+
+  async verifyLoginOtp(req, res) {
+    try {
+      const { identifier, otp, token, verificationId } = req.body;
+      if (!identifier || !otp) return res.status(400).json({ message: "identifier and otp are required." });
+      const result = await AuthService.verifyLoginOtp(identifier, otp, { token, verificationId });
+      res.json(result);
+    } catch (error) {
+      console.error("[AuthController:verifyLoginOtp]", error.message);
+      res.status(400).json({ message: toCustomerAuthMessage(error, "OTP verification failed. Please try again.") });
+    }
+  }
+
   async logout(req, res) {
     try {
       await AuthService.logout(req.user.id, req.userRole);

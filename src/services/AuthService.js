@@ -22,7 +22,7 @@ const possiblePhoneValues = (phone) => {
 };
 const otpStore = new Map();
 const OTP_TTL_MS = 10 * 60 * 1000;
-const OTP_PURPOSES = new Set(["signup", "forgot_password"]);
+const OTP_PURPOSES = new Set(["signup", "forgot_password", "login_otp"]);
 
 // ── MessageCentral helpers ────────────────────────────────────────────────────
 const phoneOtpStore = new Map();
@@ -808,6 +808,66 @@ class AuthService {
     customer.password = await bcrypt.hash(newPassword, salt);
     await customer.save();
     return { message: "Password reset successfully." };
+  }
+
+  async sendLoginOtp(identifier) {
+    const val = String(identifier || "").trim();
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+    const cleanPhone = normalizePhone(val);
+    const isPhone = /^[6-9]\d{9}$/.test(cleanPhone);
+
+    if (!isEmail && !isPhone) throw new Error("Enter a valid email address or 10-digit mobile number.");
+
+    if (isPhone) {
+      const customer = await Customer.findOne({
+        where: { phone: { [Op.in]: possiblePhoneValues(cleanPhone) }, phone_verified: true },
+      });
+      if (!customer) throw new Error("No account found with this mobile number.");
+      const result = await sendOtpMessageCentral(cleanPhone);
+      if (!result.ok) throw new Error("Failed to send OTP. Please try again.");
+      const verificationId = result.body?.data?.verificationId || result.body?.verificationId;
+      phoneOtpStore.set(`login:${cleanPhone}`, { verificationId, expiresAt: Date.now() + PHONE_OTP_TTL_MS });
+      return { type: "phone", verificationId };
+    }
+
+    const cleanEmail = normalizeEmail(val);
+    const customer = await Customer.findOne({ where: { email: cleanEmail, email_verified: true } });
+    if (!customer) throw new Error("No account found with this email address.");
+    const session = await this.createOtpSession({ email: cleanEmail, purpose: "login_otp", name: customer.name });
+    return { type: "email", token: session.token };
+  }
+
+  async verifyLoginOtp(identifier, otp, { token, verificationId }) {
+    const val = String(identifier || "").trim();
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+    const cleanPhone = normalizePhone(val);
+    const isPhone = /^[6-9]\d{9}$/.test(cleanPhone);
+
+    if (!isEmail && !isPhone) throw new Error("Invalid identifier.");
+
+    if (isPhone) {
+      const stored = phoneOtpStore.get(`login:${cleanPhone}`);
+      const effectiveVerifId = verificationId || stored?.verificationId;
+      if (!effectiveVerifId) throw new Error("OTP session not found. Please request a new OTP.");
+      if (!stored || stored.expiresAt < Date.now()) {
+        phoneOtpStore.delete(`login:${cleanPhone}`);
+        throw new Error("OTP expired. Please request a new OTP.");
+      }
+      const result = await verifyOtpMessageCentral(cleanPhone, otp, effectiveVerifId);
+      if (!result.ok) throw new Error("Invalid or expired OTP. Please try again.");
+      phoneOtpStore.delete(`login:${cleanPhone}`);
+      const customer = await Customer.findOne({ where: { phone: { [Op.in]: possiblePhoneValues(cleanPhone) } } });
+      if (!customer) throw new Error("Account not found.");
+      return this.generateTokens(customer, "customer");
+    }
+
+    const cleanEmail = normalizeEmail(val);
+    if (!token) throw new Error("OTP session token is required.");
+    this.verifyOtpSession({ token, otp, purpose: "login_otp" });
+    const customer = await Customer.findOne({ where: { email: cleanEmail, email_verified: true } });
+    if (!customer) throw new Error("Account not found.");
+    otpStore.delete(token);
+    return this.generateTokens(customer, "customer");
   }
 
   async logout(userId, role = "customer") {

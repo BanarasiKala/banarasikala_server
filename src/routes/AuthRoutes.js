@@ -47,6 +47,8 @@ router.post("/send-password-reset-phone-otp", otpLimiter, AuthController.sendPas
 router.post("/verify-password-reset-phone-otp", authLimiter, AuthController.verifyPasswordResetPhoneOtp);
 router.post("/reset-password-by-phone", authLimiter, AuthController.resetPasswordByPhone);
 router.post("/send-email-otp", otpLimiter, AuthController.sendEmailOtp);
+router.post("/send-login-otp", otpLimiter, AuthController.sendLoginOtp);
+router.post("/verify-login-otp", authLimiter, AuthController.verifyLoginOtp);
 router.post("/verify-email-otp", authLimiter, AuthController.verifyEmailOtp);
 
 // Protected
