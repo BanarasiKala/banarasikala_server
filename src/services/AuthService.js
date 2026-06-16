@@ -423,7 +423,8 @@ class AuthService {
 
       if (referral_code) {
         const referrer = await Customer.findOne({ where: { referral_code } });
-        if (referrer && referrer.id !== existingByEmail.id) {
+        if (!referrer) throw new Error("Referral code not found. Please check and try again.");
+        if (referrer.id !== existingByEmail.id) {
           await existingByEmail.update({ referred_by_id: referrer.id });
         }
       }
@@ -440,7 +441,8 @@ class AuthService {
     let referredById = null;
     if (referral_code) {
       const referrer = await Customer.findOne({ where: { referral_code } });
-      if (referrer) referredById = referrer.id;
+      if (!referrer) throw new Error("Referral code not found. Please check and try again.");
+      referredById = referrer.id;
     }
 
     let customer = null;
