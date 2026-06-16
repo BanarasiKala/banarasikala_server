@@ -4,8 +4,8 @@ const Variety = require("../models/Variety");
 const Occasion = require("../models/Occasion");
 const Color = require("../models/Color");
 const Feedback = require("../models/Feedback");
-const { Op } = require("sequelize");
-const { fn, col } = require("sequelize");
+const { Op, fn, col, literal } = require("sequelize");
+const { sequelize } = require("../config/db");
 const { formatProductCode, formatVariantItemCode } = require("../utils/codes");
 
 const productIncludes = [
@@ -419,20 +419,28 @@ class ProductService {
     if (newArrival === "true" || newArrival === "false") queryOptions.where.is_new_arrival = newArrival === "true";
 
     if (search && String(search).trim()) {
-      const { literal } = require("sequelize");
       const text = String(search).trim();
       const words = text.split(/\s+/).filter(Boolean);
+
+      const colorSchema = sequelize.options?.define?.schema;
+      const colorTable = colorSchema ? `"${colorSchema}"."colors"` : '"colors"';
+
       const buildWordConditions = (word) => {
-        const escaped = word.replace(/'/g, "''");
+        const safeWord = sequelize.escape(word);
+        const safeLike = sequelize.escape(`%${word}%`);
         return [
           { name: { [Op.iLike]: `%${word}%` } },
           { short_description: { [Op.iLike]: `%${word}%` } },
           { description: { [Op.iLike]: `%${word}%` } },
           { "$Material.name$": { [Op.iLike]: `%${word}%` } },
+          { "$Material.description$": { [Op.iLike]: `%${word}%` } },
           { "$Variety.name$": { [Op.iLike]: `%${word}%` } },
+          { "$Variety.description$": { [Op.iLike]: `%${word}%` } },
           { "$Occasion.name$": { [Op.iLike]: `%${word}%` } },
-          literal(`similarity("Product"."name", '${escaped}') > 0.1`),
-          literal(`similarity("Product"."short_description", '${escaped}') > 0.1`),
+          { "$Occasion.description$": { [Op.iLike]: `%${word}%` } },
+          literal(`similarity("Product"."name", ${safeWord}) > 0.1`),
+          literal(`similarity("Product"."short_description", ${safeWord}) > 0.1`),
+          literal(`EXISTS (SELECT 1 FROM ${colorTable} WHERE id::text IN (SELECT jsonb_object_keys("Product"."color_stocks")) AND (name ILIKE ${safeLike} OR description ILIKE ${safeLike}))`),
         ];
       };
       queryOptions.where[Op.or] = [...words.flatMap(buildWordConditions), ...buildWordConditions(text)];
