@@ -25,6 +25,7 @@ const CustomerRoutes = require("./routes/CustomerRoutes");
 const CustomerAddressRoutes = require("./routes/CustomerAddressRoutes");
 const ContactRoutes = require("./routes/ContactRoutes");
 const NewsletterRoutes = require("./routes/NewsletterRoutes");
+const ChatBotRoutes = require("./routes/ChatBotRoutes");
 
 const app = express();
 
@@ -101,6 +102,9 @@ app.use("/api/contact", ContactRoutes);
 
 // Newsletter subscription — public subscribe, admin list
 app.use("/api/newsletter", NewsletterRoutes);
+
+// ChatBot — public, no auth required
+app.use("/api/chatbot", ChatBotRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: "API route not found" });
