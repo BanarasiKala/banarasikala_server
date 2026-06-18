@@ -8,6 +8,7 @@ const { catalogCache } = require('../middleware/cacheHeaders');
 router.get('/', catalogCache, ProductController.getAll);
 router.get('/summary', authMiddleware, adminMiddleware, ProductController.getSummary);
 router.get('/upload-signature', authMiddleware, adminMiddleware, ProductController.getUploadSignature);
+router.get('/:slug/related', catalogCache, ProductController.getRelatedBySlug);
 router.get('/:slug/detail', catalogCache, ProductController.getDetailBySlug);
 router.get('/:slug/colors/:colorId/images', catalogCache, ProductController.getColorImages);
 router.get('/:id(\\d+)', catalogCache, ProductController.getById);

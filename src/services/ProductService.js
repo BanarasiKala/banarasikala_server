@@ -260,6 +260,25 @@ const toCollectionProduct = (product) => {
   };
 };
 
+const getPositiveColorIds = (colorStocks = {}) =>
+  Object.entries(colorStocks || {})
+    .filter(([, qty]) => toIntOrZero(qty) > 0)
+    .map(([colorId]) => String(colorId));
+
+const scoreRelatedProduct = (source, candidate) => {
+  let score = 0;
+  if (source.variety_id && source.variety_id === candidate.variety_id) score += 5;
+  if (source.material_id && source.material_id === candidate.material_id) score += 4;
+  if (source.occasion_id && source.occasion_id === candidate.occasion_id) score += 3;
+  if (source.special_collection && source.special_collection === candidate.special_collection) score += 1;
+
+  const sourceColors = new Set(getPositiveColorIds(source.color_stocks));
+  const colorMatches = getPositiveColorIds(candidate.color_stocks).filter((colorId) => sourceColors.has(colorId)).length;
+  score += Math.min(colorMatches, 3) * 2;
+
+  return score;
+};
+
 const sanitizeProductPayload = (data = {}) => {
   const selling_price = toFloatOrNull(data.selling_price || data.price) ?? 0;
   const mrp_price = toFloatOrNull(data.mrp_price || data.old_price);
@@ -657,6 +676,84 @@ class ProductService {
       stock_status: getStockStatus(stock, product.low_stock_threshold),
       images,
     };
+  }
+
+  async getRelatedProducts(slug, rawLimit = 4) {
+    const limit = Math.min(12, Math.max(1, parseInt(rawLimit, 10) || 4));
+    const relatedAttributes = [
+      ...new Set([
+        ...COLLECTION_PRODUCT_ATTRIBUTES,
+        "material_id",
+        "variety_id",
+        "occasion_id",
+        "special_collection",
+      ]),
+    ];
+
+    const source = normalizeProduct(await Product.findOne({
+      where: { slug },
+      attributes: ["id", "slug", "material_id", "variety_id", "occasion_id", "special_collection", "color_stocks"],
+    }));
+
+    if (!source) return null;
+
+    const sourceColorIds = getPositiveColorIds(source.color_stocks);
+    const relationConditions = [];
+
+    if (source.variety_id) relationConditions.push({ variety_id: source.variety_id });
+    if (source.material_id) relationConditions.push({ material_id: source.material_id });
+    if (source.occasion_id) relationConditions.push({ occasion_id: source.occasion_id });
+    if (source.special_collection) relationConditions.push({ special_collection: true });
+    if (sourceColorIds.length) {
+      const colorList = sourceColorIds.map((colorId) => sequelize.escape(colorId)).join(", ");
+      relationConditions.push(literal(`"Product"."color_stocks" ?| ARRAY[${colorList}]`));
+    }
+
+    const baseWhere = {
+      status: "active",
+      id: { [Op.ne]: source.id },
+    };
+
+    const relatedRows = relationConditions.length
+      ? await Product.findAll({
+          attributes: relatedAttributes,
+          where: {
+            ...baseWhere,
+            [Op.or]: relationConditions,
+          },
+        })
+      : [];
+
+    const relatedCandidates = relatedRows
+      .map(normalizeProduct)
+      .map((product) => ({ product, score: scoreRelatedProduct(source, product) }))
+      .filter(({ score }) => score > 0)
+      .sort((a, b) =>
+        b.score - a.score ||
+        Number(Boolean(b.product.is_new_arrival)) - Number(Boolean(a.product.is_new_arrival)) ||
+        b.product.id - a.product.id,
+      )
+      .slice(0, limit)
+      .map(({ product }) => product);
+
+    let selected = relatedCandidates;
+
+    if (selected.length < limit) {
+      const selectedIds = [source.id, ...selected.map((product) => product.id)];
+      const fallbackRows = await Product.findAll({
+        attributes: relatedAttributes,
+        where: {
+          status: "active",
+          id: { [Op.notIn]: selectedIds },
+        },
+        order: [["is_new_arrival", "DESC"], ["id", "DESC"]],
+        limit: limit - selected.length,
+      });
+      selected = [...selected, ...fallbackRows.map(normalizeProduct)];
+    }
+
+    const withReviews = await attachReviewSummaries(selected);
+    return withReviews.map(toCollectionProduct);
   }
 
   async createProduct(data) {

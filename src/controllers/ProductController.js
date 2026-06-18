@@ -119,6 +119,17 @@ class ProductController {
     }
   }
 
+  async getRelatedBySlug(req, res) {
+    try {
+      const products = await ProductService.getRelatedProducts(req.params.slug, req.query.limit);
+      if (!products) return res.status(404).json({ message: 'Product not found' });
+      res.status(200).json(products);
+    } catch (error) {
+      logServerError("getRelatedBySlug", error);
+      res.status(500).json({ message: "Failed to load related products." });
+    }
+  }
+
   async getColorImages(req, res) {
     try {
       const payload = await ProductService.getProductColorImages(req.params.slug, req.params.colorId);
