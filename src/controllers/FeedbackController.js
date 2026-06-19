@@ -1,3 +1,4 @@
+const { Op } = require('sequelize');
 const Feedback = require('../models/Feedback');
 const Customer = require('../models/Customer');
 const Product = require('../models/Product');
@@ -213,7 +214,7 @@ exports.getApprovedFeedback = async (req, res) => {
   try {
     await ensureFeedbackColumns();
     const feedbacks = await Feedback.findAll({
-      where: { is_approved: true },
+      where: { is_approved: true, product_id: { [Op.is]: null }, order_id: { [Op.is]: null } },
       include: [
         { model: Customer, attributes: ['name'] },
         { model: Product, attributes: ['id', 'name', 'slug'] },
@@ -221,7 +222,8 @@ exports.getApprovedFeedback = async (req, res) => {
       order: [['created_at', 'DESC']],
     });
 
-    res.status(200).json({ success: true, data: feedbacks });
+    const general = feedbacks.filter((f) => f.product_id == null && f.order_id == null);
+    res.status(200).json({ success: true, data: general });
   } catch (error) {
     console.error('Get feedback error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch feedback' });
