@@ -17,11 +17,23 @@ const sanitizeSequelizeError = (error) => {
   return null;
 };
 
+const sanitizeUploadError = (error) => {
+  if (error.name !== 'MulterError') return null;
+  if (error.code === 'LIMIT_FILE_SIZE') {
+    return { status: 400, message: 'Each review photo must be 5 MB or smaller.' };
+  }
+  if (error.code === 'LIMIT_FILE_COUNT') {
+    return { status: 400, message: 'You can upload up to 5 review photos.' };
+  }
+  return { status: 400, message: error.message || 'Could not upload the selected photos.' };
+};
+
 const errorHandler = (error, req, res, next) => {
   const sequelizeOverride = sanitizeSequelizeError(error);
-  const status = sequelizeOverride?.status || Number(error.status || error.statusCode) || 500;
+  const uploadOverride = sanitizeUploadError(error);
+  const status = sequelizeOverride?.status || uploadOverride?.status || Number(error.status || error.statusCode) || 500;
   const rawMessage = error.message || 'Internal server error';
-  const message = sequelizeOverride?.message ||
+  const message = sequelizeOverride?.message || uploadOverride?.message ||
     (config.isProduction && status >= 500 ? 'Internal server error' : rawMessage);
 
   console.error(`[ERR ${req?.reqId || 'n/a'}] ${req?.method || ''} ${req?.originalUrl || ''}`, {

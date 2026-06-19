@@ -3,7 +3,7 @@ const Customer = require('../models/Customer');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
-const { uploadBufferToCloudinary } = require('../config/cloudinary');
+const { generateUploadSignature, uploadBufferToCloudinary } = require('../config/cloudinary');
 const { ensureFeedbackColumns } = require('../utils/feedbackSchema');
 
 const toInt = (value) => {
@@ -46,13 +46,49 @@ const serializeSummary = (rows) => {
 const uploadFeedbackImages = async (files = []) => {
   if (!files.length) return [];
   const limitedFiles = files.slice(0, 5);
-  const uploads = await Promise.all(
-    limitedFiles.map((file) => uploadBufferToCloudinary(file.buffer, 'vns-saree/reviews')),
-  );
-  return uploads.map((item) => ({
-    url: item.secure_url,
-    public_id: item.public_id,
-  }));
+  const uploads = [];
+  for (const file of limitedFiles) {
+    const uploaded = await uploadBufferToCloudinary(file.buffer, 'vns-saree/reviews');
+    uploads.push({
+      url: uploaded.secure_url,
+      public_id: uploaded.public_id,
+    });
+  }
+  return uploads;
+};
+
+const parseImagePayload = (value) => {
+  if (!value) return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return [value];
+    }
+  }
+  return [value];
+};
+
+const normalizeReviewImages = (value) =>
+  parseImagePayload(value)
+    .map((image) => {
+      if (typeof image === 'string') return { url: image };
+      if (!image || typeof image !== 'object') return null;
+      const url = image.url || image.secure_url;
+      if (!url) return null;
+      return {
+        url,
+        public_id: image.public_id || null,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 5);
+
+exports.getUploadSignature = (req, res) => {
+  const sigData = generateUploadSignature('vns-saree/reviews');
+  res.json({ ...sigData, resourceType: 'image' });
 };
 
 exports.submitFeedback = async (req, res) => {
@@ -105,7 +141,9 @@ exports.submitFeedback = async (req, res) => {
       },
     });
 
-    const images = await uploadFeedbackImages(req.files || []);
+    const uploadedImages = await uploadFeedbackImages(req.files || []);
+    const submittedImages = normalizeReviewImages(req.body.images);
+    const images = [...submittedImages, ...uploadedImages].slice(0, 5);
     let feedback = existing;
 
     if (existing) {

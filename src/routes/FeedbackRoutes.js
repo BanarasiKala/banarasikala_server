@@ -9,6 +9,7 @@ router.get('/approved', FeedbackController.getApprovedFeedback);
 router.get('/product/:productId', FeedbackController.getProductFeedback);
 
 // Protected route to submit feedback
+router.get('/upload-signature', authMiddleware, FeedbackController.getUploadSignature);
 router.post('/submit', authMiddleware, upload.array('images', 5), FeedbackController.submitFeedback);
 router.post('/general', authMiddleware, FeedbackController.submitGeneralFeedback);
 
