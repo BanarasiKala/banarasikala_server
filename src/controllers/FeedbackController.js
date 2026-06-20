@@ -5,7 +5,6 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const { generateUploadSignature, uploadBufferToCloudinary } = require('../config/cloudinary');
-const { ensureFeedbackColumns } = require('../utils/feedbackSchema');
 
 const toInt = (value) => {
   const next = Number(value);
@@ -94,7 +93,6 @@ exports.getUploadSignature = (req, res) => {
 
 exports.submitFeedback = async (req, res) => {
   try {
-    await ensureFeedbackColumns();
 
     const rating = toInt(req.body.rating);
     const orderId = toInt(req.body.orderId || req.body.order_id);
@@ -183,7 +181,6 @@ exports.submitFeedback = async (req, res) => {
 
 exports.submitGeneralFeedback = async (req, res) => {
   try {
-    await ensureFeedbackColumns();
 
     const rating = toInt(req.body.rating);
     const comment = String(req.body.comment || '').trim();

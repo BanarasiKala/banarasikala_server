@@ -24,6 +24,32 @@ const ensureWalletConstraint = async () => {
   } catch (error) {
     console.warn("[DB] Could not ensure wallet constraint:", error.message);
   }
+
+try {
+    await sequelize.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = '${schema}'
+            AND table_name = 'wallet_transactions'
+            AND column_name = 'status'
+            AND udt_name LIKE 'enum_%'
+        ) THEN
+          ALTER TABLE "${schema}"."wallet_transactions"
+            ALTER COLUMN status DROP DEFAULT;
+          ALTER TABLE "${schema}"."wallet_transactions"
+            ALTER COLUMN status TYPE VARCHAR(20) USING status::text;
+          ALTER TABLE "${schema}"."wallet_transactions"
+            ALTER COLUMN status SET DEFAULT 'completed';
+        END IF;
+      END
+      $$;
+    `);
+    console.log("[DB] wallet_transactions.status column ensured as VARCHAR.");
+  } catch (error) {
+    console.warn("[DB] Could not convert wallet_transactions.status:", error.message);
+  }
 };
 
 const ensureIndexes = async () => {

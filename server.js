@@ -5,10 +5,8 @@ const app = require("./src");
 const { connectDB } = require("./src/config/db");
 const { config } = require("./src/config/env");
 const WalletService = require("./src/services/WalletService");
-const { ensureOrderLifecycleColumns } = require("./src/utils/orderLifecycle");
-const { ensureFeedbackColumns } = require("./src/utils/feedbackSchema");
 const { ensureWalletConstraint, ensureIndexes } = require("./src/utils/dbConstraints");
-const { ensureCustomerVerificationColumns, cleanupUnverifiedCustomers } = require("./src/utils/customerVerificationSchema");
+const { cleanupUnverifiedCustomers } = require("./src/utils/customerVerificationSchema");
 
 const PORT = config.port;
 
@@ -24,22 +22,16 @@ app.get("/health", (req, res) => {
   });
 });
 
-const startHeartbeat = () => {
-  cron.schedule("*/10 * * * *", async () => {
-    try {
-      const response = await fetch(
-        "https://vns-saree.onrender.com/health"
-      );
-
-
-      console.log(
-        `Heartbeat sent at ${new Date().toISOString()} | Status: ${response.status}`
-      );
-    } catch (error) {
-      console.error("Heartbeat failed:", error.message);
-    }
-  });
-};
+// const startHeartbeat = () => {
+//   cron.schedule("*/10 * * * *", async () => {
+//     try {
+//       const response = await fetch("https://vns-saree.onrender.com/health");
+//       console.log(`Heartbeat sent at ${new Date().toISOString()} | Status: ${response.status}`);
+//     } catch (error) {
+//       console.error("Heartbeat failed:", error.message);
+//     }
+//   });
+// };
 
 const startReferralPayoutJob = () => {
   // Every hour: process pending wallet credits that became available (e.g., referral payouts).
@@ -58,13 +50,10 @@ const startReferralPayoutJob = () => {
 const startServer = async () => {
   try {
     await connectDB();
-    await ensureOrderLifecycleColumns();
-    await ensureFeedbackColumns();
     await ensureWalletConstraint();
     await ensureIndexes();
-    await ensureCustomerVerificationColumns();
 
-    startHeartbeat();
+    // startHeartbeat();
     startReferralPayoutJob();
 
     // Daily at 3 AM: remove abandoned registrations older than 48 hours

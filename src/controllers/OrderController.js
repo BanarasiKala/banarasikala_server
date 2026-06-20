@@ -27,7 +27,6 @@ const {
   blockCustomerCodForOrder,
   calculateRtoRefundAmount,
 } = require('../utils/orderLifecycle');
-const { ensureFeedbackColumns } = require('../utils/feedbackSchema');
 const { ensureOrderItemActionSchema, getActionableQuantity, appendOrderStatusHistory } = require('../utils/orderItemActions');
 const { ensureOrderTransactionTables, REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 
@@ -831,7 +830,6 @@ class OrderController {
   async getCurrentCustomerOrders(req, res) {
     try {
       await ensureOrderAccountingColumns();
-      await ensureFeedbackColumns();
       await ensureOrderItemActionSchema();
       if (!req.user?.id || req.userRole === 'admin') {
         return res.status(401).json({ message: 'Customer authentication required' });
@@ -881,7 +879,6 @@ class OrderController {
   async getCustomerOrderById(req, res) {
     try {
       await ensureOrderAccountingColumns();
-      await ensureFeedbackColumns();
       await ensureOrderItemActionSchema();
       if (!req.user?.id || req.userRole === 'admin') {
         return res.status(401).json({ message: 'Customer authentication required' });

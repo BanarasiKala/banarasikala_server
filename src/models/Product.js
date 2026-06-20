@@ -2,7 +2,6 @@ const { DataTypes } = require("sequelize");
 const { sequelize } = require("../config/db");
 const Material = require("./Material");
 const Variety = require("./Variety");
-const Occasion = require("./Occasion");
 
 const Product = sequelize.define(
   "Product",
@@ -120,12 +119,6 @@ const Product = sequelize.define(
       allowNull: true,
       references: { model: Variety, key: "id" },
     },
-    occasion_id: {
-      type: DataTypes.INTEGER,
-      allowNull: true,
-      references: { model: Occasion, key: "id" },
-    },
-
     // Boolean Statuses
     special_collection: {
       type: DataTypes.BOOLEAN,
@@ -161,6 +154,14 @@ const Product = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true,
     },
+
+    // Key highlights shown on the product page.
+    // Each entry: { label: string, value: string, display_order: number }
+    key_highlights: {
+      type: DataTypes.JSONB,
+      defaultValue: [],
+      allowNull: false,
+    },
   },
   {
     tableName: "products",
@@ -171,6 +172,5 @@ const Product = sequelize.define(
 // Associations
 Product.belongsTo(Material, { foreignKey: "material_id" });
 Product.belongsTo(Variety, { foreignKey: "variety_id" });
-Product.belongsTo(Occasion, { foreignKey: "occasion_id" });
 
 module.exports = Product;

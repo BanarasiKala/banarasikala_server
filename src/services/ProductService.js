@@ -7,11 +7,11 @@ const Feedback = require("../models/Feedback");
 const { Op, fn, col, literal } = require("sequelize");
 const { sequelize } = require("../config/db");
 const { formatProductCode, formatVariantItemCode } = require("../utils/codes");
+const ProductOccasion = require("../models/ProductOccasion");
 
 const productIncludes = [
   { model: Material, attributes: ["id", "name", "slug"] },
   { model: Variety, attributes: ["id", "name", "slug"] },
-  { model: Occasion, attributes: ["id", "name", "slug"] },
 ];
 const HOME_PRODUCT_ATTRIBUTES = [
   "id",
@@ -271,7 +271,8 @@ const scoreRelatedProduct = (source, candidate) => {
   let score = 0;
   if (source.variety_id && source.variety_id === candidate.variety_id) score += 5;
   if (source.material_id && source.material_id === candidate.material_id) score += 4;
-  if (source.occasion_id && source.occasion_id === candidate.occasion_id) score += 3;
+  const srcOccasionIds = new Set((source.Occasions || []).map((o) => o.id));
+  if (srcOccasionIds.size && (candidate.Occasions || []).some((o) => srcOccasionIds.has(o.id))) score += 3;
   if (source.special_collection && source.special_collection === candidate.special_collection) score += 1;
 
   const sourceColors = new Set(getPositiveColorIds(source.color_stocks));
@@ -315,7 +316,6 @@ const sanitizeProductPayload = (data = {}) => {
     low_stock_threshold: toIntOrZero(data.low_stock_threshold),
     material_id: toIntOrNull(data.material_id),
     variety_id: toIntOrNull(data.variety_id),
-    occasion_id: toIntOrNull(data.occasion_id),
     color_stocks,
     variant_skus: data.variant_skus && typeof data.variant_skus === "object" ? data.variant_skus : {},
     images,
@@ -344,7 +344,8 @@ const sanitizeProductPayload = (data = {}) => {
   delete sanitized.id;
   delete sanitized.Material;
   delete sanitized.Variety;
-  delete sanitized.Occasion;
+  delete sanitized.occasion_id;
+  delete sanitized.occasion_ids;
   delete sanitized.productImages;
   delete sanitized.product_images;
   delete sanitized.createdAt;
@@ -421,7 +422,15 @@ class ProductService {
     if (varieties) queryOptions.where.variety_id = { [Op.in]: varieties };
 
     const occasions = this.parseCommaSeparated(occasion);
-    if (occasions) queryOptions.where.occasion_id = { [Op.in]: occasions };
+    if (occasions) {
+      const poSchema = sequelize.options?.define?.schema;
+      const poTable = poSchema ? `"${poSchema}"."product_occasions"` : '"product_occasions"';
+      const idList = occasions.join(", ");
+      queryOptions.where[Op.and] = [
+        ...(Array.isArray(queryOptions.where[Op.and]) ? queryOptions.where[Op.and] : []),
+        literal(`EXISTS (SELECT 1 FROM ${poTable} po WHERE po.product_id = "Product"."id" AND po.occasion_id IN (${idList}))`),
+      ];
+    }
 
     if (minPrice || maxPrice) {
       const priceFilter = {};
@@ -457,8 +466,6 @@ class ProductService {
           { "$Material.description$": { [Op.iLike]: `%${word}%` } },
           { "$Variety.name$": { [Op.iLike]: `%${word}%` } },
           { "$Variety.description$": { [Op.iLike]: `%${word}%` } },
-          { "$Occasion.name$": { [Op.iLike]: `%${word}%` } },
-          { "$Occasion.description$": { [Op.iLike]: `%${word}%` } },
           literal(`similarity("Product"."name", ${safeWord}) > 0.1`),
           literal(`similarity("Product"."short_description", ${safeWord}) > 0.1`),
           literal(`EXISTS (SELECT 1 FROM ${colorTable} WHERE id::text IN (SELECT jsonb_object_keys("Product"."color_stocks")) AND (name ILIKE ${safeLike} OR description ILIKE ${safeLike}))`),
@@ -611,12 +618,18 @@ class ProductService {
         "care_instructions",
         "material_id",
         "variety_id",
-        "occasion_id",
+        "key_highlights",
       ],
-      include: productIncludes,
+      include: [
+        ...productIncludes,
+        { model: Occasion, attributes: ["id", "name", "slug"], through: { attributes: [] } },
+      ],
     }));
 
     if (!product) return null;
+
+    const occasions = product.Occasions || [];
+    delete product.Occasions;
 
     const images = normalizeImages(product.images || []);
     const coverColorId = images.find((image) => image.is_cover)?.color_id || images[0]?.color_id || null;
@@ -653,6 +666,7 @@ class ProductService {
       images: selectedImages,
       selected_color_id: selectedColorId,
       colors: colorMeta,
+      occasions,
       stock_status: getStockStatus(product.stock_quantity, product.low_stock_threshold),
     };
   }
@@ -687,14 +701,15 @@ class ProductService {
         ...COLLECTION_PRODUCT_ATTRIBUTES,
         "material_id",
         "variety_id",
-        "occasion_id",
         "special_collection",
       ]),
     ];
+    const occasionInclude = { model: Occasion, attributes: ["id"], through: { attributes: [] } };
 
     const source = normalizeProduct(await Product.findOne({
       where: { slug },
-      attributes: ["id", "slug", "material_id", "variety_id", "occasion_id", "special_collection", "color_stocks"],
+      attributes: ["id", "slug", "material_id", "variety_id", "special_collection", "color_stocks"],
+      include: [occasionInclude],
     }));
 
     if (!source) return null;
@@ -704,7 +719,12 @@ class ProductService {
 
     if (source.variety_id) relationConditions.push({ variety_id: source.variety_id });
     if (source.material_id) relationConditions.push({ material_id: source.material_id });
-    if (source.occasion_id) relationConditions.push({ occasion_id: source.occasion_id });
+    const sourceOccasionIds = (source.Occasions || []).map((o) => o.id);
+    if (sourceOccasionIds.length) {
+      const poSchema = sequelize.options?.define?.schema;
+      const poTable = poSchema ? `"${poSchema}"."product_occasions"` : '"product_occasions"';
+      relationConditions.push(literal(`EXISTS (SELECT 1 FROM ${poTable} po WHERE po.product_id = "Product"."id" AND po.occasion_id IN (${sourceOccasionIds.join(", ")}))`));
+    }
     if (source.special_collection) relationConditions.push({ special_collection: true });
     if (sourceColorIds.length) {
       const colorList = sourceColorIds.map((colorId) => sequelize.escape(colorId)).join(", ");
@@ -719,6 +739,7 @@ class ProductService {
     const relatedRows = relationConditions.length
       ? await Product.findAll({
           attributes: relatedAttributes,
+          include: [occasionInclude],
           where: {
             ...baseWhere,
             [Op.or]: relationConditions,
@@ -759,21 +780,29 @@ class ProductService {
   }
 
   async createProduct(data) {
+    const occasionIds = Array.isArray(data.occasion_ids)
+      ? data.occasion_ids.map(Number).filter((n) => !Number.isNaN(n) && n > 0)
+      : [];
     const product = await Product.create(sanitizeProductPayload(data));
     await product.update({
       sku: formatProductCode(product.id),
       variant_skus: await buildVariantSkus(product.id, product.color_stocks || {}),
     });
+    await product.setOccasions(occasionIds);
     return this.getProductById(product.id);
   }
 
   async updateProduct(id, data) {
+    const occasionIds = Array.isArray(data.occasion_ids)
+      ? data.occasion_ids.map(Number).filter((n) => !Number.isNaN(n) && n > 0)
+      : [];
     const product = await Product.findByPk(id);
     if (!product) throw new Error("Product not found");
     const payload = sanitizeProductPayload(data);
     payload.sku = formatProductCode(product.id);
     payload.variant_skus = await buildVariantSkus(product.id, payload.color_stocks || {});
     await product.update(payload);
+    await product.setOccasions(occasionIds);
     return this.getProductById(id);
   }
 

@@ -41,7 +41,7 @@ const Customer = sequelize.define(
       defaultValue: "local",
     },
     role: {
-      type: DataTypes.ENUM("user", "admin"),
+      type: DataTypes.STRING(20),
       defaultValue: "user",
     },
     refresh_token: {

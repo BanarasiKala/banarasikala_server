@@ -1,11 +1,10 @@
 const NewsletterSubscriber = require('../models/NewsletterSubscriber');
-const { ensureNewsletterTable } = require('../utils/newsletterSchema');
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 exports.subscribe = async (req, res) => {
   try {
-    await ensureNewsletterTable();
+
     const email = String(req.body.email || '').trim().toLowerCase();
 
     if (!email) {
@@ -48,7 +47,7 @@ exports.subscribe = async (req, res) => {
 
 exports.getAll = async (req, res) => {
   try {
-    await ensureNewsletterTable();
+
     const subscribers = await NewsletterSubscriber.findAll({
       where: { is_active: true },
       attributes: ['id', 'email', 'created_at'],
