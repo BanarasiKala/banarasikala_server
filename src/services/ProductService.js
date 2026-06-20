@@ -12,6 +12,7 @@ const ProductOccasion = require("../models/ProductOccasion");
 const productIncludes = [
   { model: Material, attributes: ["id", "name", "slug"] },
   { model: Variety, attributes: ["id", "name", "slug"] },
+  { model: Occasion, attributes: ["id", "name", "slug"], through: { attributes: [] } },
 ];
 const HOME_PRODUCT_ATTRIBUTES = [
   "id",
@@ -151,10 +152,10 @@ const normalizeProduct = (product) => {
   const plain = typeof product?.toJSON === "function" ? product.toJSON() : product;
   if (!plain) return plain;
   const images = normalizeImages(plain.images || []);
-  return {
-    ...plain,
-    images,
-  };
+  const occasion_ids = (plain.Occasions || []).map((o) => o.id);
+  const result = { ...plain, images, occasion_ids };
+  delete result.Occasions;
+  return result;
 };
 
 const attachReviewSummaries = async (products = []) => {
@@ -347,6 +348,7 @@ const sanitizeProductPayload = (data = {}) => {
   delete sanitized.id;
   delete sanitized.Material;
   delete sanitized.Variety;
+  delete sanitized.Occasions;
   delete sanitized.occasion_id;
   delete sanitized.occasion_ids;
   delete sanitized.productImages;
