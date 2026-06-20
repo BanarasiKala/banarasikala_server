@@ -323,6 +323,9 @@ const sanitizeProductPayload = (data = {}) => {
     payment_options,
     service_options,
     care_instructions: String(data.care_instructions || "").trim() || null,
+    key_highlights: Array.isArray(data.key_highlights)
+      ? data.key_highlights.map((h) => String(h || "").trim()).filter(Boolean)
+      : [],
   };
 
   if (!sanitized.slug || String(sanitized.slug).trim() === "") {
