@@ -8,6 +8,18 @@ const { Op, fn, col, literal } = require("sequelize");
 const { sequelize } = require("../config/db");
 const { formatProductCode, formatVariantItemCode } = require("../utils/codes");
 const ProductOccasion = require("../models/ProductOccasion");
+const { deleteS3Object } = require("../config/s3");
+const { destroyCloudinaryImage } = require("../config/cloudinary");
+
+// Pull the url strings out of a JSONB media array ([{ url, ... }]).
+const mediaUrls = (arr) =>
+  (Array.isArray(arr) ? arr : []).map((m) => m && m.url).filter(Boolean);
+
+// Fire-and-forget cleanup of orphaned media. Never blocks the response.
+const cleanupOrphanedMedia = ({ videos = [], images = [] }) => {
+  videos.forEach((url) => { deleteS3Object(url); });
+  images.forEach((url) => { destroyCloudinaryImage(url); });
+};
 
 const productIncludes = [
   { model: Material, attributes: ["id", "name", "slug"] },
@@ -803,17 +815,42 @@ class ProductService {
       : [];
     const product = await Product.findByPk(id);
     if (!product) throw new Error("Product not found");
+
+    // Snapshot the old media before overwriting so we can delete what's removed.
+    const oldVideos = mediaUrls(product.videos);
+    const oldImages = mediaUrls(product.images);
+
     const payload = sanitizeProductPayload(data);
     payload.sku = formatProductCode(product.id);
     payload.variant_skus = await buildVariantSkus(product.id, payload.color_stocks || {});
     await product.update(payload);
     await product.setOccasions(occasionIds);
+
+    // Delete any video/image that is no longer referenced by the product.
+    // Only diff a media type when the request actually supplied it, so that
+    // partial updates (e.g. a status toggle) never wipe existing media.
+    const newVideos = new Set(mediaUrls(payload.videos));
+    const newImages = new Set(mediaUrls(payload.images));
+    cleanupOrphanedMedia({
+      videos: Array.isArray(data.videos)
+        ? oldVideos.filter((url) => !newVideos.has(url))
+        : [],
+      images: Array.isArray(data.images)
+        ? oldImages.filter((url) => !newImages.has(url))
+        : [],
+    });
+
     return this.getProductById(id);
   }
 
   async deleteProduct(id) {
     const product = await Product.findByPk(id);
     if (!product) throw new Error("Product not found");
+    // Remove all associated media from S3 / Cloudinary before deleting the row.
+    cleanupOrphanedMedia({
+      videos: mediaUrls(product.videos),
+      images: mediaUrls(product.images),
+    });
     return product.destroy();
   }
 }

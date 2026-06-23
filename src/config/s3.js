@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, DeleteObjectCommand } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const path = require("path");
 const crypto = require("crypto");
@@ -48,4 +48,39 @@ const generateS3PresignedUploadUrl = async (fileName = "video.webm", contentType
   return { uploadUrl, publicUrl };
 };
 
-module.exports = { generateS3PresignedUploadUrl };
+/**
+ * Extracts the S3 object key from a stored video URL.
+ * Works for both CloudFront URLs (https://dXXX.cloudfront.net/product-videos/abc.mp4)
+ * and direct S3 URLs (https://bucket.s3.region.amazonaws.com/product-videos/abc.mp4).
+ * Returns null if the URL is not a video we manage.
+ */
+const s3KeyFromUrl = (url) => {
+  if (!url || typeof url !== "string") return null;
+  try {
+    const { pathname } = new URL(url);
+    const key = decodeURIComponent(pathname.replace(/^\/+/, ""));
+    // Only touch keys in our managed video folder
+    return key.startsWith("product-videos/") ? key : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Deletes a single video object from S3 given its public URL.
+ * Silently ignores URLs that are not S3-managed videos. Never throws —
+ * media cleanup should not block a product update/delete.
+ */
+const deleteS3Object = async (url) => {
+  const key = s3KeyFromUrl(url);
+  if (!key || !s3Client) return false;
+  try {
+    await s3Client.send(new DeleteObjectCommand({ Bucket: config.s3Bucket, Key: key }));
+    return true;
+  } catch (err) {
+    console.error(`[s3] Failed to delete ${key}:`, err.message);
+    return false;
+  }
+};
+
+module.exports = { generateS3PresignedUploadUrl, deleteS3Object };
