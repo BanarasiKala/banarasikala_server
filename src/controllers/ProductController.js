@@ -1,5 +1,6 @@
 const ProductService = require('../services/ProductService');
 const { generateUploadSignature } = require("../config/cloudinary");
+const { generateS3PresignedUploadUrl } = require("../config/s3");
 
 const logServerError = (scope, error) => {
   console.error(`[ProductController:${scope}]`, error);
@@ -172,10 +173,19 @@ class ProductController {
   }
 
   getUploadSignature(req, res) {
-    const isVideo = req.query.resourceType === "video";
-    const folder = isVideo ? "vns-saree/product-videos" : "vns-saree/products";
+    const folder = "vns-saree/products";
     const sigData = generateUploadSignature(folder);
-    res.json({ ...sigData, resourceType: isVideo ? "video" : "image" });
+    res.json({ ...sigData, resourceType: "image" });
+  }
+
+  async getS3VideoUrl(req, res) {
+    try {
+      const { fileName = "video.webm", contentType = "video/webm" } = req.query;
+      const result = await generateS3PresignedUploadUrl(fileName, contentType);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ message: err.message || "Failed to generate S3 upload URL" });
+    }
   }
 
   async createWithImages(req, res) {
