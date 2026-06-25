@@ -532,10 +532,10 @@ class ProductService {
       queryOptions.where.stock_quantity = { [Op.and]: [{ [Op.gt]: 0 }, { [Op.lt]: 5 }] };
     }
 
-    // For color-filtered queries, we must fetch all and filter in JS (color_stocks is JSONB).
-    // For all other queries, use DB-level pagination to avoid loading all rows.
+    // For color-filtered and joined search queries, paginate after normalization.
+    // Joined rows can otherwise make a LIMIT of 20 collapse into fewer product records.
     const targetColors = this.parseCommaSeparated(color);
-    const useDbPagination = !targetColors && (paginated === "true" || paginated === true);
+    const useDbPagination = !targetColors && !needsSearchIncludes && (paginated === "true" || paginated === true);
 
     if (useDbPagination) {
       queryOptions.limit = limit;
@@ -567,7 +567,8 @@ class ProductService {
       const total = await Product.count({
         where: queryOptions.where,
         include: queryOptions.include,
-        subQuery: false,
+        distinct: true,
+        col: "id",
       });
       count = total;
       pagedItems = responseRows;

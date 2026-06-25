@@ -1,5 +1,5 @@
 const Customer = require("../models/Customer");
-const { uploadBufferToCloudinary } = require("../config/cloudinary");
+const { uploadBufferToCloudinary, destroyCloudinaryImage } = require("../config/cloudinary");
 
 const generateReferralCode = () =>
   `VNS${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
@@ -84,12 +84,20 @@ class CustomerController {
       const customer = await Customer.findByPk(req.user.id);
       if (!customer) return res.status(404).json({ message: "Customer not found" });
 
+      const previousAvatarUrl = customer.avatar_url;
+
       const uploadResult = await uploadBufferToCloudinary(
         req.file.buffer,
         "vns-saree/customers/avatars",
       );
 
       await customer.update({ avatar_url: uploadResult.secure_url });
+
+      // Remove the old avatar from Cloudinary so they don't pile up (fire-and-forget).
+      if (previousAvatarUrl && previousAvatarUrl !== uploadResult.secure_url) {
+        destroyCloudinaryImage(previousAvatarUrl);
+      }
+
       return res.status(200).json({
         message: "Avatar updated",
         avatar_url: customer.avatar_url,
