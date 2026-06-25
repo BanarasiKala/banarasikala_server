@@ -66,6 +66,12 @@ const Product = sequelize.define(
       type: DataTypes.INTEGER,
       defaultValue: 5,
     },
+    // Days needed to process/dispatch this product before courier transit.
+    // Null falls back to the client's VITE_ORDER_PROCESSING_DAYS env (default 4).
+    processing_days: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
     color_stocks: {
       type: DataTypes.JSONB,
       defaultValue: {},

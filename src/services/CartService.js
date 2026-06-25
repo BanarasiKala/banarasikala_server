@@ -22,6 +22,7 @@ const CART_PRODUCT_ATTRIBUTES = [
   "weight",
   "length",
   "width",
+  "processing_days",
 ];
 
 class CartService {

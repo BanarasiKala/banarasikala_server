@@ -53,7 +53,7 @@ try {
 };
 
 const ensureProductOrderColumns = async () => {
-  const columns = ["exclusive_order", "new_arrival_order", "collection_order"];
+  const columns = ["exclusive_order", "new_arrival_order", "collection_order", "processing_days"];
   for (const column of columns) {
     try {
       await sequelize.query(

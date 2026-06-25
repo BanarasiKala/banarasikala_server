@@ -45,6 +45,7 @@ const HOME_PRODUCT_ATTRIBUTES = [
   "exclusive_order",
   "new_arrival_order",
   "collection_order",
+  "processing_days",
 ];
 const COLLECTION_PRODUCT_ATTRIBUTES = [
   "id",
@@ -65,6 +66,7 @@ const COLLECTION_PRODUCT_ATTRIBUTES = [
   "exclusive_order",
   "new_arrival_order",
   "collection_order",
+  "processing_days",
 ];
 
 const toIntOrNull = (value) => {
@@ -251,6 +253,7 @@ const toHomeProduct = (product) => {
     variant_skus: coverProduct.variant_skus || {},
     low_stock_threshold: coverProduct.low_stock_threshold,
     status: coverProduct.status,
+    processing_days: coverProduct.processing_days ?? null,
     stock_status: getStockStatus(coverProduct.stock_quantity, coverProduct.low_stock_threshold),
     review_summary: coverProduct.review_summary || { average: 0, count: 0 },
     rating: coverProduct.rating || 0,
@@ -274,6 +277,7 @@ const toCollectionProduct = (product) => {
     variant_skus: coverProduct.variant_skus || {},
     low_stock_threshold: coverProduct.low_stock_threshold,
     status: coverProduct.status,
+    processing_days: coverProduct.processing_days ?? null,
     stock_status: getStockStatus(coverProduct.stock_quantity, coverProduct.low_stock_threshold),
     review_summary: coverProduct.review_summary || { average: 0, count: 0 },
     rating: coverProduct.rating || 0,
@@ -338,6 +342,7 @@ const sanitizeProductPayload = (data = {}) => {
     height: toFloatOrNull(data.height),
     stock_quantity: totalStock,
     low_stock_threshold: toIntOrZero(data.low_stock_threshold),
+    processing_days: toIntOrNull(data.processing_days),
     material_id: toIntOrNull(data.material_id),
     variety_id: toIntOrNull(data.variety_id),
     color_stocks,
@@ -665,6 +670,7 @@ class ProductService {
         "material_id",
         "variety_id",
         "key_highlights",
+        "processing_days",
       ],
       include: [
         ...productIncludes,
