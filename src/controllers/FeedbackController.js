@@ -5,6 +5,7 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const { generateUploadSignature, uploadBufferToCloudinary } = require('../config/cloudinary');
+const { ensureFeedbackColumns } = require('../utils/dbConstraints');
 
 const toInt = (value) => {
   const next = Number(value);

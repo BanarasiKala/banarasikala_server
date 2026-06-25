@@ -18,6 +18,13 @@ const {
 const { ACTION_TYPES, ACTION_STATUS } = require('../utils/orderItemActions');
 const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 
+// In-memory cache for pincode serviceability lookups. Courier ETAs/rates change
+// slowly, so caching per pincode+weight+cod for a few hours avoids hammering the
+// ShipRocket API on every product card / detail page view.
+const SERVICEABILITY_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const SERVICEABILITY_CACHE_MAX = 1000;
+const serviceabilityCache = new Map();
+
 const mapShiprocketStatus = (value = '') => {
   const status = String(value || '').toLowerCase();
 
@@ -255,12 +262,33 @@ class ShipRocketController {
       if (!pincode) return res.status(400).json({ message: 'pincode is required' });
 
       const codFlag = is_cod === 'true' || is_cod === true || is_cod === 1 || is_cod === '1';
+      const weightKg = parseFloat(weight) || 0.5;
+
+      // Only cache generic pincode lookups (not order-specific shipment_id checks).
+      const weightBucket = Math.ceil(weightKg * 2) / 2; // round up to nearest 0.5 kg
+      const cacheKey = shipment_id ? null : `${pincode}_${weightBucket}_${codFlag ? 1 : 0}`;
+
+      if (cacheKey) {
+        const cached = serviceabilityCache.get(cacheKey);
+        if (cached && Date.now() - cached.ts < SERVICEABILITY_TTL_MS) {
+          return res.status(200).json(cached.data);
+        }
+      }
+
       const data = await ShipRocketService.getServiceableCouries(
-        shipment_id, 
-        pincode, 
-        parseFloat(weight) || 0.5, 
+        shipment_id,
+        pincode,
+        weightKg,
         codFlag
       );
+
+      if (cacheKey) {
+        if (serviceabilityCache.size >= SERVICEABILITY_CACHE_MAX) {
+          serviceabilityCache.delete(serviceabilityCache.keys().next().value);
+        }
+        serviceabilityCache.set(cacheKey, { data, ts: Date.now() });
+      }
+
       return res.status(200).json(data);
     } catch (error) {
       console.error('[ShipRocket] serviceability error:', error?.response?.data || error.message);

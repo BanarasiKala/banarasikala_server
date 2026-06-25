@@ -66,6 +66,30 @@ const ensureProductOrderColumns = async () => {
   console.log("[DB] Product storefront order columns ensured.");
 };
 
+// Lazily ensure the feedbacks table has all the columns the app expects.
+// Runs at most once per process (idempotent ALTERs guarded by a flag) so the
+// per-request callers in FeedbackController don't issue DDL on every hit.
+let feedbackColumnsEnsured = false;
+const ensureFeedbackColumns = async () => {
+  if (feedbackColumnsEnsured) return;
+  const columns = [
+    `ADD COLUMN IF NOT EXISTS "order_id" INTEGER`,
+    `ADD COLUMN IF NOT EXISTS "order_item_id" INTEGER`,
+    `ADD COLUMN IF NOT EXISTS "product_id" INTEGER`,
+    `ADD COLUMN IF NOT EXISTS "title" VARCHAR(255)`,
+    `ADD COLUMN IF NOT EXISTS "images" JSONB DEFAULT '[]'::jsonb`,
+  ];
+  try {
+    for (const clause of columns) {
+      await sequelize.query(`ALTER TABLE "${schema}"."feedbacks" ${clause}`);
+    }
+    feedbackColumnsEnsured = true;
+    console.log("[DB] Feedback columns ensured.");
+  } catch (error) {
+    console.warn("[DB] Could not ensure feedback columns:", error.message);
+  }
+};
+
 const ensureIndexes = async () => {
   const indexes = [
     // customers
@@ -93,4 +117,4 @@ const ensureIndexes = async () => {
   console.log("[DB] Indexes ensured.");
 };
 
-module.exports = { ensureWalletConstraint, ensureProductOrderColumns, ensureIndexes };
+module.exports = { ensureWalletConstraint, ensureProductOrderColumns, ensureFeedbackColumns, ensureIndexes };
