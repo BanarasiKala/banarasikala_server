@@ -5,7 +5,7 @@ const app = require("./src");
 const { connectDB } = require("./src/config/db");
 const { config } = require("./src/config/env");
 const WalletService = require("./src/services/WalletService");
-const { ensureWalletConstraint, ensureIndexes } = require("./src/utils/dbConstraints");
+const { ensureWalletConstraint, ensureProductOrderColumns, ensureIndexes } = require("./src/utils/dbConstraints");
 const { cleanupUnverifiedCustomers } = require("./src/utils/customerVerificationSchema");
 
 const PORT = config.port;
@@ -51,6 +51,7 @@ const startServer = async () => {
   try {
     await connectDB();
     await ensureWalletConstraint();
+    await ensureProductOrderColumns();
     await ensureIndexes();
 
     // startHeartbeat();

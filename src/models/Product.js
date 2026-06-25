@@ -39,10 +39,6 @@ const Product = sequelize.define(
       defaultValue: {},
       allowNull: false,
     },
-    store_front_visibility: {
-      type: DataTypes.BOOLEAN,
-      defaultValue: false,
-    },
     // Pricing & Financials
     selling_price: {
       type: DataTypes.DECIMAL(10, 2),
@@ -127,6 +123,20 @@ const Product = sequelize.define(
     is_new_arrival: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,
+    },
+    // Manual storefront ordering positions. Lower = shown first; null falls back
+    // to the default newest-first order. Each surface is ordered independently.
+    exclusive_order: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    new_arrival_order: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    collection_order: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
     },
     status: {
       type: DataTypes.STRING(20),

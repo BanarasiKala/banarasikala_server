@@ -162,6 +162,20 @@ class ProductController {
     }
   }
 
+  async reorder(req, res) {
+    try {
+      const { section, orderedIds } = req.body || {};
+      const result = await ProductService.reorderProducts(section, orderedIds);
+      res.status(200).json(result);
+    } catch (error) {
+      logServerError("reorder", error);
+      const message = error.message === "Invalid section"
+        ? "Invalid section. Use exclusive, new_arrival, or collection."
+        : "Could not save product order.";
+      res.status(400).json({ message });
+    }
+  }
+
   async delete(req, res) {
     try {
       await ProductService.deleteProduct(req.params.id);

@@ -52,6 +52,20 @@ try {
   }
 };
 
+const ensureProductOrderColumns = async () => {
+  const columns = ["exclusive_order", "new_arrival_order", "collection_order"];
+  for (const column of columns) {
+    try {
+      await sequelize.query(
+        `ALTER TABLE "${schema}"."products" ADD COLUMN IF NOT EXISTS "${column}" INTEGER`,
+      );
+    } catch (error) {
+      console.warn(`[DB] Could not ensure products.${column}:`, error.message);
+    }
+  }
+  console.log("[DB] Product storefront order columns ensured.");
+};
+
 const ensureIndexes = async () => {
   const indexes = [
     // customers
@@ -64,6 +78,9 @@ const ensureIndexes = async () => {
     // products
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_products_slug ON ${schema}.products (slug)`,
     `CREATE INDEX IF NOT EXISTS idx_products_status ON ${schema}.products (status)`,
+    `CREATE INDEX IF NOT EXISTS idx_products_exclusive_order ON ${schema}.products (exclusive_order) WHERE exclusive_order IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_products_new_arrival_order ON ${schema}.products (new_arrival_order) WHERE new_arrival_order IS NOT NULL`,
+    `CREATE INDEX IF NOT EXISTS idx_products_collection_order ON ${schema}.products (collection_order) WHERE collection_order IS NOT NULL`,
   ];
 
   for (const sql of indexes) {
@@ -76,4 +93,4 @@ const ensureIndexes = async () => {
   console.log("[DB] Indexes ensured.");
 };
 
-module.exports = { ensureWalletConstraint, ensureIndexes };
+module.exports = { ensureWalletConstraint, ensureProductOrderColumns, ensureIndexes };

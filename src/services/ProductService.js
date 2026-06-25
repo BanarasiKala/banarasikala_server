@@ -42,6 +42,9 @@ const HOME_PRODUCT_ATTRIBUTES = [
   "stock_quantity",
   "low_stock_threshold",
   "status",
+  "exclusive_order",
+  "new_arrival_order",
+  "collection_order",
 ];
 const COLLECTION_PRODUCT_ATTRIBUTES = [
   "id",
@@ -59,6 +62,9 @@ const COLLECTION_PRODUCT_ATTRIBUTES = [
   "stock_quantity",
   "low_stock_threshold",
   "status",
+  "exclusive_order",
+  "new_arrival_order",
+  "collection_order",
 ];
 
 const toIntOrNull = (value) => {
@@ -315,6 +321,11 @@ const sanitizeProductPayload = (data = {}) => {
   if (payment_options.length === 0) throw new Error("Choose at least one payment option");
   if (service_options.length === 0) throw new Error("Choose at least one return/exchange option");
 
+  // A product can be a Special Collection (Exclusive Picks) item or a New Arrival,
+  // but never both. Special Collection takes precedence if both are sent.
+  const special_collection = Boolean(data.special_collection);
+  const is_new_arrival = special_collection ? false : Boolean(data.is_new_arrival);
+
   const sanitized = {
     ...data,
     selling_price,
@@ -332,6 +343,8 @@ const sanitizeProductPayload = (data = {}) => {
     color_stocks,
     variant_skus: data.variant_skus && typeof data.variant_skus === "object" ? data.variant_skus : {},
     images,
+    special_collection,
+    is_new_arrival,
     status: ["active", "inactive"].includes(String(data.status)) ? String(data.status) : "active",
     payment_options,
     service_options,
@@ -398,7 +411,6 @@ class ProductService {
       limit: rawLimit,
       sortBy = "newest",
       specialCollection,
-      storeFrontVisibility,
       coverImagesOnly,
       view,
       newArrival,
@@ -417,6 +429,24 @@ class ProductService {
 
     if (view === "home") queryOptions.attributes = HOME_PRODUCT_ATTRIBUTES;
     if (view === "collection") queryOptions.attributes = COLLECTION_PRODUCT_ATTRIBUTES;
+
+    // Manual storefront arrangement takes precedence on the surfaces that support it.
+    // New Arrivals -> new_arrival_order, Exclusive Picks (home) -> exclusive_order,
+    // Collection default sort -> collection_order. The collection page sends an empty
+    // sortBy by default, which resolves to "newest" here; explicit price/special sorts
+    // chosen by the shopper bypass the manual order. Null positions fall back to the
+    // default ordering applied below.
+    const manualOrderColumn =
+      newArrival === "true"
+        ? "new_arrival_order"
+        : view === "home"
+          ? "exclusive_order"
+          : view === "collection" && sortBy === "newest"
+            ? "collection_order"
+            : null;
+    if (manualOrderColumn) {
+      queryOptions.order.push(literal(`"Product"."${manualOrderColumn}" ASC NULLS LAST`));
+    }
 
     if (sortBy === "price_asc") {
       queryOptions.order.push(["selling_price", "ASC"]);
@@ -462,7 +492,6 @@ class ProductService {
     } else if (specialCollection === "false") {
       queryOptions.where.special_collection = false;
     }
-    if (storeFrontVisibility === "true" || storeFrontVisibility === "false") queryOptions.where.store_front_visibility = storeFrontVisibility === "true";
     if (newArrival === "true" || newArrival === "false") queryOptions.where.is_new_arrival = newArrival === "true";
 
     if (search && String(search).trim()) {
@@ -841,6 +870,36 @@ class ProductService {
     });
 
     return this.getProductById(id);
+  }
+
+  async reorderProducts(section, orderedIds) {
+    const columnMap = {
+      exclusive: "exclusive_order",
+      new_arrival: "new_arrival_order",
+      collection: "collection_order",
+    };
+    const column = columnMap[section];
+    if (!column) throw new Error("Invalid section");
+
+    const ids = (Array.isArray(orderedIds) ? orderedIds : [])
+      .map((id) => parseInt(id, 10))
+      .filter((id) => !Number.isNaN(id));
+
+    await sequelize.transaction(async (transaction) => {
+      // Clear existing positions for this section first so any product dropped
+      // from the arrangement falls back to the default newest-first order.
+      await Product.update(
+        { [column]: null },
+        { where: { [column]: { [Op.ne]: null } }, transaction },
+      );
+      await Promise.all(
+        ids.map((id, index) =>
+          Product.update({ [column]: index }, { where: { id }, transaction }),
+        ),
+      );
+    });
+
+    return { section, updated: ids.length };
   }
 
   async deleteProduct(id) {

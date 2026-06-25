@@ -17,6 +17,8 @@ router.get('/:slug', catalogCache, ProductController.getBySlug);
 
 // Admin only routes
 router.post('/', authMiddleware, adminMiddleware, ProductController.create);
+// Must be registered before '/:id' so "reorder" is not captured as an id.
+router.put('/reorder', authMiddleware, adminMiddleware, ProductController.reorder);
 router.put('/:id', authMiddleware, adminMiddleware, ProductController.update);
 router.post('/with-images', authMiddleware, adminMiddleware, ProductController.createWithImages);
 router.put('/:id/with-images', authMiddleware, adminMiddleware, ProductController.updateWithImages);
