@@ -11,14 +11,15 @@ class RazorpayController {
       // Structured fields (subtotal_amount + discount_amount + wallet_amount) are
       // preferred because the backend computes fees from its own env vars, which
       // guarantees the Razorpay order amount always matches the order-creation check.
-      const { subtotal_amount, discount_amount = 0, wallet_amount = 0 } = req.body;
+      const { subtotal_amount, discount_amount = 0, wallet_amount = 0, is_gift = false } = req.body;
       const subtotal = roundMoney(Number(subtotal_amount || 0));
 
       let finalAmount;
       if (subtotal > 0) {
         const platformFee = roundMoney(Math.max(0, Number(config.platformFeeAmount || 0)));
+        const giftCharge = is_gift ? roundMoney(Math.max(0, Number(config.giftChargeAmount || 0))) : 0;
         const paymentDiscount = roundMoney(Math.min(Number(config.prepaidDiscountAmount || 0), subtotal));
-        const grossBeforeCoupon = roundMoney(Math.max(0, subtotal + platformFee - paymentDiscount));
+        const grossBeforeCoupon = roundMoney(Math.max(0, subtotal + platformFee + giftCharge - paymentDiscount));
         const couponDiscount = roundMoney(Math.max(0, Math.min(Number(discount_amount || 0), grossBeforeCoupon)));
         const grossAfterCoupon = roundMoney(Math.max(0, grossBeforeCoupon - couponDiscount));
         const walletDebit = roundMoney(Math.min(Math.max(0, Number(wallet_amount || 0)), grossAfterCoupon));

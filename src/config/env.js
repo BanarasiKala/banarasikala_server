@@ -79,6 +79,8 @@ const config = {
   prepaidDiscountAmount: readNumberEnv("PREPAID_DISCOUNT_AMOUNT"),
   codFeeAmount: readNumberEnv("COD_FEE_AMOUNT"),
   platformFeeAmount: readNumberEnv("PLATFORM_FEE_AMOUNT"),
+  // Flat charge added when the customer chooses "Send as a gift". Env-overridable.
+  giftChargeAmount: Number(process.env.GIFT_CHARGE_AMOUNT) || 159,
   packageWeightKg: readNumberEnv("PACKAGE_WEIGHT_KG"),
   packageLengthCm: readNumberEnv("PACKAGE_LENGTH_CM"),
   packageBreadthCm: readNumberEnv("PACKAGE_BREADTH_CM"),

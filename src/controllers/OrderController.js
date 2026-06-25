@@ -274,6 +274,7 @@ class OrderController {
         customer_name, customer_email, address, city, state, pincode, phone,
         subtotal_amount, shipping_charge = 0, shipping_discount_reason = null,
         selected_courier_data = null, items, coupon_code, wallet_amount = 0,
+        is_gift = false, gift_message = null,
         payment_method = 'Prepaid', payment_status = 'Paid',
         payment_gateway = null, gateway_order_id = null, gateway_payment_id = null,
         gateway_signature = null, gateway_amount_paise = null, gateway_currency = 'INR',
@@ -378,7 +379,11 @@ class OrderController {
       const actualPaymentDiscount = normalizedPaymentMethod === 'Prepaid'
         ? Math.min(Number(config.prepaidDiscountAmount || 0), itemSubtotal)
         : 0;
-      let final_total = Math.max(0, itemSubtotal + actualShippingCharge - actualShippingDiscount + actualPaymentFee - actualPaymentDiscount);
+      // Gift charge is computed server-side from config so the client cannot tamper with it.
+      const isGiftOrder = Boolean(is_gift);
+      const actualGiftCharge = isGiftOrder ? Math.max(0, Number(config.giftChargeAmount || 0)) : 0;
+      const cleanGiftMessage = isGiftOrder ? (String(gift_message || '').trim().slice(0, 500) || null) : null;
+      let final_total = Math.max(0, itemSubtotal + actualShippingCharge - actualShippingDiscount + actualPaymentFee - actualPaymentDiscount + actualGiftCharge);
       const normalizedGateway = normalizedPaymentMethod === 'Prepaid'
         ? String(payment_gateway || 'razorpay').trim().toLowerCase()
         : null;
@@ -498,6 +503,9 @@ class OrderController {
         platform_fee: actualPlatformFee,
         cod_fee: actualCodFee,
         payment_discount: actualPaymentDiscount,
+        is_gift: isGiftOrder,
+        gift_message: cleanGiftMessage,
+        gift_charge: actualGiftCharge,
         total_amount: final_total,
         coupon_code,
         discount_amount,

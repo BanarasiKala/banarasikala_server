@@ -17,6 +17,9 @@ const ORDER_LIFECYCLE_COLUMNS = {
   is_modified: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   modified_at: { type: DataTypes.DATE, allowNull: true },
   status_history: { type: DataTypes.JSONB, allowNull: true, defaultValue: [] },
+  is_gift: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
+  gift_message: { type: DataTypes.TEXT, allowNull: true },
+  gift_charge: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: 0 },
 };
 
 const CUSTOMER_COD_COLUMNS = {

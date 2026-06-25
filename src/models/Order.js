@@ -99,6 +99,21 @@ const Order = sequelize.define('Order', {
     allowNull: true,
     defaultValue: 0
   },
+  // Gift order: optional custom message + a flat extra charge.
+  is_gift: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false
+  },
+  gift_message: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+  gift_charge: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+    defaultValue: 0
+  },
   status: {
     type: DataTypes.STRING,
     defaultValue: 'Pending'
