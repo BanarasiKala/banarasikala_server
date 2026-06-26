@@ -410,15 +410,31 @@ class OrderController {
 
       if (coupon_code) {
         const Coupon = require('../models/Coupon');
+        const CouponService = require('../services/CouponService');
         const coupon = await Coupon.findOne({
           where: { code: coupon_code, is_active: true },
           transaction: t,
           lock: t.LOCK.UPDATE,
         });
         if (coupon) {
-          if (coupon.max_usage && Number(coupon.usage_count || 0) >= Number(coupon.max_usage)) {
+          // Global usage limit. The coupon row is locked above, so concurrent
+          // orders for the same coupon are serialized and these checks are race-safe.
+          if (coupon.usage_limit != null && Number(coupon.usage_count || 0) >= Number(coupon.usage_limit)) {
             await t.rollback();
             return res.status(400).json({ message: 'This coupon has reached its usage limit.' });
+          }
+          // Per-user usage limit, derived from this shopper's non-cancelled orders.
+          const perUserLimit = Number(coupon.usage_limit_per_user || 0);
+          if (perUserLimit > 0) {
+            const used = await CouponService.getUserCouponUsage(
+              coupon_code,
+              { customerId: customer?.id, email: customer?.email || customer_email },
+              { transaction: t },
+            );
+            if (used >= perUserLimit) {
+              await t.rollback();
+              return res.status(400).json({ message: 'You have already used this coupon.' });
+            }
           }
           if (coupon.discount_type === 'percentage') {
             discount_amount = (itemSubtotal * coupon.discount_percent) / 100;

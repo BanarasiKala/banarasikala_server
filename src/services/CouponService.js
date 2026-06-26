@@ -1,13 +1,79 @@
 const Coupon = require('../models/Coupon');
-const { Op } = require('sequelize');
+const { Op, fn, col } = require('sequelize');
 const Product = require('../models/Product');
 const Variety = require('../models/Variety');
 const Color = require('../models/Color');
 const Occasion = require('../models/Occasion');
 
 class CouponService {
-  async getAllCoupons() {
-    return await Coupon.findAll();
+  // Build a Sequelize where-fragment that identifies a single shopper across
+  // both logged-in (customer_id) and guest (customer_email) orders. Returns
+  // null when we have no way to identify the user (so callers skip per-user logic).
+  _identityWhere({ customerId, email } = {}) {
+    const clauses = [];
+    if (customerId) clauses.push({ customer_id: customerId });
+    if (email) clauses.push({ customer_email: email });
+    if (clauses.length === 0) return null;
+    return clauses.length === 1 ? clauses[0] : { [Op.or]: clauses };
+  }
+
+  // How many times this shopper has *actively* used a coupon. We derive it from
+  // the orders table (no separate redemption table) and exclude cancelled orders,
+  // mirroring how the global usage_count is incremented on order / decremented on cancel.
+  async getUserCouponUsage(code, identity = {}, options = {}) {
+    if (!code) return 0;
+    const where = this._identityWhere(identity);
+    if (!where) return 0;
+    const Order = require('../models/Order');
+    return await Order.count({
+      where: {
+        coupon_code: code,
+        status: { [Op.ne]: 'Cancelled' },
+        ...where,
+      },
+      transaction: options.transaction,
+    });
+  }
+
+  // Returns all coupons. When a shopper identity is supplied, each coupon is
+  // annotated with `user_usage_count` and `user_eligible` so the storefront can
+  // hide coupons the shopper has exhausted (per-user or global limit). The extra
+  // fields are additive — callers that don't pass a customer (e.g. admin) get the
+  // plain rows unchanged.
+  async getAllCoupons(customer = null) {
+    const coupons = await Coupon.findAll();
+    const where = customer ? this._identityWhere(customer) : null;
+    if (!where) return coupons;
+
+    const Order = require('../models/Order');
+    const usageRows = await Order.findAll({
+      attributes: ['coupon_code', [fn('COUNT', col('id')), 'cnt']],
+      where: {
+        coupon_code: { [Op.ne]: null },
+        status: { [Op.ne]: 'Cancelled' },
+        ...where,
+      },
+      group: ['coupon_code'],
+      raw: true,
+    });
+    const usageByCode = {};
+    usageRows.forEach((row) => {
+      if (row.coupon_code) usageByCode[row.coupon_code] = Number(row.cnt) || 0;
+    });
+
+    return coupons.map((coupon) => {
+      const json = coupon.toJSON();
+      const used = usageByCode[json.code] || 0;
+      const perUserLimit = Number(json.usage_limit_per_user || 0);
+      const perUserReached = perUserLimit > 0 && used >= perUserLimit;
+      const globalReached = json.usage_limit != null
+        && Number(json.usage_count || 0) >= Number(json.usage_limit);
+      return {
+        ...json,
+        user_usage_count: used,
+        user_eligible: !perUserReached && !globalReached,
+      };
+    });
   }
 
   async getHomepageCoupons() {
@@ -62,7 +128,10 @@ class CouponService {
     return await coupon.destroy();
   }
 
-  async validateCoupon(code, amount, customerEmail) {
+  async validateCoupon(code, amount, customer = {}) {
+    // Accept a legacy email string or a { customerId, email } identity object.
+    const identity = typeof customer === 'string' ? { email: customer } : (customer || {});
+
     const coupon = await Coupon.findOne({ where: { code, is_active: true } });
     if (!coupon) throw new Error('Invalid coupon code');
 
@@ -71,9 +140,18 @@ class CouponService {
     if (coupon.valid_from && new Date(coupon.valid_from) > now) throw new Error('Coupon not yet active');
     if (coupon.valid_until && new Date(coupon.valid_until) < now) throw new Error('Coupon expired');
 
-    // Check usage limit
+    // Check global usage limit
     if (coupon.usage_limit !== null && coupon.usage_count >= coupon.usage_limit) {
       throw new Error('Coupon usage limit reached');
+    }
+
+    // Check per-user usage limit
+    const perUserLimit = Number(coupon.usage_limit_per_user || 0);
+    if (perUserLimit > 0) {
+      const used = await this.getUserCouponUsage(code, identity);
+      if (used >= perUserLimit) {
+        throw new Error('You have already used this coupon.');
+      }
     }
 
     // Check minimum purchase

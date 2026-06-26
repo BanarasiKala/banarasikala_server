@@ -3,7 +3,12 @@ const CouponService = require('../services/CouponService');
 class CouponController {
   async getAll(req, res) {
     try {
-      const coupons = await CouponService.getAllCoupons();
+      // Annotate eligibility only for a logged-in shopper (not admins/guests),
+      // so the storefront can hide coupons this user has already exhausted.
+      const customer = req.userRole === 'customer' && req.user
+        ? { customerId: req.user.id, email: req.user.email }
+        : null;
+      const coupons = await CouponService.getAllCoupons(customer);
       res.status(200).json(coupons);
     } catch (error) {
       res.status(500).json({ message: error.message });
@@ -59,7 +64,11 @@ class CouponController {
   async validate(req, res) {
     try {
       const { code, amount, email } = req.body;
-      const result = await CouponService.validateCoupon(code, amount, email);
+      const identity = {
+        customerId: req.userRole === 'customer' && req.user ? req.user.id : null,
+        email: email || (req.user ? req.user.email : null),
+      };
+      const result = await CouponService.validateCoupon(code, amount, identity);
       res.status(200).json(result);
     } catch (error) {
       res.status(400).json({ message: error.message });
