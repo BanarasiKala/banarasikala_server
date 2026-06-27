@@ -159,16 +159,19 @@ class CouponService {
       throw new Error(`Minimum purchase amount of ₹${coupon.min_purchase_amount} required`);
     }
 
-    // Calculate discount
+    // Calculate discount. DECIMAL columns come back from the DB as strings, so
+    // coerce every operand to Number before doing any math / .toFixed.
+    const numAmount = Number(amount) || 0;
     let discount = 0;
     if (coupon.discount_type === 'percentage') {
-      discount = (amount * coupon.discount_percent) / 100;
+      discount = (numAmount * Number(coupon.discount_percent || 0)) / 100;
       if (coupon.max_discount_amount) {
-        discount = Math.min(discount, coupon.max_discount_amount);
+        discount = Math.min(discount, Number(coupon.max_discount_amount) || 0);
       }
     } else {
-      discount = coupon.discount_amount;
+      discount = Number(coupon.discount_amount) || 0;
     }
+    discount = Number(discount) || 0;
 
     return {
       couponId: coupon.id,
