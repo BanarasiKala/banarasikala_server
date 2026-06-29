@@ -829,24 +829,78 @@ class OrderController {
         return res.status(403).json({ message: 'This order does not belong to this customer.' });
       }
 
-      // Try AWB first, fall back to SR order ID
-      if (order.shiprocket_awb) {
-        const data = await ShipRocketService.trackByAWB(order.shiprocket_awb);
-        return res.status(200).json({ source: 'awb', tracking: data });
+      const EMPTY_TRACKING = { tracking_data: { shipment_track_activities: [] } };
+
+      // ── Forward shipment: AWB first, fall back to SR order ID ──
+      let forward = { source: 'none', tracking: null };
+      try {
+        if (order.shiprocket_awb) {
+          forward = { source: 'awb', tracking: await ShipRocketService.trackByAWB(order.shiprocket_awb) };
+        } else if (order.shiprocket_order_id) {
+          forward = { source: 'order_id', tracking: await ShipRocketService.trackByOrderId(order.shiprocket_order_id) };
+        }
+      } catch (forwardError) {
+        console.error('[Track] Forward lookup error:', forwardError?.response?.data || forwardError.message);
+        forward = { source: 'unavailable', tracking: EMPTY_TRACKING };
       }
 
-      if (order.shiprocket_order_id) {
-        const data = await ShipRocketService.trackByOrderId(order.shiprocket_order_id);
-        return res.status(200).json({ source: 'order_id', tracking: data });
+      // ── Reverse shipments: active return/exchange pickups carry their own SR ids ──
+      const reverse = [];
+      try {
+        await ensureOrderItemActionSchema();
+        const reverseActions = await OrderItemAction.findAll({
+          where: {
+            order_id: order.id,
+            action_type: { [Op.in]: ['return', 'exchange'] },
+            status: { [Op.notIn]: ['Rejected', 'Cancelled'] },
+            [Op.or]: [
+              { shiprocket_return_awb: { [Op.ne]: null } },
+              { shiprocket_return_order_id: { [Op.ne]: null } },
+            ],
+          },
+          order: [['created_at', 'DESC']],
+        });
+
+        const seen = new Set();
+        for (const action of reverseActions) {
+          const key = action.shiprocket_return_awb || action.shiprocket_return_order_id;
+          if (!key || seen.has(key)) continue; // one entry per distinct reverse shipment
+          seen.add(key);
+          try {
+            const tracking = action.shiprocket_return_awb
+              ? await ShipRocketService.trackByAWB(action.shiprocket_return_awb)
+              : await ShipRocketService.trackByOrderId(action.shiprocket_return_order_id);
+            reverse.push({
+              type: action.action_type,
+              source: action.shiprocket_return_awb ? 'awb' : 'order_id',
+              awb: action.shiprocket_return_awb || null,
+              tracking,
+            });
+          } catch (reverseError) {
+            console.error('[Track] Reverse lookup error:', reverseError?.response?.data || reverseError.message);
+            reverse.push({
+              type: action.action_type,
+              source: 'unavailable',
+              awb: action.shiprocket_return_awb || null,
+              tracking: EMPTY_TRACKING,
+            });
+          }
+        }
+      } catch (reverseListError) {
+        console.error('[Track] Reverse list error:', reverseListError.message);
       }
 
-      return res.status(200).json({ source: 'none', message: 'Shipment not yet dispatched' });
+      if (forward.source === 'none' && !reverse.length) {
+        return res.status(200).json({ source: 'none', message: 'Shipment not yet dispatched', reverse: [] });
+      }
+      return res.status(200).json({ source: forward.source, tracking: forward.tracking, reverse });
     } catch (error) {
       console.error('[Track] Error:', error?.response?.data || error.message);
       return res.status(200).json({
         source: 'unavailable',
         message: 'Tracking service is temporarily unavailable. Please try again shortly.',
         tracking: { tracking_data: { shipment_track_activities: [] } },
+        reverse: [],
       });
     }
   }
@@ -1431,16 +1485,24 @@ class OrderController {
           t,
         );
 
-        await OrderRefund.create({
-          order_id: order.id,
-          refund_type: REFUND_TYPE.RTO,
-          amount: rtoPaymentMethod === 'COD' ? 0 : rtoRefundAmount,
-          status: rtoPaymentMethod === 'COD' ? REFUND_STATUS.NOT_REQUIRED : REFUND_STATUS.PENDING,
-          payment_method: rtoPaymentMethod === 'COD' ? REFUND_PAYMENT_METHOD.NOT_REQUIRED : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-          note: rtoPaymentMethod === 'COD'
-            ? 'COD order returned to seller. No payment was collected.'
-            : `RTO received. Refund of Rs. ${rtoRefundAmount.toLocaleString('en-IN')} will be processed after deducting logistics charges.`,
-        }, { transaction: t });
+        // Idempotency: avoid a duplicate RTO refund row if the webhook already
+        // created one (or an admin marks RTO Delivered more than once).
+        const existingRtoRefund = await OrderRefund.findOne({
+          where: { order_id: order.id, refund_type: REFUND_TYPE.RTO },
+          transaction: t,
+        });
+        if (!existingRtoRefund) {
+          await OrderRefund.create({
+            order_id: order.id,
+            refund_type: REFUND_TYPE.RTO,
+            amount: rtoPaymentMethod === 'COD' ? 0 : rtoRefundAmount,
+            status: rtoPaymentMethod === 'COD' ? REFUND_STATUS.NOT_REQUIRED : REFUND_STATUS.PENDING,
+            payment_method: rtoPaymentMethod === 'COD' ? REFUND_PAYMENT_METHOD.NOT_REQUIRED : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
+            note: rtoPaymentMethod === 'COD'
+              ? 'COD order returned to seller. No payment was collected.'
+              : `RTO received. Refund of Rs. ${rtoRefundAmount.toLocaleString('en-IN')} will be processed after deducting logistics charges.`,
+          }, { transaction: t });
+        }
       }
 
       await order.update(updatePayload, { transaction: t });

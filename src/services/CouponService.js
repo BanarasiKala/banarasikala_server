@@ -128,6 +128,70 @@ class CouponService {
     return await coupon.destroy();
   }
 
+  // A coupon is "general" (order-level) when it isn't tied to specific
+  // products/varieties/colors/occasions/materials — those can't be safely
+  // auto-applied without checking which items remain in the order.
+  _isGeneralCoupon(coupon) {
+    const arr = (v) => Array.isArray(v) && v.length > 0;
+    return !arr(coupon.applicable_product_id)
+      && !arr(coupon.applicable_variety_id)
+      && !arr(coupon.applicable_color_id)
+      && !arr(coupon.applicable_occasion_id)
+      && !arr(coupon.applicable_material_id);
+  }
+
+  _couponDiscountFor(coupon, amount) {
+    const numAmount = Number(amount) || 0;
+    let discount = 0;
+    if (coupon.discount_type === 'percentage') {
+      discount = (numAmount * Number(coupon.discount_percent || 0)) / 100;
+      if (coupon.max_discount_amount) discount = Math.min(discount, Number(coupon.max_discount_amount) || 0);
+    } else {
+      discount = Math.min(Number(coupon.discount_amount || 0), numAmount);
+    }
+    return Math.round((Number(discount) || 0) * 100) / 100;
+  }
+
+  /**
+   * Pick the single best general coupon the shopper can use for `amount`.
+   * Honours validity window, global + per-user usage limits and minimum
+   * purchase. Returns { code, discount, discount_type, coupon } or null.
+   * Used when a cancellation/modification drops an order below its original
+   * coupon's threshold and we want to give the customer the next best offer.
+   */
+  async findBestCoupon(amount, identity = {}, options = {}) {
+    const numAmount = Number(amount) || 0;
+    if (numAmount <= 0) return null;
+    const now = new Date();
+    const coupons = await Coupon.findAll({
+      where: {
+        is_active: true,
+        [Op.and]: [
+          { [Op.or]: [{ valid_from: null }, { valid_from: { [Op.lte]: now } }] },
+          { [Op.or]: [{ valid_until: null }, { valid_until: { [Op.gte]: now } }] },
+        ],
+      },
+      transaction: options.transaction,
+    });
+
+    let best = null;
+    for (const coupon of coupons) {
+      if (!this._isGeneralCoupon(coupon)) continue;
+      if (coupon.usage_limit != null && Number(coupon.usage_count || 0) >= Number(coupon.usage_limit)) continue;
+      if (numAmount < Number(coupon.min_purchase_amount || 0)) continue;
+      const perUserLimit = Number(coupon.usage_limit_per_user || 0);
+      if (perUserLimit > 0) {
+        const used = await this.getUserCouponUsage(coupon.code, identity, options);
+        if (used >= perUserLimit) continue;
+      }
+      const discount = this._couponDiscountFor(coupon, numAmount);
+      if (discount > 0 && (!best || discount > best.discount)) {
+        best = { code: coupon.code, discount, discount_type: coupon.discount_type, coupon };
+      }
+    }
+    return best;
+  }
+
   async validateCoupon(code, amount, customer = {}) {
     // Accept a legacy email string or a { customerId, email } identity object.
     const identity = typeof customer === 'string' ? { email: customer } : (customer || {});
