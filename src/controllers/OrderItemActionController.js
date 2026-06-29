@@ -116,6 +116,157 @@ const getRemainingQuantityAfterCancellation = (items = [], cancelledSelections =
   }, 0)
 );
 
+// Remaining live units based on the items' CURRENT persisted quantities. Use
+// this after the cancel loop has already applied cancelled_quantity to the
+// items — passing cancelledSelections again here would double-count and make a
+// partial cancel look like a full one.
+const getRemainingActiveQuantity = (items = []) => items.reduce((sum, item) => sum + Math.max(0,
+  Number(item.quantity || 0)
+  - Number(item.cancelled_quantity || 0)
+  - Number(item.returned_quantity || 0)
+  - Number(item.exchanged_quantity || 0)), 0);
+
+const courierRate = (c = {}) => {
+  const r = Number(c.rate ?? c.freight_charge ?? c.courier_charge);
+  return Number.isFinite(r) && r >= 0 ? r : null;
+};
+
+/**
+ * After a partial cancel the parcel is lighter, so its courier cost changes.
+ * Delivery is free to the customer (the charge is fully discounted), so this
+ * does NOT affect the customer's total/refund — it only keeps the order's stored
+ * shipping cost / courier accurate (used by return & RTO deductions and at
+ * booking time). Best-effort: any failure leaves the original shipping intact.
+ *
+ * Runs AFTER commit and is not awaited by the response, so a slow/failed
+ * ShipRocket call never blocks or rolls back the cancellation.
+ */
+const requoteRemainingShipping = async (order, orderItems) => {
+  // Only when delivery was free to the customer (net charge is zero). If the
+  // customer actually paid for delivery, re-quoting could change what they owe,
+  // so we leave it untouched.
+  const shippingCharge = Number(order.shipping_charge || 0);
+  const deliveryNet = roundMoney(shippingCharge - Number(order.shipping_discount || 0));
+  if (!(shippingCharge > 0 && deliveryNet <= 0)) return;
+  if (!order.pincode) return;
+
+  // New parcel weight from the items that remain in the order.
+  let weightKg = 0;
+  for (const item of orderItems) {
+    const remaining = Math.max(0, Number(item.quantity || 0)
+      - Number(item.cancelled_quantity || 0)
+      - Number(item.returned_quantity || 0)
+      - Number(item.exchanged_quantity || 0));
+    if (remaining <= 0) continue;
+    const meta = item.shipping_meta || {};
+    const perUnit = Number(meta.product_weight_kg || 0) + Number(meta.box_weight_kg || 0);
+    weightKg += (perUnit > 0 ? perUnit : 0.5) * remaining;
+  }
+  weightKg = Math.max(0.1, Math.round(weightKg * 1000) / 1000);
+
+  const ShipRocketService = require('../services/ShipRocketService');
+  const isCod = String(order.payment_method || '').toUpperCase() === 'COD';
+  const data = await ShipRocketService.getServiceableCouries(
+    order.shiprocket_order_id || null,
+    order.pincode,
+    weightKg,
+    isCod,
+  );
+  const couriers = data?.data?.available_courier_companies || [];
+  if (!couriers.length) return;
+
+  // Prefer the courier the order already chose (same carrier, lighter rate);
+  // otherwise fall back to the cheapest serviceable option.
+  const origId = order.selected_courier_data?.courier_company_id;
+  let chosen = origId ? couriers.find((c) => c.courier_company_id === origId && courierRate(c) !== null) : null;
+  if (!chosen) {
+    chosen = couriers
+      .filter((c) => courierRate(c) !== null)
+      .sort((a, b) => courierRate(a) - courierRate(b))[0];
+  }
+  if (!chosen) return;
+
+  const newRate = roundMoney(courierRate(chosen));
+  await order.update({
+    shipping_charge: newRate,
+    shipping_discount: newRate, // keep delivery free to the customer (net 0)
+    selected_courier_data: chosen,
+  });
+};
+
+const remainingItemsForShipping = (orderItems = []) => orderItems
+  .map((item) => {
+    const remaining = Math.max(0, Number(item.quantity || 0)
+      - Number(item.cancelled_quantity || 0)
+      - Number(item.returned_quantity || 0)
+      - Number(item.exchanged_quantity || 0));
+    if (remaining <= 0) return null;
+    return {
+      product_id: item.product_id,
+      quantity: remaining,
+      price: item.price,
+      name: item.product_name,
+      sku: item.sku,
+    };
+  })
+  .filter(Boolean);
+
+/**
+ * Keep the actual ShipRocket shipment in step with a cancel/modify. ShipRocket
+ * has no "edit items" API here, so:
+ *   - Full cancel  → cancel the SR order and clear its ids.
+ *   - Partial      → cancel the old SR order and recreate it with the items that
+ *                    remain (and the new, lighter weight).
+ * Best-effort and post-commit — failures are logged and never roll back or
+ * delay the customer's cancellation. Only runs pre-dispatch (modify is blocked
+ * once an AWB is assigned), so there's no live AWB to disturb.
+ */
+const syncShiprocketAfterCancel = async (order, orderItems, isFullCancellation) => {
+  const ShipRocketService = require('../services/ShipRocketService');
+  const srOrderId = order.shiprocket_order_id;
+
+  if (srOrderId) {
+    try {
+      await ShipRocketService.cancelOrders([srOrderId]);
+    } catch (error) {
+      // If we can't cancel the existing shipment, don't recreate — that would
+      // risk two live shipments. Leave it for manual reconciliation.
+      console.error('[OrderItemAction] ShipRocket cancel failed:', error?.response?.data || error.message);
+      return;
+    }
+  }
+
+  if (isFullCancellation) {
+    await order.update({ shiprocket_order_id: null, shiprocket_awb: null });
+    return;
+  }
+
+  const items = remainingItemsForShipping(orderItems);
+  if (!items.length) {
+    await order.update({ shiprocket_order_id: null, shiprocket_awb: null });
+    return;
+  }
+
+  try {
+    // Revised channel order_id so ShipRocket doesn't reject it as a duplicate of
+    // the cancelled one. Modify is one-time (is_modified locks further changes).
+    const channelRef = srOrderId ? `${order.order_number}-M1` : order.order_number;
+    const srResult = await ShipRocketService.createOrder({
+      order: { ...order.toJSON(), order_number: channelRef },
+      items,
+    });
+    await order.update({
+      shiprocket_order_id: srResult?.order_id ? String(srResult.order_id) : null,
+      shiprocket_awb: srResult?.awb_code ? String(srResult.awb_code) : null,
+    });
+  } catch (error) {
+    // Old shipment is already cancelled, so clear the ids — the order needs a
+    // fresh ShipRocket push (admin can re-create it).
+    console.error('[OrderItemAction] ShipRocket recreate failed:', error?.response?.data || error.message);
+    await order.update({ shiprocket_order_id: null, shiprocket_awb: null });
+  }
+};
+
 /**
  * Single source of truth for the money outcome of a cancellation — used by both
  * the pre-submit estimate and the actual create() flow so the number the
@@ -190,6 +341,7 @@ const computeCancelRefund = async ({ order, orderItems, cancelledSelections, can
   }
 
   // Non-item charges that stay on the order after a partial cancel.
+  const deliveryGross = roundMoney(Number(order.shipping_charge || 0));
   const deliveryNet = roundMoney(Number(order.shipping_charge || 0) - Number(order.shipping_discount || 0));
   const paymentFee = roundMoney(Number(order.payment_fee || 0));
   const codFee = roundMoney(Number(order.cod_fee || 0));
@@ -227,6 +379,7 @@ const computeCancelRefund = async ({ order, orderItems, cancelledSelections, can
     origCouponDiscount,
     cancelledItemsValue,
     // Non-item charge components (for a checkout-style bill in the modal).
+    deliveryGross,
     deliveryNet,
     platformFee,
     codFee,
@@ -364,6 +517,7 @@ class OrderItemActionController {
             platform_fee: refund.platformFee,
             cod_fee: refund.codFee,
             delivery: refund.deliveryNet,
+            delivery_gross: refund.deliveryGross,
             prepaid_discount: refund.paymentDiscount,
             gift_charge: refund.giftCharge,
             coupon_code: refund.appliedCouponCode,
@@ -552,6 +706,10 @@ class OrderItemActionController {
         createdActions.push(action);
       }
 
+      // Items now carry their updated cancelled_quantity, so compute the remaining
+      // live units directly from them (do NOT re-apply cancelledSelections).
+      const cancelRemainingQty = getRemainingActiveQuantity(orderItems);
+
       const paymentMethod = String(order.payment_method || '').toUpperCase();
       const orderUpdate = { status: actionOrderStatus(actionType) };
       let refundToCreate = null;
@@ -579,9 +737,11 @@ class OrderItemActionController {
           nextTotal,
           nextPayable,
           refundAmount,
-        } = await computeCancelRefund({ order, orderItems, cancelledSelections, cancelledAmount, transaction });
+          // Items already reflect the cancellation, so pass no selections (the
+          // helper would otherwise double-count and force a full cancellation).
+        } = await computeCancelRefund({ order, orderItems, cancelledSelections: new Map(), cancelledAmount, transaction });
 
-        orderUpdate.status = remainingQty > 0 ? 'Partially Cancelled' : 'Cancelled';
+        orderUpdate.status = cancelRemainingQty > 0 ? 'Partially Cancelled' : 'Cancelled';
         if (isFullCancellation) orderUpdate.cancelled_at = new Date();
         orderUpdate.subtotal_amount = nextSubtotal;
         orderUpdate.discount_amount = isFullCancellation ? 0 : newCouponDiscount;
@@ -640,8 +800,7 @@ class OrderItemActionController {
 
       // Refund wallet on full cancellation
       if (actionType === ACTION_TYPES.CANCEL) {
-        const remainingQtyCheck = getRemainingQuantityAfterCancellation(orderItems, cancelledSelections);
-        if (remainingQtyCheck <= 0) {
+        if (cancelRemainingQty <= 0) {
           const walletRefund = Number(order.wallet_amount || 0);
           if (walletRefund > 0 && order.customer_id) {
             await WalletTransaction.create({
@@ -665,11 +824,25 @@ class OrderItemActionController {
 
       if (actionType === ACTION_TYPES.CANCEL) {
         const EmailService = require('../services/EmailService');
-        const remainingQty = getRemainingQuantityAfterCancellation(orderItems, cancelledSelections);
+        const remainingQty = cancelRemainingQty;
         const emailStatus = remainingQty <= 0 ? 'Cancelled' : 'Partially Cancelled';
         EmailService.sendOrderStatusUpdate(order, emailStatus).catch((error) => {
           console.error(`[Email] Item action cancel email failed for status ${emailStatus}:`, error.message);
         });
+
+        // Best-effort external sync after the cancel commits — never blocks the
+        // response. Partial: re-quote the lighter parcel's courier cost, then
+        // recreate the ShipRocket shipment with the remaining items. Full:
+        // cancel the ShipRocket shipment.
+        const isFullCancel = remainingQty <= 0;
+        (async () => {
+          try {
+            if (!isFullCancel) await requoteRemainingShipping(order, orderItems);
+            await syncShiprocketAfterCancel(order, orderItems, isFullCancel);
+          } catch (error) {
+            console.error('[OrderItemAction] post-cancel sync failed:', error.message);
+          }
+        })();
       }
 
       return res.status(201).json({
