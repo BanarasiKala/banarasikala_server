@@ -40,30 +40,13 @@ const OrderItem = sequelize.define('OrderItem', {
     type: DataTypes.STRING,
     allowNull: true
   },
+  // ACTIVE | REMOVED | RETURNED. The per-action rollup counters
+  // (cancelled/returned/exchanged/pending_action) are removed — those
+  // quantities are now derived from shipment_items / return_items.
   status: {
     type: DataTypes.STRING,
     allowNull: false,
     defaultValue: 'Active'
-  },
-  cancelled_quantity: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-    defaultValue: 0
-  },
-  returned_quantity: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-    defaultValue: 0
-  },
-  exchanged_quantity: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-    defaultValue: 0
-  },
-  pending_action_quantity: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-    defaultValue: 0
   },
   shipping_meta: {
     type: DataTypes.JSONB,

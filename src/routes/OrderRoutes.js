@@ -35,6 +35,9 @@ router.patch('/:id/refund-status', authMiddleware, adminMiddleware, OrderControl
 // Single customer order detail. Uses logged-in customer id.
 router.get('/:id', authMiddleware, OrderController.getCustomerOrderById);
 
+// Customer modification: quantity/address changes within 24h / before dispatch.
+router.patch('/:id/modify', authMiddleware, OrderController.modifyOrder);
+
 // Customer cancellation: allowed within 24 hours, also attempts ShipRocket cancel.
 router.post('/:id/cancel', authMiddleware, OrderController.cancelOrder);
 

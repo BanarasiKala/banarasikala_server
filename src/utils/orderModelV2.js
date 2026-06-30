@@ -1,0 +1,174 @@
+/**
+ * orderModelV2.js
+ *
+ * Phase 1 of the normalized order model. Creates the new tables and the
+ * orders.current_address_id pointer. Additive and idempotent — nothing reads
+ * from these tables yet, so this is safe to run on every boot.
+ *
+ * The new tables are created via Model.sync() (CREATE TABLE IF NOT EXISTS) in
+ * foreign-key dependency order. We intentionally do NOT use sync({ alter: true })
+ * anywhere — only create-if-missing.
+ */
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/db');
+const { config } = require('../config/env');
+
+// Models — required in dependency order so associations are registered.
+const OrderAddress = require('../models/OrderAddress');
+const OrderStatusHistory = require('../models/OrderStatusHistory');
+const OrderModification = require('../models/OrderModification');
+const Shipment = require('../models/Shipment');
+const ShipmentItem = require('../models/ShipmentItem');
+const RtoEvent = require('../models/RtoEvent');
+const ReturnRequest = require('../models/ReturnRequest');
+const ReturnItem = require('../models/ReturnItem');
+const OrderLedger = require('../models/OrderLedger');
+const PaymentTransaction = require('../models/PaymentTransaction');
+const RefundTransaction = require('../models/RefundTransaction');
+const CodBlockEvent = require('../models/CodBlockEvent');
+
+// ── Enum constants (single source of truth for the new model) ──────────────────
+
+const ORDER_STATUS = Object.freeze({
+  PLACED: 'PLACED',
+  MODIFIED: 'MODIFIED',
+  DISPATCHED: 'DISPATCHED',
+  DELIVERED: 'DELIVERED',
+  RTO: 'RTO',
+  RTO_AWAITING_PAYMENT: 'RTO_AWAITING_PAYMENT',
+  RETURN_REQUESTED: 'RETURN_REQUESTED',
+  CLOSED: 'CLOSED',
+});
+
+const ACTOR = Object.freeze({
+  CUSTOMER: 'CUSTOMER',
+  ADMIN: 'ADMIN',
+  SYSTEM: 'SYSTEM',
+});
+
+const MODIFICATION_TYPE = Object.freeze({
+  QTY_CHANGE: 'QTY_CHANGE',
+  ITEM_REMOVED: 'ITEM_REMOVED',
+  ITEM_ADDED: 'ITEM_ADDED',
+  ADDRESS_CHANGE: 'ADDRESS_CHANGE',
+});
+
+const SHIPMENT_TYPE = Object.freeze({ FORWARD: 'FORWARD', REVERSE: 'REVERSE' });
+
+const SHIPMENT_STATUS = Object.freeze({
+  CREATED: 'CREATED',
+  DISPATCHED: 'DISPATCHED',
+  IN_TRANSIT: 'IN_TRANSIT',
+  DELIVERED: 'DELIVERED',
+  RTO: 'RTO',
+  PICKUP_SCHEDULED: 'PICKUP_SCHEDULED',
+  PICKED_UP: 'PICKED_UP',
+  RECEIVED: 'RECEIVED',
+});
+
+const RTO_RESOLUTION = Object.freeze({
+  AWAITING_PAYMENT: 'AWAITING_PAYMENT',
+  PAID: 'PAID',
+  REDISPATCHED: 'REDISPATCHED',
+  ABANDONED: 'ABANDONED',
+  PRODUCT_RETURNED_COD_BLOCKED: 'PRODUCT_RETURNED_COD_BLOCKED',
+});
+
+const RETURN_TYPE = Object.freeze({ PARTIAL: 'PARTIAL', FULL: 'FULL' });
+
+const RETURN_STATUS = Object.freeze({
+  REQUESTED: 'REQUESTED',
+  APPROVED: 'APPROVED',
+  PICKED_UP: 'PICKED_UP',
+  RECEIVED: 'RECEIVED',
+  REFUNDED: 'REFUNDED',
+  REJECTED: 'REJECTED',
+});
+
+const LEDGER_ENTRY_TYPE = Object.freeze({
+  PRODUCT_CHARGE: 'PRODUCT_CHARGE',
+  SHIPPING_CHARGE: 'SHIPPING_CHARGE',
+  RTO_CHARGE: 'RTO_CHARGE',
+  REDISPATCH_CHARGE: 'REDISPATCH_CHARGE',
+  COD_FEE: 'COD_FEE',
+  PLATFORM_FEE: 'PLATFORM_FEE',
+  PAYMENT_FEE: 'PAYMENT_FEE',
+  GIFT_CHARGE: 'GIFT_CHARGE',
+  COUPON_DISCOUNT: 'COUPON_DISCOUNT',
+  PREPAID_DISCOUNT: 'PREPAID_DISCOUNT',
+  WALLET_CREDIT: 'WALLET_CREDIT',
+  PAYMENT: 'PAYMENT',
+  COD_COLLECTION: 'COD_COLLECTION',
+  REFUND: 'REFUND',
+});
+
+const LEDGER_DIRECTION = Object.freeze({ DEBIT: 'DEBIT', CREDIT: 'CREDIT' });
+
+const LEDGER_REFERENCE_TYPE = Object.freeze({
+  ORDER: 'ORDER',
+  MODIFICATION: 'MODIFICATION',
+  SHIPMENT: 'SHIPMENT',
+  RTO_EVENT: 'RTO_EVENT',
+  RETURN: 'RETURN',
+  PAYMENT: 'PAYMENT',
+});
+
+const COD_BLOCK_ACTION = Object.freeze({ BLOCK: 'BLOCK', UNBLOCK: 'UNBLOCK' });
+
+// ── Auto-migration ─────────────────────────────────────────────────────────────
+
+// Create tables parents-first so foreign keys resolve.
+const SYNC_ORDER = [
+  OrderAddress,
+  OrderStatusHistory,
+  OrderModification,
+  Shipment,
+  ShipmentItem,
+  RtoEvent,
+  ReturnRequest,
+  ReturnItem,
+  OrderLedger,
+  PaymentTransaction,
+  RefundTransaction,
+  CodBlockEvent,
+];
+
+let modelV2Ready = false;
+
+const ensureOrderModelV2Tables = async () => {
+  if (modelV2Ready) return;
+
+  // 1. Create the new tables if they don't exist (no alter).
+  for (const model of SYNC_ORDER) {
+    await model.sync();
+  }
+
+  // 2. Add the orders.current_address_id pointer (additive, idempotent).
+  const qi = sequelize.getQueryInterface();
+  const ordersTable = { tableName: 'orders', schema: config.dbSchema };
+  const ordersColumns = await qi.describeTable(ordersTable);
+  if (!ordersColumns.current_address_id) {
+    await qi.addColumn(ordersTable, 'current_address_id', {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    });
+  }
+
+  modelV2Ready = true;
+};
+
+module.exports = {
+  ensureOrderModelV2Tables,
+  ORDER_STATUS,
+  ACTOR,
+  MODIFICATION_TYPE,
+  SHIPMENT_TYPE,
+  SHIPMENT_STATUS,
+  RTO_RESOLUTION,
+  RETURN_TYPE,
+  RETURN_STATUS,
+  LEDGER_ENTRY_TYPE,
+  LEDGER_DIRECTION,
+  LEDGER_REFERENCE_TYPE,
+  COD_BLOCK_ACTION,
+};

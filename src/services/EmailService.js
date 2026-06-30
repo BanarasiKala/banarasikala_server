@@ -78,7 +78,7 @@ class EmailService {
             <tfoot>
               <tr>
                 <td colspan="3" style="padding: 20px 10px 10px; font-weight: bold; text-align: right;">Total Amount:</td>
-                <td style="padding: 20px 10px 10px; font-weight: bold; color: #800020;">₹${order.total_amount}</td>
+                <td style="padding: 20px 10px 10px; font-weight: bold; color: #800020;">₹${order.total_amount ?? order.payable_amount ?? ''}</td>
               </tr>
             </tfoot>
           </table>

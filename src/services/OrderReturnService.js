@@ -21,6 +21,13 @@
  */
 const OrderItemAction = require('../models/OrderItemAction');
 const OrderRefund = require('../models/OrderRefund');
+const Shipment = require('../models/Shipment');
+const OrderStatusHistory = require('../models/OrderStatusHistory');
+const ReturnRequest = require('../models/ReturnRequest');
+const ReturnItem = require('../models/ReturnItem');
+const OrderAddress = require('../models/OrderAddress');
+const OrderLedger = require('../models/OrderLedger');
+const { deriveOrderTotals } = require('./orderLedgerService');
 const ShipRocketService = require('./ShipRocketService');
 const WalletService = require('./WalletService');
 const {
@@ -30,10 +37,20 @@ const {
   calculateItemAction,
   statusForRequestedAction,
   isDeliveredEnoughForPostDeliveryAction,
-  appendOrderStatusHistory,
   roundMoney,
 } = require('../utils/orderItemActions');
 const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
+const {
+  SHIPMENT_TYPE, RETURN_TYPE, RETURN_STATUS, ACTOR,
+} = require('../utils/orderModelV2');
+
+// Reverse (pickup) shipping cost, sourced from the latest forward shipment's
+// rate card now that the order no longer stores courier data.
+const reverseChargeFromShipment = (shipment) => {
+  const d = shipment?.selected_courier_data || {};
+  const candidate = [d.freight_charge, d.rate, d.shipping_charge, d.charge].find((v) => Number(v) > 0);
+  return roundMoney(Number(candidate) || Number(shipment?.forward_charge) || 0);
+};
 
 const RETURN_WINDOW_DAYS = 7;
 
@@ -111,7 +128,7 @@ const resolveTargets = ({ orderItems, itemActions, selections }) => {
       if (usableItemIds.has(Number(item.id))) {
         throw err(400, `${item.product_name || 'This product'} already has an active request. Please choose another product.`);
       }
-      const maxQty = getActionableQuantity(item);
+      const maxQty = getActionableQuantity(item, itemActions);
       const requested = Number(selection.quantity);
       const quantity = requested > 0 ? Math.min(requested, maxQty) : maxQty;
       if (quantity < 1) {
@@ -122,8 +139,8 @@ const resolveTargets = ({ orderItems, itemActions, selections }) => {
   }
 
   return orderItems
-    .filter((item) => !usableItemIds.has(Number(item.id)) && getActionableQuantity(item) > 0)
-    .map((item) => ({ item, quantity: getActionableQuantity(item) }));
+    .filter((item) => !usableItemIds.has(Number(item.id)) && getActionableQuantity(item, itemActions) > 0)
+    .map((item) => ({ item, quantity: getActionableQuantity(item, itemActions) }));
 };
 
 /**
@@ -158,8 +175,16 @@ const createReverseActions = async ({
   const cleanReason = String(reason || '').trim() || null;
   const entries = [];
 
+  // Reverse shipping comes from the latest forward shipment's rate card.
+  const forwardShipment = await Shipment.findOne({
+    where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD },
+    order: [['created_at', 'DESC']],
+    transaction,
+  });
+  const reverseShippingCharge = reverseChargeFromShipment(forwardShipment);
+
   for (const { item, quantity } of targets) {
-    const calculation = calculateItemAction({ order, item, actionType, quantity });
+    const calculation = calculateItemAction({ item, actionType, quantity, reverseShippingCharge });
     const action = await OrderItemAction.create({
       order_id: order.id,
       order_item_id: item.id,
@@ -177,10 +202,9 @@ const createReverseActions = async ({
       },
     }, { transaction });
 
-    await item.update({
-      status: statusForRequestedAction(actionType),
-      pending_action_quantity: Number(item.pending_action_quantity || 0) + quantity,
-    }, { transaction });
+    // Quantity accounting is derived from action rows now — only the item
+    // status pointer is updated.
+    await item.update({ status: statusForRequestedAction(actionType) }, { transaction });
 
     entries.push({ action, item, quantity, calculation });
   }
@@ -205,6 +229,21 @@ const createReverseActions = async ({
         ? 'Customer bank details are required before manual refund.'
         : 'Refund will be processed back to the original prepaid payment method.',
     }, { transaction });
+
+    // Normalized V2 mirror: return_requests + return_items (gross values).
+    const isFull = targets.length >= orderItems.length;
+    const returnRequest = await ReturnRequest.create({
+      order_id: order.id,
+      type: isFull ? RETURN_TYPE.FULL : RETURN_TYPE.PARTIAL,
+      status: RETURN_STATUS.REQUESTED,
+      reason: cleanReason,
+    }, { transaction });
+    await ReturnItem.bulkCreate(entries.map(({ item, quantity }) => ({
+      return_request_id: returnRequest.id,
+      order_item_id: item.id,
+      quantity,
+      item_value: roundMoney(Number(item.price || 0) * quantity),
+    })), { transaction });
   } else {
     refundRow = await OrderRefund.create({
       order_id: order.id,
@@ -218,9 +257,14 @@ const createReverseActions = async ({
   }
 
   const nextStatus = actionType === ACTION_TYPES.RETURN ? 'Return Initiated' : 'Exchange Initiated';
-  await order.update({
-    status: nextStatus,
-    status_history: appendOrderStatusHistory(order, nextStatus, actor, cleanReason),
+  const prevStatus = order.status;
+  await order.update({ status: nextStatus }, { transaction });
+  await OrderStatusHistory.create({
+    order_id: order.id,
+    from_status: prevStatus,
+    to_status: nextStatus,
+    actor: actor === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER,
+    reason: cleanReason,
   }, { transaction });
 
   return { entries, actions: entries.map((entry) => entry.action), refundRow };
@@ -244,9 +288,18 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason }) =>
     sku: item.sku,
   }));
 
+  // Enrich the order with the current address + total (no longer on the order row).
+  const address = await OrderAddress.findOne({ where: { order_id: order.id, is_current: true } });
+  const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id } }));
+  const srOrder = {
+    ...order.toJSON(),
+    address: address?.line, city: address?.city, pincode: address?.pincode,
+    phone: address?.phone, state: address?.state, total_amount: totals.total_amount,
+  };
+
   try {
     const data = await ShipRocketService.createReturnOrder({
-      order,
+      order: srOrder,
       items,
       reason: actionType === ACTION_TYPES.EXCHANGE
         ? `Exchange: ${String(reason || 'Exchange requested').slice(0, 200)}`

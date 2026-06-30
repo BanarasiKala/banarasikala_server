@@ -39,6 +39,13 @@ router.post('/cancel-return', authMiddleware, ShipRocketController.cancelReturn)
 router.post('/cancel-exchange', authMiddleware, ShipRocketController.cancelExchange);
 
 /**
+ * POST /api/shiprocket/resolve-rto
+ * Body: { orderId, action: 'redispatch' | 'abandon' }
+ * Prepaid RTO resolution — pay to re-dispatch, or abandon for a refund.
+ */
+router.post('/resolve-rto', authMiddleware, ShipRocketController.resolveRto);
+
+/**
  * POST /api/shiprocket/webhook
  * ShipRocket webhook for shipment status updates.
  */

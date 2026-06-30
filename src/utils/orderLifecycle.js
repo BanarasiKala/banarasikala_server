@@ -3,24 +3,14 @@ const { sequelize } = require("../config/db");
 const { config } = require("../config/env");
 const Order = require("../models/Order");
 const Customer = require("../models/Customer");
+const CodBlockEvent = require("../models/CodBlockEvent");
+const { COD_BLOCK_ACTION } = require("./orderModelV2");
 
-const ORDER_LIFECYCLE_COLUMNS = {
-  is_rto: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
-  rto_count: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-  is_redispatched: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
-  redispatch_count: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-  original_order_id: { type: DataTypes.BIGINT, allowNull: true },
-  redispatch_payment_amount: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: 0 },
-  customer_cod_blocked: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
-  cod_blocked_at: { type: DataTypes.DATE, allowNull: true },
-  cod_block_reason: { type: DataTypes.TEXT, allowNull: true },
-  is_modified: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
-  modified_at: { type: DataTypes.DATE, allowNull: true },
-  status_history: { type: DataTypes.JSONB, allowNull: true, defaultValue: [] },
-  is_gift: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
-  gift_message: { type: DataTypes.TEXT, allowNull: true },
-  gift_charge: { type: DataTypes.DECIMAL(10, 2), allowNull: true, defaultValue: 0 },
-};
+// V2: these legacy order columns were dropped and now live in dedicated tables
+// (shipments, rto_events, order_modifications, order_status_history,
+// cod_block_events, order_ledger). The list is intentionally empty so the
+// ensure helper no longer resurrects the dropped columns.
+const ORDER_LIFECYCLE_COLUMNS = {};
 
 const CUSTOMER_COD_COLUMNS = {
   is_cod_blocked: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
@@ -70,65 +60,48 @@ const getContactWhere = ({ email, phone }) => {
   };
 };
 
+// V2: the COD-block flag is a customer-level attribute (customers.is_cod_blocked),
+// with history in cod_block_events. We no longer scan the orders table.
 const isCodBlockedForContact = async ({ customerId, email, phone, transaction } = {}) => {
-  await ensureOrderLifecycleColumns();
+  const customerWhere = customerId ? { id: customerId } : getContactWhere({ email, phone });
+  if (!customerWhere) return false;
 
-  const contactWhere = getContactWhere({ email, phone });
-  const customerWhere = customerId
-    ? { id: customerId }
-    : contactWhere;
-
-  if (customerWhere) {
-    const customer = await Customer.findOne({
-      where: customerWhere,
-      attributes: ["id", "is_cod_blocked"],
-      transaction,
-    });
-    if (customer?.is_cod_blocked) return true;
-  }
-
-  if (!contactWhere) return false;
-
-  const blockedOrder = await Order.findOne({
-    where: {
-      customer_cod_blocked: true,
-      [Op.and]: [
-        sequelize.where(sequelize.fn("lower", sequelize.col("customer_email")), normalizeText(email)),
-        { phone: { [Op.like]: `%${normalizePhone(phone)}` } },
-      ],
-    },
-    attributes: ["id"],
+  const customer = await Customer.findOne({
+    where: customerWhere,
+    attributes: ["id", "is_cod_blocked"],
     transaction,
   });
-
-  return Boolean(blockedOrder);
+  return Boolean(customer?.is_cod_blocked);
 };
 
+// V2: set the customer-level flag and record a cod_block_events audit row.
+// The order no longer stores phone, so guests are matched by email only.
 const blockCustomerCodForOrder = async (order, reason = COD_RTO_BLOCK_REASON, transaction = null) => {
-  await ensureOrderLifecycleColumns();
-
   const cleanEmail = normalizeText(order.customer_email);
-  const cleanPhone = normalizePhone(order.phone);
   const where = order.customer_id
     ? { id: order.customer_id }
-    : cleanEmail && cleanPhone
-      ? {
-        [Op.and]: [
-          sequelize.where(sequelize.fn("lower", sequelize.col("email")), cleanEmail),
-          { phone: { [Op.like]: `%${cleanPhone}` } },
-        ],
-      }
+    : cleanEmail
+      ? sequelize.where(sequelize.fn("lower", sequelize.col("email")), cleanEmail)
       : null;
 
   if (!where) return;
 
+  const customer = await Customer.findOne({ where, attributes: ["id"], transaction });
+  if (!customer) return;
+
   await Customer.update(
+    { is_cod_blocked: true, cod_block_reason: reason, blocked_at: new Date() },
+    { where: { id: customer.id }, transaction },
+  );
+
+  await CodBlockEvent.create(
     {
-      is_cod_blocked: true,
-      cod_block_reason: reason,
-      blocked_at: new Date(),
+      customer_id: customer.id,
+      action: COD_BLOCK_ACTION.BLOCK,
+      triggered_by_order_id: order.id || null,
+      reason,
     },
-    { where, transaction },
+    { transaction },
   );
 };
 
@@ -137,33 +110,9 @@ const toMoney = (value) => {
   return Number.isFinite(next) ? Math.max(0, Math.round(next * 100) / 100) : 0;
 };
 
-const getCourierMoney = (courierData, keys) => {
-  const data = courierData || {};
-  for (const key of keys) {
-    if (data[key] !== undefined && data[key] !== null && data[key] !== "") return toMoney(data[key]);
-  }
-  return 0;
-};
-
-const getForwardShippingCharge = (order) => {
-  const stored = toMoney(order.shipping_charge);
-  if (stored > 0) return stored;
-  return getCourierMoney(order.selected_courier_data, ["freight_charge", "rate", "charge", "shipping_charge"]);
-};
-
-const getRtoShippingCharge = (order) =>
-  getCourierMoney(order.selected_courier_data, ["rto_charges", "rto_charge", "rto_freight_charge", "rto_shipping_charge"]);
-
-const calculateRtoRefundAmount = (order, nextRtoCount = null) => {
-  const paid = toMoney(order.payable_amount ?? order.total_amount);
-  const rtoCount = Math.max(1, Number(nextRtoCount ?? order.rto_count ?? 1));
-  const forwardCharge = getForwardShippingCharge(order);
-  const rtoCharge = getRtoShippingCharge(order);
-  const redispatchPaid = toMoney(order.redispatch_payment_amount);
-  const logisticsDeduction = (forwardCharge + rtoCharge) * rtoCount + redispatchPaid;
-
-  return Math.max(0, toMoney(paid - logisticsDeduction));
-};
+// V2: RTO refund/shipping calculations moved to the ledger + rto_events (charges
+// are sourced from the forward shipment's rate card in ShipRocketController).
+// The old order-column-based helpers were removed.
 
 module.exports = {
   ORDER_LIFECYCLE_COLUMNS,
@@ -173,8 +122,5 @@ module.exports = {
   ensureOrderLifecycleColumns,
   isCodBlockedForContact,
   blockCustomerCodForOrder,
-  calculateRtoRefundAmount,
-  getForwardShippingCharge,
-  getRtoShippingCharge,
   toMoney,
 };

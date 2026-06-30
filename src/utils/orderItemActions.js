@@ -54,12 +54,10 @@ const ORDER_ITEM_ACTION_COLUMNS = {
   updated_at: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
 };
 
-const ORDER_ITEM_ACTION_QUANTITY_COLUMNS = {
-  cancelled_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-  returned_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-  exchanged_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-  pending_action_quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
-};
+// V2: the rollup counters were dropped from order_items (now derived from
+// shipment_items / return_items). Empty so the schema check no longer
+// resurrects them. Kept as a named export for backward compatibility.
+const ORDER_ITEM_ACTION_QUANTITY_COLUMNS = {};
 
 let schemaReady = false;
 
@@ -100,38 +98,32 @@ const normalizeActionType = (value) => {
   return next;
 };
 
-const getActionableQuantity = (item) => {
+// V2: the per-item rollup counters were dropped from order_items. Actioned
+// quantity is now derived from the item's own action rows (passed in). With no
+// actions, the full quantity is still available.
+const REVERSE_CLOSED = ['rejected', 'cancelled'];
+const getActionableQuantity = (item, actions = []) => {
   const quantity = Math.max(0, Number(item?.quantity || 0));
-  const used = Number(item?.cancelled_quantity || 0)
-    + Number(item?.returned_quantity || 0)
-    + Number(item?.exchanged_quantity || 0)
-    + Number(item?.pending_action_quantity || 0);
+  const used = (Array.isArray(actions) ? actions : [])
+    .filter((a) => Number(a.order_item_id) === Number(item?.id)
+      && !REVERSE_CLOSED.includes(String(a.status || '').toLowerCase()))
+    .reduce((sum, a) => sum + Number(a.quantity || 0), 0);
   return Math.max(0, quantity - used);
 };
 
-const getCourierCharge = (order) => {
-  const courier = order?.selected_courier_data || {};
-  const candidates = [
-    courier.freight_charge,
-    courier.rate,
-    courier.shipping_charge,
-    courier.delivery_charge,
-    courier.charge,
-    order?.shipping_charge,
-  ];
-  return roundMoney(candidates.find((value) => Number(value) > 0) || 0);
-};
-
+// Forward delivery deduction comes from the item's own shipping snapshot.
 const getForwardDeduction = (item) => {
   const rules = item?.shipping_meta?.refund_rules || {};
   return roundMoney(rules.return_delivery_deduction ?? item?.shipping_meta?.delivery_charge ?? 0);
 };
 
-const calculateItemAction = ({ order, item, actionType, quantity }) => {
+// Reverse (pickup) shipping is now passed in by the caller, sourced from the
+// forward shipment's rate card rather than the (dropped) order columns.
+const calculateItemAction = ({ item, actionType, quantity, reverseShippingCharge = 0 }) => {
   const qty = Math.max(1, Number(quantity || 1));
   const itemAmount = roundMoney(Number(item.price || 0) * qty);
   const forwardDeduction = actionType === ACTION_TYPES.RETURN ? getForwardDeduction(item) : 0;
-  const reverseDeduction = actionType === ACTION_TYPES.RETURN ? getCourierCharge(order) : 0;
+  const reverseDeduction = actionType === ACTION_TYPES.RETURN ? roundMoney(reverseShippingCharge) : 0;
   const estimatedRefund = actionType === ACTION_TYPES.RETURN
     ? Math.max(0, roundMoney(itemAmount - forwardDeduction - reverseDeduction))
     : actionType === ACTION_TYPES.CANCEL
@@ -152,18 +144,16 @@ const statusForRequestedAction = (actionType) => {
   return ITEM_STATUS.EXCHANGE_REQUESTED;
 };
 
-const statusAfterCompletedAction = (item, actionType) => {
-  const quantity = Math.max(0, Number(item.quantity || 0));
-  const cancelled = Number(item.cancelled_quantity || 0);
-  const returned = Number(item.returned_quantity || 0);
-  const exchanged = Number(item.exchanged_quantity || 0);
+// fullyActioned: whether the completed quantity now covers the whole line
+// (derived by the caller from the item's action rows).
+const statusAfterCompletedAction = (actionType, fullyActioned) => {
   if (actionType === ACTION_TYPES.CANCEL) {
-    return cancelled >= quantity ? ITEM_STATUS.CANCELLED : ITEM_STATUS.PARTIALLY_CANCELLED;
+    return fullyActioned ? ITEM_STATUS.CANCELLED : ITEM_STATUS.PARTIALLY_CANCELLED;
   }
   if (actionType === ACTION_TYPES.RETURN) {
-    return returned >= quantity ? ITEM_STATUS.RETURN_COMPLETED : ITEM_STATUS.PARTIALLY_RETURNED;
+    return fullyActioned ? ITEM_STATUS.RETURN_COMPLETED : ITEM_STATUS.PARTIALLY_RETURNED;
   }
-  return exchanged >= quantity ? ITEM_STATUS.EXCHANGE_COMPLETED : ITEM_STATUS.PARTIALLY_EXCHANGED;
+  return fullyActioned ? ITEM_STATUS.EXCHANGE_COMPLETED : ITEM_STATUS.PARTIALLY_EXCHANGED;
 };
 
 const isDeliveredEnoughForPostDeliveryAction = (order) => {
@@ -171,15 +161,8 @@ const isDeliveredEnoughForPostDeliveryAction = (order) => {
   return Boolean(order?.delivered_at) || status === 'delivered';
 };
 
-/**
- * Append one entry to an order's status_history array.
- * actor: 'customer' | 'admin' | 'system'
- */
-const appendOrderStatusHistory = (order, status, actor, note = null) => {
-  const history = Array.isArray(order.status_history) ? [...order.status_history] : [];
-  history.push({ status, timestamp: new Date().toISOString(), actor, note });
-  return history;
-};
+// V2: status history is written to the order_status_history table, not a JSONB
+// column — appendOrderStatusHistory was removed.
 
 module.exports = {
   ACTION_TYPES,
@@ -192,6 +175,5 @@ module.exports = {
   statusForRequestedAction,
   statusAfterCompletedAction,
   isDeliveredEnoughForPostDeliveryAction,
-  appendOrderStatusHistory,
   roundMoney,
 };

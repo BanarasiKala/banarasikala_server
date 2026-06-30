@@ -5,6 +5,12 @@ const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const OrderItemAction = require('../models/OrderItemAction');
 const OrderRefund = require('../models/OrderRefund');
+const Payment = require('../models/Payment');
+const Shipment = require('../models/Shipment');
+const ShipmentItem = require('../models/ShipmentItem');
+const RtoEvent = require('../models/RtoEvent');
+const OrderStatusHistory = require('../models/OrderStatusHistory');
+const OrderAddress = require('../models/OrderAddress');
 const EmailService = require('../services/EmailService');
 const WalletService = require('../services/WalletService');
 const { sequelize } = require('../config/db');
@@ -12,13 +18,40 @@ const { config } = require('../config/env');
 const {
   COD_RTO_BLOCK_REASON,
   blockCustomerCodForOrder,
-  calculateRtoRefundAmount,
-  ensureOrderLifecycleColumns,
-  getForwardShippingCharge,
-  getRtoShippingCharge,
+  toMoney,
 } = require('../utils/orderLifecycle');
-const { ACTION_TYPES, ACTION_STATUS, appendOrderStatusHistory } = require('../utils/orderItemActions');
+const { ACTION_TYPES, ACTION_STATUS } = require('../utils/orderItemActions');
 const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
+const {
+  SHIPMENT_TYPE, SHIPMENT_STATUS, RTO_RESOLUTION, ACTOR,
+  LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE,
+} = require('../utils/orderModelV2');
+const { appendEntry, getOrderBalance, deriveOrderTotals } = require('../services/orderLedgerService');
+const OrderLedger = require('../models/OrderLedger');
+const PaymentTransaction = require('../models/PaymentTransaction');
+const RefundTransaction = require('../models/RefundTransaction');
+const { refundPayment: razorpayRefund } = require('../services/RazorpayService');
+
+// Courier-money helpers reading from a shipment's stored rate card.
+const courierMoney = (data, keys) => {
+  const d = data || {};
+  for (const k of keys) {
+    if (d[k] !== undefined && d[k] !== null && d[k] !== '') return toMoney(d[k]);
+  }
+  return 0;
+};
+const forwardChargeOf = (shipment) =>
+  courierMoney(shipment?.selected_courier_data, ['freight_charge', 'rate', 'charge', 'shipping_charge'])
+  || toMoney(shipment?.forward_charge);
+const rtoChargeOf = (shipment) =>
+  courierMoney(shipment?.selected_courier_data, ['rto_charges', 'rto_charge', 'rto_freight_charge', 'rto_shipping_charge']);
+
+// Record an order status transition in the history table.
+const recordStatus = (orderId, from, to, actor, reason, transaction) =>
+  OrderStatusHistory.create(
+    { order_id: orderId, from_status: from, to_status: to, actor: actor || ACTOR.SYSTEM, reason: reason || null },
+    { transaction },
+  );
 
 // In-memory cache for pincode serviceability lookups. Courier ETAs/rates change
 // slowly, so caching per pincode+weight+cod for a few hours avoids hammering the
@@ -61,12 +94,14 @@ class ShipRocketController {
 
       if (!orderId) return res.status(400).json({ message: 'orderId is required' });
 
-      // Fetch order + items from DB
+      // Fetch order + items + current address + ledger totals
       const order = await Order.findByPk(orderId, { include: [OrderItem] });
       if (!order) return res.status(404).json({ message: 'Order not found' });
+      const address = await OrderAddress.findOne({ where: { order_id: order.id, is_current: true } });
+      const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id } }));
 
-      // Map OrderItems to a flat items array with name fallback
-      const items = order.OrderItems.map(oi => ({
+      const activeItems = order.OrderItems.filter((oi) => !['Cancelled', 'REMOVED'].includes(oi.status));
+      const items = activeItems.map(oi => ({
         product_id: oi.product_id,
         quantity: oi.quantity,
         price: oi.price,
@@ -74,36 +109,41 @@ class ShipRocketController {
         sku: oi.sku,
       }));
 
-      // Step 1: Create order on ShipRocket
-      const srOrder = await ShipRocketService.createOrder({ order, items });
-      console.log('ShipRocket Order Created:', srOrder); 
+      // Step 1: Create order on ShipRocket (address + totals from V2 tables)
+      const srOrder = await ShipRocketService.createOrder({
+        order: {
+          ...order.toJSON(),
+          address: address?.line, city: address?.city, pincode: address?.pincode,
+          phone: address?.phone, state: address?.state,
+          total_amount: totals.total_amount, discount_amount: totals.discount_amount,
+        },
+        items,
+      });
       const shipmentId = srOrder.shipment_id;
       const srOrderId = srOrder.order_id;
 
       let awbData = null;
-
-      // Step 2 (optional): Auto-assign AWB
       if (autoAssignCourier && shipmentId) {
         awbData = await ShipRocketService.assignAWB(shipmentId);
       }
+      const awbCode = awbData?.response?.data?.awb_code || null;
 
-      // Persist shiprocket_order_id + awb on the local order record if columns exist
-      try {
-        const updatePayload = { shiprocket_order_id: srOrderId };
-        if (awbData?.response?.data?.awb_code) {
-          updatePayload.shiprocket_awb = awbData.response.data.awb_code;
-          updatePayload.status = 'AWB Assigned';
-        }
-        await order.update(updatePayload);
-      } catch (_) {
-        // Columns may not exist yet — ignore silently
-      }
+      // Record the forward shipment (V2)
+      const shipment = await Shipment.create({
+        order_id: order.id, address_id: address?.id || null, type: SHIPMENT_TYPE.FORWARD,
+        status: awbCode ? SHIPMENT_STATUS.DISPATCHED : SHIPMENT_STATUS.CREATED,
+        awb_number: awbCode ? String(awbCode) : null,
+        shiprocket_order_id: srOrderId ? String(srOrderId) : null,
+        forward_charge: totals.shipping_charge, dispatched_at: awbCode ? new Date() : null,
+      });
+      await ShipmentItem.bulkCreate(activeItems.map((oi) => ({ shipment_id: shipment.id, order_item_id: oi.id, quantity: oi.quantity })));
+      await order.update({ status: awbCode ? 'AWB Assigned' : 'Processing' });
 
       return res.status(200).json({
         message: 'Order pushed to ShipRocket successfully',
         shiprocket_order_id: srOrderId,
         shipment_id: shipmentId,
-        awb: awbData?.response?.data?.awb_code || null,
+        awb: awbCode,
       });
     } catch (error) {
       console.error('[ShipRocket] pushOrder error:', error?.response?.data || error.message);
@@ -122,15 +162,16 @@ class ShipRocketController {
 
       const data = await ShipRocketService.assignAWB(shipment_id, courier_id || null);
 
-      // Persist AWB in local database if returned successfully
+      // Persist AWB on the forward shipment (V2) and bump the order status.
       const awbCode = data?.response?.data?.awb_code;
       const srOrderId = data?.response?.data?.order_id;
       if (awbCode && srOrderId) {
         try {
-          await Order.update(
-            { shiprocket_awb: String(awbCode), status: 'AWB Assigned' },
-            { where: { shiprocket_order_id: String(srOrderId) } }
-          );
+          const ship = await Shipment.findOne({ where: { shiprocket_order_id: String(srOrderId), type: SHIPMENT_TYPE.FORWARD } });
+          if (ship) {
+            await ship.update({ awb_number: String(awbCode), status: SHIPMENT_STATUS.DISPATCHED, dispatched_at: new Date() });
+            await Order.update({ status: 'AWB Assigned' }, { where: { id: ship.order_id } });
+          }
         } catch (dbErr) {
           console.error('[ShipRocket] Failed to save AWB to database during assignAWB:', dbErr.message);
         }
@@ -206,11 +247,15 @@ class ShipRocketController {
       const order = await Order.findByPk(orderId);
       if (!order) return res.status(404).json({ message: 'Order not found' });
 
-      if (!order.shiprocket_order_id) {
+      const ship = await Shipment.findOne({
+        where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD, shiprocket_order_id: { [Op.ne]: null } },
+        order: [['created_at', 'DESC']],
+      });
+      if (!ship?.shiprocket_order_id) {
         return res.status(400).json({ message: 'This order has not been pushed to ShipRocket yet' });
       }
 
-      const data = await ShipRocketService.trackByOrderId(order.shiprocket_order_id);
+      const data = await ShipRocketService.trackByOrderId(ship.shiprocket_order_id);
       return res.status(200).json(data);
     } catch (error) {
       console.error('[ShipRocket] trackByOrderId error:', error?.response?.data || error.message);
@@ -417,7 +462,6 @@ class ShipRocketController {
   async webhook(req, res) {
     console.log("Webhook received");
     try {
-      await ensureOrderLifecycleColumns();
       const providedSecret =
         req.headers['x-api-key'] ||
         req.headers['x-webhook-secret'] ||
@@ -440,24 +484,35 @@ class ShipRocketController {
       const transaction = await sequelize.transaction();
       let committed = false;
       try {
-      // Find order — check order_item_actions first for reverse shipments, then orders for forward
+      // Find order. Reverse shipments are still tracked on order_item_actions
+      // (returns not yet migrated); forward shipments live in `shipments`.
       let order = null;
       let reverseAction = null;
+      let forwardShipment = null;
 
       if (srOrderId) {
         reverseAction = await OrderItemAction.findOne({ where: { shiprocket_return_order_id: String(srOrderId) }, transaction });
-        if (reverseAction) {
-          order = await Order.findByPk(reverseAction.order_id, { transaction, lock: Transaction.LOCK.UPDATE });
-        } else {
-          order = await Order.findOne({ where: { shiprocket_order_id: String(srOrderId) }, transaction, lock: Transaction.LOCK.UPDATE });
-        }
       }
-      if (!order && awb) {
+      if (!reverseAction && awb) {
         reverseAction = await OrderItemAction.findOne({ where: { shiprocket_return_awb: String(awb) }, transaction });
-        if (reverseAction) {
-          order = await Order.findByPk(reverseAction.order_id, { transaction, lock: Transaction.LOCK.UPDATE });
-        } else {
-          order = await Order.findOne({ where: { shiprocket_awb: String(awb) }, transaction, lock: Transaction.LOCK.UPDATE });
+      }
+
+      if (reverseAction) {
+        order = await Order.findByPk(reverseAction.order_id, { transaction, lock: Transaction.LOCK.UPDATE });
+      } else {
+        const shipWhere = [];
+        if (srOrderId) shipWhere.push({ shiprocket_order_id: String(srOrderId) });
+        if (awb) shipWhere.push({ awb_number: String(awb) });
+        if (shipWhere.length) {
+          forwardShipment = await Shipment.findOne({
+            where: { type: SHIPMENT_TYPE.FORWARD, [Op.or]: shipWhere },
+            order: [['created_at', 'DESC']],
+            transaction,
+            lock: Transaction.LOCK.UPDATE,
+          });
+        }
+        if (forwardShipment) {
+          order = await Order.findByPk(forwardShipment.order_id, { transaction, lock: Transaction.LOCK.UPDATE });
         }
       }
 
@@ -467,129 +522,138 @@ class ShipRocketController {
       }
 
       const isReverse = Boolean(reverseAction);
-      const updatePayload = {};
+      const prevStatus = order.status;
+      let orderStatus = nextStatus;
+      const orderUpdate = {};
 
       if (isReverse) {
         const isExchange = reverseAction.action_type === ACTION_TYPES.EXCHANGE;
         const prefix = isExchange ? 'Exchange' : 'Return';
-        let reverseStatus = nextStatus;
-        if (nextStatus === 'Shipped') reverseStatus = `${prefix} Shipped`;
-        else if (nextStatus === 'Returned') reverseStatus = `${prefix} Completed`;
-        else if (nextStatus === 'RTO Delivered') reverseStatus = `${prefix} Completed`;
-        else if (nextStatus === 'Cancelled') reverseStatus = `${prefix} Cancelled`;
-        else if (nextStatus === 'Delivered') reverseStatus = `${prefix} Delivered`;
-        else if (nextStatus === 'Return Picked Up') reverseStatus = `${prefix} Picked Up`;
-        else if (nextStatus === 'Out For Pickup') reverseStatus = `Out For ${prefix} Pickup`;
-        else if (nextStatus === 'Pickup Scheduled') reverseStatus = `${prefix} Pickup Scheduled`;
-
-        updatePayload.status = reverseStatus;
+        if (nextStatus === 'Shipped') orderStatus = `${prefix} Shipped`;
+        else if (nextStatus === 'Returned') orderStatus = `${prefix} Completed`;
+        else if (nextStatus === 'RTO Delivered') orderStatus = `${prefix} Completed`;
+        else if (nextStatus === 'Cancelled') orderStatus = `${prefix} Cancelled`;
+        else if (nextStatus === 'Delivered') orderStatus = `${prefix} Delivered`;
+        else if (nextStatus === 'Return Picked Up') orderStatus = `${prefix} Picked Up`;
+        else if (nextStatus === 'Out For Pickup') orderStatus = `Out For ${prefix} Pickup`;
+        else if (nextStatus === 'Pickup Scheduled') orderStatus = `${prefix} Pickup Scheduled`;
 
         if (awb && !reverseAction.shiprocket_return_awb) {
           await reverseAction.update({ shiprocket_return_awb: String(awb) }, { transaction });
         }
       } else {
-        // Forward shipment updates
-        updatePayload.status = nextStatus;
-        const isRtoStatus = ['RTO Initiated', 'RTO In Transit', 'RTO Delivered'].includes(nextStatus);
-        const currentRtoCount = Number(order.rto_count || 0);
-        const nextRtoCount = isRtoStatus ? Math.max(1, currentRtoCount || 1) : currentRtoCount;
-        
-        if (awb && !order.shiprocket_awb) {
-          updatePayload.shiprocket_awb = String(awb);
+        // ── Forward shipment: update the shipment row, not the order ──
+        const shipStatusMap = {
+          'AWB Assigned': SHIPMENT_STATUS.DISPATCHED,
+          'Shipped': SHIPMENT_STATUS.IN_TRANSIT,
+          'Out For Delivery': SHIPMENT_STATUS.IN_TRANSIT,
+          'Delivered': SHIPMENT_STATUS.DELIVERED,
+          'RTO Initiated': SHIPMENT_STATUS.RTO,
+          'RTO In Transit': SHIPMENT_STATUS.RTO,
+          'RTO Delivered': SHIPMENT_STATUS.RTO,
+        };
+        if (forwardShipment) {
+          const shipUpdate = {};
+          if (shipStatusMap[nextStatus]) shipUpdate.status = shipStatusMap[nextStatus];
+          if (awb && !forwardShipment.awb_number) shipUpdate.awb_number = String(awb);
+          if (srOrderId && !forwardShipment.shiprocket_order_id) shipUpdate.shiprocket_order_id = String(srOrderId);
+          if (nextStatus === 'Delivered' && !forwardShipment.delivered_at) shipUpdate.delivered_at = new Date();
+          if (['RTO Initiated', 'RTO In Transit', 'RTO Delivered'].includes(nextStatus) && !forwardShipment.rto_at) shipUpdate.rto_at = new Date();
+          if (Object.keys(shipUpdate).length) await forwardShipment.update(shipUpdate, { transaction });
         }
-        if (srOrderId && !order.shiprocket_order_id) {
-          updatePayload.shiprocket_order_id = String(srOrderId);
-        }
-        
+
         if (nextStatus === 'Delivered' && !order.delivered_at) {
-          updatePayload.delivered_at = new Date();
+          orderUpdate.delivered_at = new Date();
+          // COD: the courier collected cash on delivery — record it so the
+          // ledger balance settles to 0.
+          if (String(order.payment_method || '').toUpperCase() === 'COD') {
+            const bal = await getOrderBalance(order.id, transaction);
+            if (bal > 0) {
+              await appendEntry(order.id, {
+                type: LEDGER_ENTRY_TYPE.COD_COLLECTION, amount: bal, direction: LEDGER_DIRECTION.CREDIT,
+                referenceType: LEDGER_REFERENCE_TYPE.SHIPMENT, referenceId: forwardShipment?.id || null,
+                note: 'COD collected on delivery',
+              }, transaction);
+            }
+          }
         }
 
-        if (isRtoStatus) {
-          updatePayload.is_rto = true;
-          updatePayload.rto_count = nextRtoCount;
-        }
+        if (nextStatus === 'RTO Delivered' && forwardShipment) {
+          // Idempotency: one rto_event per forward shipment.
+          const existingRto = await RtoEvent.findOne({ where: { shipment_id: forwardShipment.id }, transaction });
+          if (!existingRto) {
+            const isCodOrder = String(order.payment_method || '').toUpperCase() === 'COD';
+            const forwardCharge = forwardChargeOf(forwardShipment);
+            const rtoCharge = rtoChargeOf(forwardShipment);
 
-        if (nextStatus === 'RTO Delivered') {
-          const paymentMethod = String(order.payment_method || '').toUpperCase();
-          const isCodOrder = paymentMethod === 'COD';
-          const currentStatus = String(order.status || '').toLowerCase();
-          const alreadyFinalRto = currentStatus === 'rto delivered'
-            || (currentStatus === 'seller cancelled' && Boolean(order.is_rto));
-          const actualRtoCount = alreadyFinalRto
-            ? Math.max(1, currentRtoCount)
-            : currentRtoCount + 1;
-
-          updatePayload.rto_count = actualRtoCount;
-
-          // Idempotency: a redelivered "RTO Delivered" webhook must not create a
-          // second RTO refund row or re-block COD.
-          const existingRtoRefund = await OrderRefund.findOne({
-            where: { order_id: order.id, refund_type: REFUND_TYPE.RTO },
-            transaction,
-          });
-
-          if (isCodOrder) {
-            const blockedAt = new Date();
-            updatePayload.status = 'Seller Cancelled';
-            updatePayload.cancelled_at = blockedAt;
-            updatePayload.customer_cod_blocked = true;
-            updatePayload.cod_blocked_at = blockedAt;
-            updatePayload.cod_block_reason = COD_RTO_BLOCK_REASON;
-            await blockCustomerCodForOrder(order, COD_RTO_BLOCK_REASON, transaction);
-            if (!existingRtoRefund) {
-              await OrderRefund.create({
+            if (isCodOrder) {
+              // COD: product returned, nothing collected → block COD (terminal).
+              const rtoEvent = await RtoEvent.create({
+                shipment_id: forwardShipment.id,
                 order_id: order.id,
-                refund_type: REFUND_TYPE.RTO,
-                amount: 0,
-                status: REFUND_STATUS.NOT_REQUIRED,
-                payment_method: REFUND_PAYMENT_METHOD.NOT_REQUIRED,
-                note: 'Your order has been cancelled due to unsuccessful delivery. Please place a new order if you still wish to purchase the product. COD is now blocked for this account.',
+                payment_method: 'COD',
+                forward_charge_to_recover: 0,
+                rto_charge: 0,
+                resolution: RTO_RESOLUTION.PRODUCT_RETURNED_COD_BLOCKED,
               }, { transaction });
-            }
-          } else {
-            const refundAmount = calculateRtoRefundAmount(order, actualRtoCount);
-            const forwardCharge = getForwardShippingCharge(order);
-            const rtoCharge = getRtoShippingCharge(order);
-            const hasRedispatch = Number(order.redispatch_count || 0) > 0 || actualRtoCount > 1;
-            const rtoNote = hasRedispatch
-              ? `Your order could not be delivered after multiple attempts and has been cancelled. Refund eligible amount: Rs. ${refundAmount.toLocaleString('en-IN')} after delivery deductions. Please place a fresh order if you still wish to purchase this item.`
-              : `Order returned to seller. Refund eligible amount: Rs. ${refundAmount.toLocaleString('en-IN')} after Rs. ${forwardCharge.toLocaleString('en-IN')} forward charge and Rs. ${rtoCharge.toLocaleString('en-IN')} RTO charge deduction. You may choose refund or re-dispatch.`;
-
-            if (hasRedispatch) {
-              updatePayload.status = 'Seller Cancelled';
-              updatePayload.cancelled_at = new Date();
-            }
-            if (!existingRtoRefund) {
-              await OrderRefund.create({
+              await blockCustomerCodForOrder(order, COD_RTO_BLOCK_REASON, transaction);
+              // Zero the uncollected COD balance (product is back with us).
+              const bal = await getOrderBalance(order.id, transaction);
+              if (bal > 0) {
+                await appendEntry(order.id, {
+                  type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: bal, direction: LEDGER_DIRECTION.CREDIT,
+                  referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rtoEvent.id,
+                  note: 'COD RTO — order returned, nothing collected',
+                }, transaction);
+              }
+              orderUpdate.cancelled_at = new Date();
+              orderStatus = 'Seller Cancelled';
+              const existingRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction });
+              if (!existingRtoRefund) {
+                await OrderRefund.create({
+                  order_id: order.id, refund_type: REFUND_TYPE.RTO, amount: 0,
+                  status: REFUND_STATUS.NOT_REQUIRED, payment_method: REFUND_PAYMENT_METHOD.NOT_REQUIRED,
+                  note: 'Order cancelled due to unsuccessful delivery. COD is now blocked for this account.',
+                }, { transaction });
+              }
+            } else {
+              // Prepaid: record the event with the logistics owed. The ledger
+              // money is posted at resolve time (redispatch payment vs. abandon),
+              // so the charges aren't stranded if the customer chooses a refund.
+              await RtoEvent.create({
+                shipment_id: forwardShipment.id,
                 order_id: order.id,
-                refund_type: REFUND_TYPE.RTO,
-                amount: refundAmount,
-                status: hasRedispatch ? REFUND_STATUS.PENDING : 'RTO Action Required',
-                payment_method: REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-                note: rtoNote,
+                payment_method: 'Prepaid',
+                forward_charge_to_recover: forwardCharge,
+                rto_charge: rtoCharge,
+                resolution: RTO_RESOLUTION.AWAITING_PAYMENT,
               }, { transaction });
+              orderStatus = 'RTO';
+              const existingRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction });
+              if (!existingRtoRefund) {
+                const payable = toMoney(forwardCharge + rtoCharge);
+                await OrderRefund.create({
+                  order_id: order.id, refund_type: REFUND_TYPE.RTO, amount: 0,
+                  status: 'RTO Action Required', payment_method: REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
+                  note: `Order returned to seller. Pay Rs. ${payable.toLocaleString('en-IN')} (forward Rs. ${toMoney(forwardCharge).toLocaleString('en-IN')} + RTO Rs. ${toMoney(rtoCharge).toLocaleString('en-IN')}) to re-dispatch, or request a refund.`,
+                }, { transaction });
+              }
             }
           }
         }
       }
 
-      updatePayload.status_history = appendOrderStatusHistory(
-        order,
-        updatePayload.status,
-        'system',
-        isReverse ? 'Reverse shipment update' : 'Shipment update',
-      );
-
-      await order.update(updatePayload, { transaction });
+      orderUpdate.status = orderStatus;
+      await order.update(orderUpdate, { transaction });
+      await recordStatus(order.id, prevStatus, orderStatus, ACTOR.SYSTEM, isReverse ? 'Reverse shipment update' : 'Shipment update', transaction);
       await transaction.commit();
       committed = true;
 
-      EmailService.sendOrderStatusUpdate({ ...order.toJSON(), ...updatePayload }, updatePayload.status).catch((emailError) => {
+      EmailService.sendOrderStatusUpdate({ ...order.toJSON(), ...orderUpdate }, orderStatus).catch((emailError) => {
         console.error(`[Email] ShipRocket webhook email failed for order #${order.id}:`, emailError.message);
       });
 
-      return res.status(200).json({ message: 'Order status synced', orderId: order.id, status: updatePayload.status });
+      return res.status(200).json({ message: 'Order status synced', orderId: order.id, status: orderStatus });
       } catch (innerError) {
         if (!committed) await transaction.rollback();
         throw innerError;
@@ -597,6 +661,141 @@ class ShipRocketController {
     } catch (error) {
       console.error('[ShipRocket] webhook error:', error?.response?.data || error.message);
       return res.status(500).json({ message: 'Webhook failed' });
+    }
+  }
+
+  // ── Resolve a prepaid RTO: customer pays to re-dispatch, or abandons for refund ──
+  // Body: { orderId, action: 'redispatch' | 'abandon',
+  //         gateway_payment_id?, gateway?  (proof of the redispatch payment) }
+  async resolveRto(req, res) {
+    const transaction = await sequelize.transaction();
+    let committed = false;
+    try {
+      const { orderId, action, gateway_payment_id = null, gateway = 'razorpay' } = req.body;
+      const order = await Order.findByPk(orderId, { transaction, lock: Transaction.LOCK.UPDATE });
+      if (!order) {
+        await transaction.rollback();
+        return res.status(404).json({ message: 'Order not found' });
+      }
+      const isOwnedByCustomerId = Number(order.customer_id) === Number(req.user?.id);
+      const isLegacyOwnedByEmail = !order.customer_id
+        && req.user?.email
+        && String(order.customer_email || '').toLowerCase() === String(req.user.email).toLowerCase();
+      if (req.userRole !== 'admin' && !isOwnedByCustomerId && !isLegacyOwnedByEmail) {
+        await transaction.rollback();
+        return res.status(403).json({ message: 'This order does not belong to this customer.' });
+      }
+
+      const rto = await RtoEvent.findOne({
+        where: { order_id: order.id, resolution: RTO_RESOLUTION.AWAITING_PAYMENT },
+        order: [['created_at', 'DESC']],
+        transaction,
+        lock: Transaction.LOCK.UPDATE,
+      });
+      if (!rto) {
+        await transaction.rollback();
+        return res.status(400).json({ message: 'No RTO awaiting resolution for this order.' });
+      }
+
+      const F = toMoney(rto.forward_charge_to_recover);
+      const R = toMoney(rto.rto_charge);
+      const payable = toMoney(F + R);
+
+      if (action === 'redispatch') {
+        // Customer paid the redispatch fee (forward + RTO). Record charges + payment.
+        if (F > 0) await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.SHIPPING_CHARGE, amount: F, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'Redispatch: forward shipping' }, transaction);
+        if (R > 0) await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.RTO_CHARGE, amount: R, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'Redispatch: RTO charge' }, transaction);
+        const payLedger = payable > 0
+          ? await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.PAYMENT, amount: payable, direction: LEDGER_DIRECTION.CREDIT, referenceType: LEDGER_REFERENCE_TYPE.PAYMENT, referenceId: rto.id, note: 'Redispatch payment received' }, transaction)
+          : null;
+        if (payable > 0) {
+          await PaymentTransaction.create({
+            order_id: order.id, ledger_entry_id: payLedger?.id || null,
+            gateway, gateway_ref: gateway_payment_id, amount: payable, status: 'Paid',
+          }, { transaction });
+        }
+
+        // New forward shipment (same order) from the current address + active items.
+        const addr = await OrderAddress.findOne({ where: { order_id: order.id, is_current: true }, transaction });
+        const items = await OrderItem.findAll({ where: { order_id: order.id, status: { [Op.notIn]: ['Cancelled', 'REMOVED'] } }, transaction });
+        const shipment = await Shipment.create({
+          order_id: order.id, address_id: addr?.id || null,
+          type: SHIPMENT_TYPE.FORWARD, status: SHIPMENT_STATUS.CREATED, forward_charge: F,
+        }, { transaction });
+        await ShipmentItem.bulkCreate(items.map((i) => ({ shipment_id: shipment.id, order_item_id: i.id, quantity: i.quantity })), { transaction });
+
+        await rto.update({ resolution: RTO_RESOLUTION.REDISPATCHED }, { transaction });
+        await order.update({ status: 'Processing', cancelled_at: null }, { transaction });
+        await recordStatus(order.id, 'RTO', 'Processing', req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER, 'RTO redispatch paid', transaction);
+        await OrderRefund.update(
+          { status: REFUND_STATUS.NOT_REQUIRED, note: 'Customer paid to re-dispatch the order.' },
+          { where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction },
+        );
+
+        await transaction.commit();
+        committed = true;
+
+        // Best-effort: push the new forward shipment to ShipRocket.
+        (async () => {
+          try {
+            const srItems = items.map((i, idx) => ({ product_id: i.product_id, quantity: i.quantity, price: i.price, name: i.product_name || `Product ${idx + 1}`, sku: i.sku }));
+            const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id } }));
+            const srResult = await ShipRocketService.createOrder({
+              order: { ...order.toJSON(), address: addr?.line, city: addr?.city, pincode: addr?.pincode, phone: addr?.phone, state: addr?.state, total_amount: totals.total_amount, discount_amount: totals.discount_amount },
+              items: srItems,
+            });
+            await shipment.update({
+              status: srResult?.awb_code ? SHIPMENT_STATUS.DISPATCHED : SHIPMENT_STATUS.CREATED,
+              awb_number: srResult?.awb_code ? String(srResult.awb_code) : null,
+              shiprocket_order_id: srResult?.order_id ? String(srResult.order_id) : null,
+              dispatched_at: srResult?.awb_code ? new Date() : null,
+            });
+          } catch (srErr) {
+            console.error(`[ShipRocket] Redispatch push failed for order #${order.id}:`, srErr?.response?.data || srErr.message);
+          }
+        })();
+
+        const balance = await getOrderBalance(order.id);
+        return res.status(200).json({ message: 'Order re-dispatched.', redispatch_fee: payable, balance_due: balance, shipment_id: shipment.id });
+      }
+
+      // ── Abandon: refund what the customer paid, minus the forward + RTO charges ──
+      const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction }));
+      const refund = Math.max(0, toMoney(totals.amount_paid - F - R));
+      if (refund > 0) {
+        // Reverse order value by the refund, then pay it back (balance-neutral, nets to 0).
+        await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: refund, direction: LEDGER_DIRECTION.CREDIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'RTO abandoned — value returned' }, transaction);
+        const refLedger = await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.REFUND, amount: refund, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'RTO refund (less forward + RTO charges)' }, transaction);
+        await RefundTransaction.create({
+          order_id: order.id, ledger_entry_id: refLedger?.id || null,
+          gateway: 'original_gateway', amount: refund, status: 'Pending',
+        }, { transaction });
+      }
+
+      await rto.update({ resolution: RTO_RESOLUTION.ABANDONED }, { transaction });
+      await order.update({ status: 'Seller Cancelled', cancelled_at: new Date() }, { transaction });
+      await recordStatus(order.id, 'RTO', 'Seller Cancelled', req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER, 'RTO abandoned — refund', transaction);
+      await OrderRefund.update(
+        { amount: refund, status: refund > 0 ? REFUND_STATUS.PENDING : REFUND_STATUS.NOT_REQUIRED, note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics).` },
+        { where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction },
+      );
+
+      await transaction.commit();
+      committed = true;
+
+      if (refund > 0) {
+        Payment.findOne({ where: { order_id: order.id, status: 'Paid' } }).then((payment) => {
+          if (payment?.gateway_payment_id) {
+            return razorpayRefund(payment.gateway_payment_id, refund, { reason: 'RTO abandoned', orderId: String(order.id) });
+          }
+        }).catch((err) => console.error(`[Razorpay] RTO refund failed for #${order.id}:`, err?.message || err));
+      }
+
+      return res.status(200).json({ message: 'RTO abandoned. Refund initiated.', refund_amount: refund });
+    } catch (error) {
+      if (!committed) await transaction.rollback();
+      console.error('[ShipRocket] resolveRto error:', error?.response?.data || error.message);
+      return res.status(500).json({ message: 'Failed to resolve RTO', detail: error.message });
     }
   }
 
@@ -653,29 +852,24 @@ class ShipRocketController {
       for (const [itemId, qty] of pendingByItem.entries()) {
         const item = await OrderItem.findByPk(itemId, { transaction, lock: Transaction.LOCK.UPDATE });
         if (!item) continue;
-        const pending = Math.max(0, Number(item.pending_action_quantity || 0) - qty);
-        await item.update(
-          { pending_action_quantity: pending, status: pending > 0 ? item.status : 'Active' },
-          { transaction },
-        );
+        // Reopen the item if it has no other open reverse action.
+        const stillOpen = await OrderItemAction.count({
+          where: {
+            order_item_id: item.id,
+            status: { [Op.notIn]: [ACTION_STATUS.COMPLETED, ACTION_STATUS.REJECTED, ACTION_STATUS.CANCELLED] },
+          },
+          transaction,
+        });
+        await item.update({ status: stillOpen > 0 ? item.status : 'Active' }, { transaction });
       }
 
       await OrderRefund.update(
         { status: REFUND_STATUS.NOT_REQUIRED, note: reason ? `${label} cancelled: ${reason}` : `${label} request cancelled by customer.` },
         { where: { order_id: orderId, refund_type: refundType }, transaction },
       );
-      await order.update(
-        {
-          status: 'Delivered',
-          status_history: appendOrderStatusHistory(
-            order,
-            'Delivered',
-            req.userRole === 'admin' ? 'admin' : 'customer',
-            `${label} request cancelled`,
-          ),
-        },
-        { transaction },
-      );
+      const prevStatus = order.status;
+      await order.update({ status: 'Delivered' }, { transaction });
+      await recordStatus(order.id, prevStatus, 'Delivered', req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER, `${label} request cancelled`, transaction);
 
       await transaction.commit();
       committed = true;
