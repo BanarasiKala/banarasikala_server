@@ -23,6 +23,7 @@ router.post("/:id/comments", authMiddleware, ReelController.addComment);
 
 // ─── Public (no login; optional auth so we know if the viewer liked it) ──────
 router.get("/", optionalAuthMiddleware, ReelController.list);
+router.get("/product/:productId", ReelController.getForProduct);
 router.get("/:id", optionalAuthMiddleware, ReelController.getOne);
 router.get("/:id/comments", ReelController.getComments);
 router.post("/:id/view", ReelController.view);

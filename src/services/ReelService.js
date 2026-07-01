@@ -157,6 +157,19 @@ const incrementView = async (id) => {
   await Reel.increment("view_count", { where: { id } });
 };
 
+// Published reels whose featured products include this product id (JSONB @>).
+const getReelsForProduct = async (productId) => {
+  const id = Number(productId);
+  if (!Number.isInteger(id) || id <= 0) return [];
+  const rows = await Reel.findAll({
+    where: { is_published: true, product_ids: { [Op.contains]: [id] } },
+    order: [["display_order", "ASC"], ["created_at", "DESC"]],
+  });
+  return Promise.all(
+    rows.map(async (reel) => serializeReel(reel, { products: await resolveProducts(reel.product_ids) }))
+  );
+};
+
 // ─── Likes (customer) ───────────────────────────────────────────────────────
 
 const toggleLike = async (reelId, customerId) => {
@@ -316,6 +329,7 @@ const deleteComment = async (commentId) => {
 module.exports = {
   listPublishedReels,
   getReelById,
+  getReelsForProduct,
   incrementView,
   toggleLike,
   addComment,

@@ -37,6 +37,16 @@ const ReelController = {
     }
   },
 
+  async getForProduct(req, res) {
+    try {
+      const reels = await ReelService.getReelsForProduct(req.params.productId);
+      res.json({ reels });
+    } catch (error) {
+      logError("getForProduct", error);
+      res.status(500).json({ message: "Could not load reels for product." });
+    }
+  },
+
   async getComments(req, res) {
     try {
       const comments = await ReelService.listApprovedComments(req.params.id);
