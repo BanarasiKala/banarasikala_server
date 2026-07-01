@@ -3,28 +3,21 @@ const dns = require('dns');
 const { config } = require('../config/env');
 
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 465,        //  Port 465 use karein (Render isko block nahi karta)
-  secure: true,     //  Isko TRUE rakhna hai port 465 ke liye (yeh internally SSL/TLS upgrade karega)
+  host: config.emailHost,        // e.g. smtp.titan.email
+  port: config.emailPort,        // 465 = SSL, 587 = STARTTLS
+  secure: Number(config.emailPort) === 465, // true for 465, false for 587
   pool: true,
   maxConnections: 5,
   family: 4,
-  
-  // Terminal logging temporarily on rakhein check karne ke liye
-  logger: true,
-  debug: true,
-
-
-  
   auth: {
-    user: config.emailUser,
-    pass: config.emailPass,
+    user: String(config.emailUser || '').trim(),
+    // Strip any whitespace (Gmail App Passwords are shown with spaces; harmless elsewhere).
+    pass: String(config.emailPass || '').replace(/\s/g, ''),
   },
   tls: {
-    //  Render/Cloud instances ke handshake ke liye zaroori hai
-    ciphers: 'SSLv3',
-    rejectUnauthorized: false
-  }
+    // Lenient cert check for cloud hosts; modern default ciphers (no forced SSLv3).
+    rejectUnauthorized: false,
+  },
 });
 
 // Verification check on boot (App start hote hi pata chal jayega connect ho raha hai ya nahi)

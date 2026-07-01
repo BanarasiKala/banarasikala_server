@@ -1289,6 +1289,7 @@ class OrderController {
       // Apply requested quantity changes
       const qtyBefore = [];
       const qtyAfter = [];
+      const changeLines = []; // per-item recalculation detail (saved on the modification)
       for (const change of (Array.isArray(itemChanges) ? itemChanges : [])) {
         const itemId = Number(change.order_item_id);
         const item = itemsById.get(itemId);
@@ -1325,6 +1326,20 @@ class OrderController {
         hasItemChange = true;
         qtyBefore.push({ order_item_id: itemId, quantity: oldQty });
         qtyAfter.push({ order_item_id: itemId, quantity: newQty });
+        // Per-item recalculation snapshot (the rearranged prices/quantities).
+        // NOTE: refund is intentionally aggregate-only for a modify — no per-item
+        // refund is recorded (unlike a return/cancel).
+        changeLines.push({
+          order_item_id: itemId,
+          product_name: item.product_name || null,
+          unit_price: roundLedger(price),
+          old_quantity: oldQty,
+          new_quantity: newQty,
+          old_line_total: roundLedger(oldQty * price),
+          new_line_total: roundLedger(newQty * price),
+          line_delta: roundLedger((newQty - oldQty) * price),
+          removed: newQty === 0,
+        });
 
         const delta = newQty - oldQty;
         const product = await Product.findByPk(item.product_id, {
