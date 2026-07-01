@@ -1,3 +1,5 @@
+const path = require("path");
+const fs = require("fs/promises");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -5,6 +7,7 @@ const compression = require("compression");
 const { config } = require("./config/env");
 const requestLogger = require("./middleware/requestLogger");
 const errorHandler = require("./middleware/errorHandler");
+const ProductService = require("./services/ProductService");
 
 const VarietyRoutes = require("./routes/VarietyRoutes");
 const ColorRoutes = require("./routes/ColorRoutes");
@@ -30,6 +33,54 @@ const ReelRoutes = require("./routes/ReelRoutes");
 const StatsRoutes = require("./routes/StatsRoutes");
 
 const app = express();
+
+const clientDistPath = path.resolve(__dirname, "..", "..", "banarasikala_client", "dist");
+const clientIndexHtmlPath = path.join(clientDistPath, "index.html");
+let clientIndexHtml = null;
+
+const loadClientIndexHtml = async () => {
+  try {
+    clientIndexHtml = await fs.readFile(clientIndexHtmlPath, "utf8");
+  } catch (error) {
+    console.warn(`[Server] Could not load client index.html from ${clientIndexHtmlPath}: ${error.message}`);
+    clientIndexHtml = null;
+  }
+};
+
+const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const escapeHtml = (value) => String(value || "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+
+const renderProductHtml = (product, pageUrl) => {
+  if (!clientIndexHtml) return null;
+  const title = `${normalizeText(product.name)} | Banarasi Kala`;
+  const description = normalizeText(product.short_description || product.description || "Shop authentic Banarasi sarees, handwoven silk, and premium accessories from Banarasi Kala.");
+  const rawImage = product.images?.[0]?.url || product.image_url || "/logo_transparent_2.png";
+  const origin = new URL(pageUrl).origin;
+  const imageUrl = rawImage.startsWith("http") ? rawImage : `${origin}${rawImage.startsWith("/") ? rawImage : `/${rawImage}`}`;
+
+  const metaTags = `
+    <meta name="description" content="${escapeHtml(description)}" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:url" content="${escapeHtml(pageUrl)}" />
+    <meta property="og:type" content="product" />
+    <meta property="twitter:card" content="summary_large_image" />
+    <meta property="twitter:title" content="${escapeHtml(title)}" />
+    <meta property="twitter:description" content="${escapeHtml(description)}" />
+    <meta property="twitter:image" content="${escapeHtml(imageUrl)}" />
+    <link rel="canonical" href="${escapeHtml(pageUrl)}" />
+  `;
+
+  return clientIndexHtml.replace(/<title>.*?<\/title>/i, `<title>${escapeHtml(title)}</title>${metaTags}`);
+};
+
+loadClientIndexHtml();
 
 app.use(helmet());
 app.use(compression());
@@ -115,8 +166,32 @@ app.use("/api/reels", ReelRoutes);
 // Social-proof stats — public (orders today, live product viewers).
 app.use("/api/stats", StatsRoutes);
 
-app.use((req, res) => {
-  res.status(404).json({ message: "API route not found" });
+app.get("/product/:slug", async (req, res, next) => {
+  try {
+    const colorId = req.query.color || null;
+    const product = await ProductService.getProductDetailBySlug(req.params.slug, colorId);
+    if (!product) return next();
+
+    const scheme = req.headers["x-forwarded-proto"]?.split(",")[0] || req.protocol;
+    const pageUrl = `${scheme}://${req.get("host")}${req.originalUrl}`;
+    const html = renderProductHtml(product, pageUrl);
+    if (html) {
+      return res.type("html").send(html);
+    }
+    return next();
+  } catch (error) {
+    console.error("[Server] Product share route error:", error);
+    return next(error);
+  }
+});
+
+app.use(express.static(clientDistPath, { index: false }));
+
+app.get("*", (req, res) => {
+  if (clientIndexHtml && req.method === "GET") {
+    return res.type("html").send(clientIndexHtml);
+  }
+  return res.status(404).json({ message: "API route not found" });
 });
 
 app.use(errorHandler);
