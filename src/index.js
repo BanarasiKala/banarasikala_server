@@ -48,6 +48,12 @@ const loadClientIndexHtml = async () => {
 };
 
 const normalizeText = (value) => String(value || "").replace(/\s+/g, " ").trim();
+const stripHtml = (value) => normalizeText(String(value || "").replace(/<[^>]*>/g, " "));
+const truncateText = (value, maxLength = 180) => {
+  const text = stripHtml(value);
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 3).trim()}...`;
+};
 const escapeHtml = (value) => String(value || "")
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
@@ -55,29 +61,89 @@ const escapeHtml = (value) => String(value || "")
   .replace(/"/g, "&quot;")
   .replace(/'/g, "&#39;");
 
+const metaKeys = [
+  "description",
+  "og:title",
+  "og:description",
+  "og:image",
+  "og:image:secure_url",
+  "og:image:alt",
+  "og:url",
+  "og:type",
+  "og:site_name",
+  "twitter:card",
+  "twitter:title",
+  "twitter:description",
+  "twitter:image",
+  "twitter:image:alt",
+  "product:price:amount",
+  "product:price:currency",
+];
+
+const removeExistingMeta = (html) => metaKeys.reduce(
+  (current, key) => current.replace(
+    new RegExp(`\\s*<meta\\s+(?:name|property)=["']${key}["'][^>]*>`, "gi"),
+    "",
+  ),
+  html,
+).replace(/\s*<link\s+rel=["']canonical["'][^>]*>/gi, "");
+
+const getProductImages = (product = {}) => {
+  return [...(product.images || []), ...(product.productImages || [])]
+    .map((image) => (typeof image === "string" ? { url: image } : image))
+    .filter((image) => image?.url)
+    .sort((a, b) => Number(a.display_order || 0) - Number(b.display_order || 0));
+};
+
+const getProductShareImage = (product = {}) => {
+  const images = getProductImages(product);
+  return (images.find((image) => image.is_cover) || images[0])?.url
+    || product.image_url
+    || product.image
+    || "/logo_transparent_2.png";
+};
+
+const toAbsoluteUrl = (url, pageUrl) => {
+  try {
+    return new URL(url || "/logo_transparent_2.png", new URL(pageUrl).origin).href;
+  } catch {
+    return url || "/logo_transparent_2.png";
+  }
+};
+
 const renderProductHtml = (product, pageUrl) => {
   if (!clientIndexHtml) return null;
-  const title = `${normalizeText(product.name)} | Banarasi Kala`;
-  const description = normalizeText(product.short_description || product.description || "Shop authentic Banarasi sarees, handwoven silk, and premium accessories from Banarasi Kala.");
-  const rawImage = product.images?.[0]?.url || product.image_url || "/logo_transparent_2.png";
-  const origin = new URL(pageUrl).origin;
-  const imageUrl = rawImage.startsWith("http") ? rawImage : `${origin}${rawImage.startsWith("/") ? rawImage : `/${rawImage}`}`;
+  const productName = normalizeText(product.name || "Banarasi Kala");
+  const title = productName === "Banarasi Kala" ? productName : `${productName} | Banarasi Kala`;
+  const description = truncateText(product.short_description || product.description || "Shop authentic Banarasi sarees, handwoven silk, and premium accessories from Banarasi Kala.");
+  const imageUrl = toAbsoluteUrl(getProductShareImage(product), pageUrl);
+  const price = Number(product.selling_price || product.price || 0);
 
   const metaTags = `
     <meta name="description" content="${escapeHtml(description)}" />
     <meta property="og:title" content="${escapeHtml(title)}" />
     <meta property="og:description" content="${escapeHtml(description)}" />
     <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:image:secure_url" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:image:alt" content="${escapeHtml(productName)}" />
     <meta property="og:url" content="${escapeHtml(pageUrl)}" />
     <meta property="og:type" content="product" />
-    <meta property="twitter:card" content="summary_large_image" />
-    <meta property="twitter:title" content="${escapeHtml(title)}" />
-    <meta property="twitter:description" content="${escapeHtml(description)}" />
-    <meta property="twitter:image" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:site_name" content="Banarasi Kala" />
+    ${price > 0 ? `<meta property="product:price:amount" content="${escapeHtml(price.toFixed(2))}" />` : ""}
+    ${price > 0 ? '<meta property="product:price:currency" content="INR" />' : ""}
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
+    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
+    <meta name="twitter:image:alt" content="${escapeHtml(productName)}" />
     <link rel="canonical" href="${escapeHtml(pageUrl)}" />
   `;
 
-  return clientIndexHtml.replace(/<title>.*?<\/title>/i, `<title>${escapeHtml(title)}</title>${metaTags}`);
+  const html = removeExistingMeta(clientIndexHtml);
+  if (/<title>.*?<\/title>/i.test(html)) {
+    return html.replace(/<title>.*?<\/title>/i, `<title>${escapeHtml(title)}</title>${metaTags}`);
+  }
+  return html.replace(/<\/head>/i, `<title>${escapeHtml(title)}</title>${metaTags}</head>`);
 };
 
 loadClientIndexHtml();
