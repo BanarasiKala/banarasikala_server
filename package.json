@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate:commerce": "node scripts/migrate-commerce-schema.js"
+    "migrate:commerce": "node scripts/migrate-commerce-schema.js",
+    "migrate:reels": "node scripts/create-reel-tables.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1075.0",

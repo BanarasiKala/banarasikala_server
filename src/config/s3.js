@@ -4,6 +4,9 @@ const path = require("path");
 const crypto = require("crypto");
 const { config } = require("./env");
 
+// Object-key prefixes this app owns and is allowed to create/delete.
+const MANAGED_FOLDERS = ["product-videos", "reels"];
+
 const s3Client =
   config.s3AccessKeyId && config.s3SecretAccessKey && config.s3Bucket
     ? new S3Client({
@@ -23,13 +26,14 @@ const s3Client =
  * Returns a short-lived pre-signed PUT URL the browser can upload to directly,
  * plus the permanent public URL where the video will live after upload.
  */
-const generateS3PresignedUploadUrl = async (fileName = "video.webm", contentType = "video/webm") => {
+const generateS3PresignedUploadUrl = async (fileName = "video.webm", contentType = "video/webm", folder = "product-videos") => {
   if (!s3Client) {
     throw new Error("S3 is not configured. Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET in .env");
   }
 
+  const safeFolder = MANAGED_FOLDERS.includes(folder) ? folder : "product-videos";
   const ext = path.extname(fileName) || ".webm";
-  const key = `product-videos/${Date.now()}-${crypto.randomBytes(8).toString("hex")}${ext}`;
+  const key = `${safeFolder}/${Date.now()}-${crypto.randomBytes(8).toString("hex")}${ext}`;
 
   const command = new PutObjectCommand({
     Bucket: config.s3Bucket,
@@ -59,8 +63,8 @@ const s3KeyFromUrl = (url) => {
   try {
     const { pathname } = new URL(url);
     const key = decodeURIComponent(pathname.replace(/^\/+/, ""));
-    // Only touch keys in our managed video folder
-    return key.startsWith("product-videos/") ? key : null;
+    // Only touch keys in folders we manage
+    return MANAGED_FOLDERS.some((folder) => key.startsWith(`${folder}/`)) ? key : null;
   } catch {
     return null;
   }
