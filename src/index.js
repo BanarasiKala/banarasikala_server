@@ -27,6 +27,7 @@ const ContactRoutes = require("./routes/ContactRoutes");
 const NewsletterRoutes = require("./routes/NewsletterRoutes");
 const ChatBotRoutes = require("./routes/ChatBotRoutes");
 const ReelRoutes = require("./routes/ReelRoutes");
+const StatsRoutes = require("./routes/StatsRoutes");
 
 const app = express();
 
@@ -110,6 +111,9 @@ app.use("/api/chatbot", ChatBotRoutes);
 // Reels — public feed (view/share no login; like/comment require login).
 // Admin endpoints for upload/CRUD and comment moderation live under /admin.
 app.use("/api/reels", ReelRoutes);
+
+// Social-proof stats — public (orders today, live product viewers).
+app.use("/api/stats", StatsRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: "API route not found" });
