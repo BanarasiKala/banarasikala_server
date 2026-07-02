@@ -182,15 +182,21 @@ const toggleLike = async (reelId, customerId) => {
       transaction,
     });
 
+    // Compute the response from the pre-update count: on Postgres,
+    // increment()/decrement() refresh the instance in place (RETURNING), so
+    // reading reel.like_count afterwards and adjusting it again would report
+    // a double increment/decrement.
+    const countBefore = Number(reel.like_count) || 0;
+
     if (existing) {
       await existing.destroy({ transaction });
       await reel.decrement("like_count", { by: 1, transaction });
-      return { liked: false, like_count: Math.max(0, reel.like_count - 1) };
+      return { liked: false, like_count: Math.max(0, countBefore - 1) };
     }
 
     await ReelLike.create({ reel_id: reelId, customer_id: customerId }, { transaction });
     await reel.increment("like_count", { by: 1, transaction });
-    return { liked: true, like_count: reel.like_count + 1 };
+    return { liked: true, like_count: countBefore + 1 };
   });
 };
 
