@@ -6,7 +6,6 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate:commerce": "node scripts/migrate-commerce-schema.js",
     "migrate:reels": "node scripts/create-reel-tables.js"
   },
   "dependencies": {

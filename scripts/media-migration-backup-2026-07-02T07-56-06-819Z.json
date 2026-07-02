@@ -1,0 +1,1329 @@
+[
+  {
+    "id": 1,
+    "name": "Banarasi Art Silk Saree (Mauve Pink)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781987665/vns-saree/products/sniq2cqpjffsrbpewufe.png",
+        "color_id": 1,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781987664/vns-saree/products/csbgj4bun9chppqmphue.png",
+        "color_id": 1,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781987812/vns-saree/products/qdjtfbdzbdjpbm34bbt4.jpg",
+        "color_id": 1,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781987811/vns-saree/products/pmt2ayr0qhzbcnxgouow.jpg",
+        "color_id": 1,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781987815/vns-saree/products/bzmuyy53s0yxhz2tbzfb.jpg",
+        "color_id": 1,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781987815/vns-saree/products/hsqmq3ehcor8burpg9af.jpg",
+        "color_id": 1,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782009867/vns-saree/product-videos/jwhtuj4laf1hwfmu7kxc.mp4",
+        "color_id": 1,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 2,
+    "name": " Self Design Banarasi Art Silk Saree (Peach)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781994637/vns-saree/products/jkvmkdpqua9p1wo6tlx6.png",
+        "color_id": 6,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781994638/vns-saree/products/mmstngbdbndmmoiyliuu.png",
+        "color_id": 6,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781994640/vns-saree/products/jknqa2qubzf9t29qj78r.jpg",
+        "color_id": 6,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781994640/vns-saree/products/slrls7jwd2fwpq8qjon1.jpg",
+        "color_id": 6,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781994636/vns-saree/products/xro9f0g8ydwv89s2u2rp.jpg",
+        "color_id": 6,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781994637/vns-saree/products/bzmr78ssdlucv4xhn84n.jpg",
+        "color_id": 6,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": []
+  },
+  {
+    "id": 3,
+    "name": " Banarasi Art Silk Saree (Grey)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054407/vns-saree/products/vgv83b71y1vmsfhjwsiu.png",
+        "color_id": 5,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054408/vns-saree/products/ziqyhsldmumq21ksbasw.png",
+        "color_id": 5,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054408/vns-saree/products/mbsdxpwxlt2tgthsqdpa.jpg",
+        "color_id": 5,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054409/vns-saree/products/wwn1axjrsu1udtnawxff.jpg",
+        "color_id": 5,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054408/vns-saree/products/fdtpcffjysr0cjsil4r9.jpg",
+        "color_id": 5,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054407/vns-saree/products/fbbatme6wbtjccg7renc.jpg",
+        "color_id": 5,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://dattx2z6hn2wv.cloudfront.net/product-videos/1782676640855-a9721700cf036679.mp4",
+        "color_id": 5,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 4,
+    "name": "Banarasi Art Silk Saree (Light Green)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781997282/vns-saree/products/bnnvlezamumhxjci4flw.png",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781997283/vns-saree/products/t3rq7oxbmpvvtkvh3fos.png",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781997288/vns-saree/products/zntkksk7pmyzsctc16i6.jpg",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781997286/vns-saree/products/qvoj9pjvxzm5nwvox7ux.jpg",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781997286/vns-saree/products/spehfuo8yqtppxpfvlnn.heic",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781997284/vns-saree/products/xznec52dvjf5qnxjqiab.heic",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://dattx2z6hn2wv.cloudfront.net/product-videos/1782675458829-0007ad777441a4d8.mp4",
+        "color_id": 7,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 5,
+    "name": "Banarasi Art Silk Saree (Pink Orange)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781998751/vns-saree/products/ns50kzra0psee3jihq3g.png",
+        "color_id": 8,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781998729/vns-saree/products/frpvh54duzdev28pvdsj.png",
+        "color_id": 8,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781998890/vns-saree/products/nefevemexk7obdklnulu.jpg",
+        "color_id": 8,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781998733/vns-saree/products/avuh6jbgb3t4pihs1zhv.jpg",
+        "color_id": 8,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781998747/vns-saree/products/agrwpv2hxfcymt89d92x.jpg",
+        "color_id": 8,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781998753/vns-saree/products/ftiyex9n29jcah4ksywe.jpg",
+        "color_id": 8,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://dattx2z6hn2wv.cloudfront.net/product-videos/1782680625753-5c1973e268f3deca.mp4",
+        "color_id": 8,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 6,
+    "name": "Banarasi Art Silk Saree (Smoky Blue)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054730/vns-saree/products/nx5bxnmyohonvkfapozg.png",
+        "color_id": 9,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054728/vns-saree/products/pozpi7wffqpnmdrtsbn1.png",
+        "color_id": 9,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054731/vns-saree/products/qdptsrtkiuv8g4h72e9d.jpg",
+        "color_id": 9,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054732/vns-saree/products/taafzncznlc5texctiex.jpg",
+        "color_id": 9,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054732/vns-saree/products/ar5d3riwv07xijh5eie4.jpg",
+        "color_id": 9,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782054728/vns-saree/products/ct4jf01ot8ji8rcpciao.jpg",
+        "color_id": 9,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://dattx2z6hn2wv.cloudfront.net/product-videos/1782683813612-082a2e31c3c37638.mp4",
+        "color_id": 9,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 7,
+    "name": "Heritage Floral Weave Organza Saree(Charcoal Black)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782062819/vns-saree/products/baijig06pjumvvo9avfe.png",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782062819/vns-saree/products/yqzclphzyfdsthx0ffcd.png",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782062819/vns-saree/products/r1fxjfsypgnpzyndrkc1.heic",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782062820/vns-saree/products/zrbnozubb3pg8j6t5q50.heic",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782062818/vns-saree/products/q23b9kzrzsz2ggdgktko.heic",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782062821/vns-saree/products/kgxvr9d8jqynw2gc5unk.heic",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782062654/vns-saree/product-videos/z8uveu8k1lpfgtdjcuxh.mp4",
+        "color_id": 10,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 8,
+    "name": "Heritage Floral Weave Organza Saree( Red)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782064001/vns-saree/products/ykcgpzgrapjdv8zzpcba.png",
+        "color_id": 11,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782063998/vns-saree/products/l0vtx49liozddb3ekfau.heic",
+        "color_id": 11,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782063998/vns-saree/products/caa4mvyvcely5i3pxk83.heic",
+        "color_id": 11,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782064003/vns-saree/products/t8j5qc4hy7rk0qwsgkld.heic",
+        "color_id": 11,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782064001/vns-saree/products/bwc7lfmfmrm0aia5ik3m.heic",
+        "color_id": 11,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782063999/vns-saree/products/gdcdhzen2bv4rsyq8th0.heic",
+        "color_id": 11,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782064042/vns-saree/product-videos/f5jzxd0qh18ukxhwpts4.mp4",
+        "color_id": 11,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 9,
+    "name": "Heritage Floral Weave Organza Saree( Wine Maroon)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782066659/vns-saree/products/ouckosffhywfzvjapvzq.png",
+        "color_id": 12,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782066660/vns-saree/products/dvb17wsbrfv1nroyiy2k.heic",
+        "color_id": 12,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782066659/vns-saree/products/h76xd15upcrnnuymkjax.heic",
+        "color_id": 12,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782066660/vns-saree/products/r0yuusxhvdxqxhxj8p1l.heic",
+        "color_id": 12,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782066673/vns-saree/product-videos/z4ujozhxyq0ces6vcjux.mp4",
+        "color_id": 12,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 10,
+    "name": "Midnight Floral Banarasi Cutwork Saree(Charcoal Black)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782069295/vns-saree/products/fwaexdojwfntdngesdcv.jpg",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782069295/vns-saree/products/iitsibff4xq2puffoosw.jpg",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782069328/vns-saree/products/njloiux90nfeyj1ytgrs.heic",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782069319/vns-saree/products/vo0ykjf0wfee17uvqpjs.heic",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782069318/vns-saree/products/rze55urmcytxz6xcrnnq.heic",
+        "color_id": 10,
+        "is_cover": true,
+        "display_order": 4
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782069461/vns-saree/product-videos/rmkffixk7dc6pxkmxbhq.mp4",
+        "color_id": 10,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 11,
+    "name": "Midnight Floral Banarasi Cutwork Saree(Dark Green)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782071673/vns-saree/products/yz6zaz9plxbfscfeymeg.jpg",
+        "color_id": 13,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782071673/vns-saree/products/dgkgrvhdyc8yh55ea5nq.jpg",
+        "color_id": 13,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782071693/vns-saree/products/ivg3pwttzdim4fqs6uvt.heic",
+        "color_id": 13,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782071699/vns-saree/products/bltc9wennpo54yzq1bll.heic",
+        "color_id": 13,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782071165/vns-saree/product-videos/unksrnlp9e7nve0id0a6.mp4",
+        "color_id": 13,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 12,
+    "name": "Midnight Floral Banarasi Cutwork Saree(Navy Blue)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782072359/vns-saree/products/ljdvokvm2pbupfwjkmce.jpg",
+        "color_id": 14,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782072346/vns-saree/products/eyew1nuz9awbwe9r61wu.jpg",
+        "color_id": 14,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782072357/vns-saree/products/qujt7ylldqsbpmwuy7x9.heic",
+        "color_id": 14,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782072362/vns-saree/products/kii9vozggbjdpfe8b66q.heic",
+        "color_id": 14,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782072559/vns-saree/product-videos/wp05o3evgp2tdkouns5x.mp4",
+        "color_id": 14,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 13,
+    "name": "Midnight Floral Banarasi Cutwork Saree(Steel Blue)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073103/vns-saree/products/ytudgocvcieybpnfyysj.jpg",
+        "color_id": 15,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073103/vns-saree/products/ozkrmbgppl8ckunlvgjb.jpg",
+        "color_id": 15,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073112/vns-saree/products/fopmawfcfwixcziucrda.heic",
+        "color_id": 15,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073122/vns-saree/products/szk6u4ltxdti0r02fycj.heic",
+        "color_id": 15,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073125/vns-saree/products/qxfiprkyocbfawvrw7q5.heic",
+        "color_id": 15,
+        "is_cover": true,
+        "display_order": 4
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782073295/vns-saree/product-videos/m2kxxugxvqtnjyixheg5.mp4",
+        "color_id": 15,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 14,
+    "name": "Midnight Floral Banarasi Cutwork Saree(Midnight Blue)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073966/vns-saree/products/msho3cxwecuorrageoye.jpg",
+        "color_id": 16,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073966/vns-saree/products/qhdrdlpbc3e4oyxruilq.jpg",
+        "color_id": 16,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073988/vns-saree/products/i5pnrjpvcuiouzhx3ofe.heic",
+        "color_id": 16,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782073985/vns-saree/products/fcxe1wbtat5iwqa7ullv.heic",
+        "color_id": 16,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782074132/vns-saree/product-videos/mpvodrx7ech49hebqhhn.mp4",
+        "color_id": 16,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 15,
+    "name": "Midnight Floral Banarasi Cutwork Saree(Greyish Black)",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782074816/vns-saree/products/kqbj0fyjvmxqwltvl0mf.jpg",
+        "color_id": 17,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782074814/vns-saree/products/cxogkfd9rvwytoavk02k.jpg",
+        "color_id": 17,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782074838/vns-saree/products/nqjidswa1naa4el6t1nw.heic",
+        "color_id": 17,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782074830/vns-saree/products/rtenyzhsf3axtxgobyhv.heic",
+        "color_id": 17,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782074836/vns-saree/products/xa0ril9kzmqtplbxqwrq.heic",
+        "color_id": 17,
+        "is_cover": true,
+        "display_order": 4
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782075001/vns-saree/product-videos/jvipcimjsi2g6car0rvf.mp4",
+        "color_id": 17,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 16,
+    "name": "Royal Green Banarasi Booti Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782082223/vns-saree/products/hk4g8fczwo6pat5q2l7u.png",
+        "color_id": 13,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782080742/vns-saree/products/cieg4qxaetcbutpqunag.heic",
+        "color_id": 13,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782080745/vns-saree/products/kczwslshiwsmitoimdiy.heic",
+        "color_id": 13,
+        "is_cover": true,
+        "display_order": 2
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782076526/vns-saree/product-videos/bx2qwjat2mske90esxxq.mp4",
+        "color_id": 13,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 17,
+    "name": "Royal Deep Purple Banarasi Booti Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782081063/vns-saree/products/uxnss00bdniv03vygnyf.png",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782081034/vns-saree/products/o0vpcxcffou6dh6b63zp.jpg",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782081081/vns-saree/products/yosstabjwxtbqzgaucuh.heic",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782081087/vns-saree/products/wxk0fvd7ie5vmcdac0yo.heic",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782081056/vns-saree/products/fyshw7yefztzxtr7cpam.heic",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 4
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782078679/vns-saree/product-videos/zvcakw1uccd9pgm8dzgf.mp4",
+        "color_id": 18,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 18,
+    "name": "Deep Teal Green Banarasi Booti Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782083436/vns-saree/products/oxybvybxfu7yz3uu8udo.jpg",
+        "color_id": 19,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782083438/vns-saree/products/qoaavwbl44roj9btf02i.jpg",
+        "color_id": 19,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782083454/vns-saree/products/mf1agpkoe234dauccgnf.heic",
+        "color_id": 19,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782083458/vns-saree/products/yzuqdx5wvjwao3dleps6.heic",
+        "color_id": 19,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782082569/vns-saree/product-videos/rmfewulrikoneit2wbus.mp4",
+        "color_id": 19,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 19,
+    "name": "Royal Blue Banarasi Booti Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782084414/vns-saree/products/vxrezsxffw0ligzauhe2.jpg",
+        "color_id": 14,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782084413/vns-saree/products/fakwbvdjmxjnodwyf23a.jpg",
+        "color_id": 14,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782084441/vns-saree/products/qighwvc3ve3gtemaheeq.heic",
+        "color_id": 14,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782084442/vns-saree/products/qcwbk2aobmlwdfofr3je.heic",
+        "color_id": 14,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782084703/vns-saree/product-videos/zc1ceibkiif2jsa00uoo.mp4",
+        "color_id": 14,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 20,
+    "name": "Royal Purple Banarasi Booti Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782085398/vns-saree/products/caq6hvsdkhktvbyzxgmn.png",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782085411/vns-saree/products/irgyjx5ybwd1cifpuc2s.png",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782085408/vns-saree/products/vdds6rnqdeez6gyepbqe.png",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782085400/vns-saree/products/lzmtwfc7urzcndiao6nk.png",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782085407/vns-saree/products/gbo7lmaatzpjirgxkgzr.heic",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782085422/vns-saree/products/nrspbkxadyknqlbzjkii.heic",
+        "color_id": 18,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782085801/vns-saree/product-videos/nciqkwfs38updvxizbcs.mp4",
+        "color_id": 18,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 21,
+    "name": "Wine Maroon Banarasi Booti Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782086504/vns-saree/products/jewwlqyadj9vwj3fqg13.jpg",
+        "color_id": 12,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782086503/vns-saree/products/bmdhpc9dogojkayptmgs.jpg",
+        "color_id": 12,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782086531/vns-saree/products/fqzl0uktceqyzlgxo7mz.heic",
+        "color_id": 12,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782086557/vns-saree/products/ylxifcpqpgod87egzmvl.heic",
+        "color_id": 12,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782086847/vns-saree/product-videos/p0kauzbrxqee3rgt1lek.mp4",
+        "color_id": 12,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 22,
+    "name": "Purple Women's Semi Silk Banarasi Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782090490/vns-saree/products/to4connhqp0vhnfnxria.png",
+        "color_id": 21,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782090485/vns-saree/products/k8ga08usthfrveelwfdt.png",
+        "color_id": 21,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782090458/vns-saree/products/nrf9xn2jz6wtfvpbzix8.jpg",
+        "color_id": 21,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782090488/vns-saree/products/y9yijkfrz0ngmnuxvwxf.heic",
+        "color_id": 21,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782090494/vns-saree/products/mzt0ltr6umg1g6p2kidc.heic",
+        "color_id": 21,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782090488/vns-saree/products/rdbjzrakpcg52vfr7m2d.heic",
+        "color_id": 21,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782090714/vns-saree/product-videos/alep8zjy336llukd3rbs.mp4",
+        "color_id": 21,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 23,
+    "name": "Mehandi Green Women's Semi Silk Banarasi Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782091521/vns-saree/products/cr0uqbub0bueavgw1sxv.png",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782091529/vns-saree/products/ef4dwuenovcstncah8tj.png",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782091531/vns-saree/products/rvnj1fdxwehnxhff22vf.png",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782091527/vns-saree/products/ojympmrhrokmpi1mbsdr.heic",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782091549/vns-saree/products/lh2lpbvxwciepjfvzuni.heic",
+        "color_id": 7,
+        "is_cover": true,
+        "display_order": 4
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782143257/vns-saree/product-videos/ynnulsrr6cvrufa0vlfx.mp4",
+        "color_id": 7,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 24,
+    "name": "Reddish Orange Women's Semi Silk Banarasi Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782140712/vns-saree/products/iq5n3kn5bwgzw55nz5nx.png",
+        "color_id": 22,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782140712/vns-saree/products/kneyh0wrl3rhjayp9wer.png",
+        "color_id": 22,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782140712/vns-saree/products/rpxp7og4uqqwxu57pkxl.png",
+        "color_id": 22,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782140712/vns-saree/products/ztc0suu1qt7lk0hilk4y.heic",
+        "color_id": 22,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782140712/vns-saree/products/ddnielrzg17mdbxjuq3m.heic",
+        "color_id": 22,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782140713/vns-saree/products/xfbc97zz0cwfoxid3t4n.heic",
+        "color_id": 22,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782140161/vns-saree/product-videos/tdtlvojaefb5humkwg8w.mp4",
+        "color_id": 22,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 25,
+    "name": "Teal Blue Women's Semi Silk Banarasi Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782143005/vns-saree/products/nthpr3ynnsc612iko9dp.png",
+        "color_id": 23,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782143005/vns-saree/products/vjqzpg8kfbvdsimcky4n.png",
+        "color_id": 23,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782143005/vns-saree/products/in3znn0kw2fgasbba1v4.png",
+        "color_id": 23,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782143005/vns-saree/products/ovdklbvy7tqahqwvpwn2.heic",
+        "color_id": 23,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782143006/vns-saree/products/hrcga5ntluwvabpjuzrf.heic",
+        "color_id": 23,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782143006/vns-saree/products/nhgmx3shnccv4y9sqqxw.heic",
+        "color_id": 23,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": []
+  },
+  {
+    "id": 26,
+    "name": "Deep Plum Wine Buti Grace Weave Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782148978/vns-saree/products/z8nik5vamoumeyimcwdp.png",
+        "color_id": 24,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782148978/vns-saree/products/uviacc5dc45k065mhegs.png",
+        "color_id": 24,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782148978/vns-saree/products/nu2cewm7esg6o8ttlfmk.png",
+        "color_id": 24,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782148978/vns-saree/products/poel5cqkuwt9cpb3dpll.png",
+        "color_id": 24,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782148979/vns-saree/products/sbjyipvztl0ywigd9p3f.heic",
+        "color_id": 24,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782148978/vns-saree/products/tl2ycfymb5emzbt1telj.heic",
+        "color_id": 24,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782148992/vns-saree/product-videos/gjk9sj0xbrv5gvvxzpsr.mp4",
+        "color_id": 24,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 27,
+    "name": "Golden Mustard Wine Buti Grace Weave Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782154143/vns-saree/products/e9ulaby0v2mtlnypwbdw.png",
+        "color_id": 25,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782154143/vns-saree/products/udqyakbbxvpahuaipcrj.png",
+        "color_id": 25,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782154143/vns-saree/products/hsuced55khatrymdy0ua.heic",
+        "color_id": 25,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782154144/vns-saree/products/ponj5egafm1kczffcrj6.heic",
+        "color_id": 25,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/video/upload/v1782151479/vns-saree/product-videos/uzt3ivwyidgantnlw3hx.mp4",
+        "color_id": 25,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 28,
+    "name": "Peacock Blue  Buti Grace Weave Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782250628/vns-saree/products/pa852kdiggb6l3c6ebbl.webp",
+        "color_id": 26,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782250628/vns-saree/products/ovzggglcaonqgr5srrpr.webp",
+        "color_id": 26,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782250628/vns-saree/products/ytt1j2pc9fiontpcuxol.webp",
+        "color_id": 26,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782250631/vns-saree/products/cqkhzbzdqzjiuiyjqydj.heic",
+        "color_id": 26,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782250629/vns-saree/products/x3xlercbwsyznqdtlup9.heic",
+        "color_id": 26,
+        "is_cover": true,
+        "display_order": 4
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://dattx2z6hn2wv.cloudfront.net/product-videos/1782278840557-1a4b4169429001f2.mp4",
+        "color_id": 26,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 29,
+    "name": "Mauve Purple  Buti Grace Weave Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782279208/vns-saree/products/i4dbxoaixtkrca21r4rp.webp",
+        "color_id": 27,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782279208/vns-saree/products/i80r5p8vxrao2htwssde.webp",
+        "color_id": 27,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782279209/vns-saree/products/cfqfeb4zsv3kedoespdr.heic",
+        "color_id": 27,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782279209/vns-saree/products/wxqcp004iugf3rm3clfo.webp",
+        "color_id": 27,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://dattx2z6hn2wv.cloudfront.net/product-videos/1782279210974-543620c35f28459f.mp4",
+        "color_id": 27,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 30,
+    "name": "Royal Blue  Buti Grace Weave Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782279725/vns-saree/products/jnowmeha3fwm4fldud2b.webp",
+        "color_id": 28,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782279726/vns-saree/products/t7uclbe1s2xzlcsokg7i.webp",
+        "color_id": 28,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782279726/vns-saree/products/g5wi4qq4jvyqrxd3p8ld.webp",
+        "color_id": 28,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782279727/vns-saree/products/dwrgml6q5ru0wnttov4v.heic",
+        "color_id": 28,
+        "is_cover": true,
+        "display_order": 3
+      }
+    ],
+    "videos": [
+      {
+        "url": "https://dattx2z6hn2wv.cloudfront.net/product-videos/1782279728882-fefe36b0755ea524.mp4",
+        "color_id": 28,
+        "display_order": 0
+      }
+    ]
+  },
+  {
+    "id": 31,
+    "name": "Teal Satin Silk Kadwa Buti Banarasi Saree",
+    "images": [
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782334274/vns-saree/products/girv2zemsmvbphphahep.webp",
+        "color_id": 29,
+        "is_cover": true,
+        "display_order": 0
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782334273/vns-saree/products/qtiz71x6ficy6bpjvmmg.webp",
+        "color_id": 29,
+        "is_cover": true,
+        "display_order": 1
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782334274/vns-saree/products/ftxr4xmnvrz63ecgl97p.webp",
+        "color_id": 29,
+        "is_cover": true,
+        "display_order": 2
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782334289/vns-saree/products/hozyjszrsuwadkuxfyun.heic",
+        "color_id": 29,
+        "is_cover": true,
+        "display_order": 3
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782334288/vns-saree/products/pf7eob5lxwjovfv7xofu.heic",
+        "color_id": 29,
+        "is_cover": true,
+        "display_order": 4
+      },
+      {
+        "url": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1782334291/vns-saree/products/ffy0auzgv79eebb81oq8.heic",
+        "color_id": 29,
+        "is_cover": true,
+        "display_order": 5
+      }
+    ],
+    "videos": []
+  }
+]
