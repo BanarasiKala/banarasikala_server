@@ -63,26 +63,45 @@ const serviceabilityCache = new Map();
 const mapShiprocketStatus = (value = '') => {
   const status = String(value || '').toLowerCase();
 
+  // Courier noise / seller-panel statuses that must never move an order:
+  // pickup failures are retried by the courier ("Pickup Error/Exception"),
+  // transit exceptions resolve on their own ("Delayed", "Misrouted"), and
+  // "RTO Acknowledged/Rejected", "Disposed Of", "Destroyed", "Lost/Damaged"
+  // are seller-side outcomes handled outside the customer timeline.
+  if (
+    status.includes('pickup error') || status.includes('pickup exception')
+    || status.includes('acknowledged') || status.includes('rejected')
+    || status.includes('disposed') || status.includes('destroyed')
+    || status.includes('lost') || status.includes('damaged')
+    || status.includes('delayed') || status.includes('misrouted')
+  ) return null;
+
   if (status.includes('awb assigned') || status.includes('awb_assigned')) return 'AWB Assigned';
   if (status.includes('rto delivered') || status.includes('returned to origin') || status.includes('return to origin delivered')) return 'RTO Delivered';
   if (status.includes('rto in transit') || status.includes('rto_in_transit') || status.includes('return to origin in transit')) return 'RTO In Transit';
   if (status.includes('rto initiated') || status.includes('rto_initiated') || status.includes('return to origin initiated')) return 'RTO Initiated';
+  // Any other RTO substate (RTO-OFD, RTO OUT FOR DELIVERY, RTO-NDR…) keeps the
+  // shipment in the returning-to-seller leg — checked before the forward
+  // "out for delivery" / "undelivered" matches so they can't hijack it.
+  if (status.includes('rto')) return 'RTO In Transit';
   if (status.includes('undelivered') || status.includes('delivery failed') || status.includes('customer unavailable') || status.includes('address issue')) return 'Undelivered';
-  
+
   // Handle return/exchange reverse statuses first to avoid catching by standard shipped check.
   // Real ShipRocket sends "RETURN DELIVERED" when a return reaches the seller.
+  // The webhook renames the pickup ones for forward shipments (forward orders
+  // send the same "PICKED UP" / "OUT FOR PICKUP" scan texts).
   if (status.includes('return delivered') || status.includes('returned')) return 'Returned';
-  if (status.includes('picked up') || status.includes('picked_up')) return 'Return Picked Up';
+  if (status.includes('picked up') || status.includes('picked_up') || status.includes('pickup completed')) return 'Return Picked Up';
   if (status.includes('out for pickup') || status.includes('out_for_pickup')) return 'Out For Pickup';
-  if (status.includes('pickup scheduled') || status.includes('pickup_scheduled') || status.includes('pickup queued') || status.includes('pickup_queued')) return 'Pickup Scheduled';
-  
+  if (status.includes('pickup scheduled') || status.includes('pickup_scheduled') || status.includes('pickup queued') || status.includes('pickup_queued') || status.includes('pickup rescheduled') || status.includes('pickup generated')) return 'Pickup Scheduled';
+
   if (status.includes('delivered')) return 'Delivered';
   if (status.includes('out for delivery')) return 'Out For Delivery';
-  if (status.includes('shipped') || status.includes('manifest') || status.includes('in transit')) return 'Shipped';
-  if (status.includes('pickup')) return 'Shipped'; // Standard forward order pickup
+  if (status.includes('shipped') || status.includes('manifest') || status.includes('in transit') || status.includes('in-transit') || status.includes('in_transit') || status.includes('destination hub')) return 'Shipped';
+  if (status.includes('pickup')) return 'Pickup Scheduled'; // any other pickup state — parcel not collected yet
   if (status.includes('cancel')) return 'Cancelled';
   if (status.includes('return')) return 'Return Initiated';
-  
+
   return null;
 };
 
@@ -584,14 +603,20 @@ class ShipRocketController {
           await reverseAction.update({ shiprocket_return_awb: String(awb) }, { transaction });
         }
       } else {
+        // The mapper labels pickup scans with reverse-flavoured names because
+        // returns send the same texts ("PICKED UP", "OUT FOR PICKUP"). On a
+        // forward shipment they are the courier collecting the parcel from us.
+        if (nextStatus === 'Return Picked Up') orderStatus = 'Picked Up';
+
         // ── Forward shipment: update the shipment row, not the order ──
         // Late or out-of-order pre-delivery scans must not regress a delivered order.
-        if (order.delivered_at && ['AWB Assigned', 'Shipped', 'Out For Delivery', 'Undelivered'].includes(nextStatus)) {
+        if (order.delivered_at && ['AWB Assigned', 'Pickup Scheduled', 'Out For Pickup', 'Return Picked Up', 'Shipped', 'Out For Delivery', 'Undelivered'].includes(nextStatus)) {
           await transaction.rollback();
           return res.status(200).json({ message: 'Stale webhook after delivery — ignored' });
         }
         const shipStatusMap = {
           'AWB Assigned': SHIPMENT_STATUS.DISPATCHED,
+          'Return Picked Up': SHIPMENT_STATUS.DISPATCHED, // forward pickup scan — parcel is with the courier
           'Shipped': SHIPMENT_STATUS.IN_TRANSIT,
           'Out For Delivery': SHIPMENT_STATUS.IN_TRANSIT,
           'Delivered': SHIPMENT_STATUS.DELIVERED,
@@ -731,6 +756,73 @@ class ShipRocketController {
     } catch (error) {
       console.error('[ShipRocket] webhook error:', error?.response?.data || error.message);
       return res.status(500).json({ message: 'Webhook failed' });
+    }
+  }
+
+  // ── TESTING ONLY: forge a ShipRocket status webhook for an order ─────────────
+  // POST /api/shiprocket/test-status — guarded by the same x-api-key webhook
+  // secret. Looks up the order's shipment identifiers itself, builds the payload
+  // ShipRocket would send, and runs it through the REAL webhook handler, so a
+  // Postman call exercises the exact production path (status mapping, ledger,
+  // RTO events, emails, history timeline).
+  // Body: { orderId | orderNumber, status, awb?, courier?, target? }
+  //   status: raw ShipRocket status text, e.g. "PICKED UP", "RTO INITIATED".
+  //   target: "forward" (default) | "reverse" — reverse fires at the order's
+  //           latest return/exchange shipment instead of the forward one.
+  async simulateStatus(req, res) {
+    try {
+      const providedSecret =
+        req.headers['x-api-key'] ||
+        req.headers['x-webhook-secret'] ||
+        req.headers['x-shiprocket-webhook-secret'];
+      if (String(providedSecret || '') !== config.shiprocketWebhookSecret) {
+        return res.status(401).json({ message: 'Invalid webhook secret' });
+      }
+
+      const { orderId, orderNumber, status, awb, courier, target = 'forward' } = req.body || {};
+      if (!status || (!orderId && !orderNumber)) {
+        return res.status(400).json({ message: 'status and orderId (or orderNumber) are required' });
+      }
+
+      const order = orderId
+        ? await Order.findByPk(orderId)
+        : await Order.findOne({ where: { order_number: String(orderNumber) } });
+      if (!order) return res.status(404).json({ message: 'Order not found' });
+
+      let payload;
+      if (String(target).toLowerCase() === 'reverse') {
+        const action = await OrderItemAction.findOne({
+          where: { order_id: order.id, shiprocket_return_order_id: { [Op.ne]: null } },
+          order: [['id', 'DESC']],
+        });
+        if (!action) return res.status(404).json({ message: 'No return/exchange shipment found for this order' });
+        payload = {
+          order_id: action.shiprocket_return_order_id,
+          awb: awb || action.shiprocket_return_awb || undefined,
+          current_status: status,
+          courier_name: courier || undefined,
+          is_return: 1,
+        };
+      } else {
+        const shipment = await Shipment.findOne({
+          where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD },
+          order: [['created_at', 'DESC']],
+        });
+        payload = {
+          order_id: shipment?.shiprocket_order_id || undefined,
+          channel_order_id: order.order_number,
+          awb: awb || shipment?.awb_number || undefined,
+          current_status: status,
+          courier_name: courier || undefined,
+        };
+      }
+
+      console.log(`[ShipRocket][TEST] Simulating '${status}' for order #${order.id} (${target})`);
+      req.body = payload;
+      return shipRocketController.webhook(req, res);
+    } catch (error) {
+      console.error('[ShipRocket] simulateStatus error:', error.message);
+      return res.status(500).json({ message: 'Simulation failed' });
     }
   }
 

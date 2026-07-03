@@ -51,4 +51,12 @@ router.post('/resolve-rto', authMiddleware, ShipRocketController.resolveRto);
  */
 router.post('/webhook', ShipRocketController.webhook);
 
+/**
+ * POST /api/shiprocket/test-status
+ * TESTING ONLY (Postman): forge a status webhook for an order without waiting
+ * for the courier. Guarded by the same x-api-key webhook secret as /webhook.
+ * Body: { orderId | orderNumber, status, awb?, courier?, target? }
+ */
+router.post('/test-status', ShipRocketController.simulateStatus);
+
 module.exports = router;
