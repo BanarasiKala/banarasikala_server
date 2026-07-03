@@ -20,12 +20,9 @@ router.get('/track/:orderId', authMiddleware, OrderController.trackOrder);
 router.get('/admin/item-actions', authMiddleware, adminMiddleware, OrderItemActionController.listAdmin);
 router.patch('/admin/item-actions/:actionId/status', authMiddleware, adminMiddleware, OrderItemActionController.updateAdminStatus);
 
-// Customer item-level cancellation, return and exchange requests.
+// Customer return and exchange requests (post-delivery). Item-level
+// cancellation was removed — cancellation is whole-order only via /:id/cancel.
 router.post('/:orderId/item-actions/estimate', authMiddleware, OrderItemActionController.estimate);
-router.post('/:orderId/item-actions/cancel', authMiddleware, (req, res) => {
-  req.body.actionType = 'cancel';
-  return OrderItemActionController.create(req, res);
-});
 router.post('/:orderId/item-actions', authMiddleware, OrderItemActionController.create);
 
 // Customer COD refund bank details and admin refund status.
@@ -35,14 +32,9 @@ router.patch('/:id/refund-status', authMiddleware, adminMiddleware, OrderControl
 // Single customer order detail. Uses logged-in customer id.
 router.get('/:id', authMiddleware, OrderController.getCustomerOrderById);
 
-// Customer modification: quantity/address changes within 24h / before dispatch.
-router.patch('/:id/modify', authMiddleware, OrderController.modifyOrder);
-
-// Customer cancellation: allowed within 24 hours, also attempts ShipRocket cancel.
+// Customer cancellation: whole order only, within 24 hours and only while the
+// order status has not progressed. Also attempts ShipRocket cancel.
 router.post('/:id/cancel', authMiddleware, OrderController.cancelOrder);
-
-// Customer cancelling a specific item within an order: allowed within 24 hours.
-router.post('/:orderId/items/:itemId/cancel', authMiddleware, OrderController.cancelOrderItem);
 
 // Admin/order lookup route.
 router.get('/', authMiddleware, adminMiddleware, OrderController.getMyOrders);

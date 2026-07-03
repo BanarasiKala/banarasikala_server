@@ -37,14 +37,12 @@ const { ensureOrderItemActionSchema, getActionableQuantity } = require('../utils
 const { ensureOrderTransactionTables, REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 const {
   ensureOrderModelV2Tables, SHIPMENT_TYPE, SHIPMENT_STATUS, ACTOR,
-  MODIFICATION_TYPE, LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE, RTO_RESOLUTION,
+  LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE, RTO_RESOLUTION,
 } = require('../utils/orderModelV2');
 const RtoEvent = require('../models/RtoEvent');
 const {
-  seedPlacementLedger, getOrderBalance, deriveOrderTotals, appendEntry, round: roundLedger,
+  seedPlacementLedger, getOrderBalance, deriveOrderTotals, appendEntry, settleCancellation,
 } = require('../services/orderLedgerService');
-const OrderModification = require('../models/OrderModification');
-const RefundTransaction = require('../models/RefundTransaction');
 
 const sortProductImages = (images = []) => [...images].sort((a, b) => {
   const left = Number.isFinite(Number(a.display_order)) ? Number(a.display_order) : 999;
@@ -352,91 +350,12 @@ const getShiprocketOrderId = async (orderId, transaction) => {
   return fwd?.shiprocket_order_id || null;
 };
 
-// Full cancellation settlement on the ledger.
-//   Prepaid → reverse the order value and refund what was paid (balance stays 0).
-//   COD     → reverse the uncollected balance (nothing to refund).
-// Returns { refundAmount, walletRefund } (wallet handled by the caller).
-const settleFullCancelLedger = async (order, isCod, transaction) => {
-  const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction }));
-  if (isCod) {
-    if (totals.balance_due > 0) {
-      await appendEntry(order.id, {
-        type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: totals.balance_due, direction: LEDGER_DIRECTION.CREDIT,
-        referenceType: LEDGER_REFERENCE_TYPE.ORDER, note: 'Order cancelled — COD not collected',
-      }, transaction);
-    }
-    return { refundAmount: 0, walletRefund: totals.wallet_amount };
-  }
-  const refundAmount = roundLedger(totals.amount_paid);
-  if (refundAmount > 0) {
-    await appendEntry(order.id, {
-      type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: refundAmount, direction: LEDGER_DIRECTION.CREDIT,
-      referenceType: LEDGER_REFERENCE_TYPE.ORDER, note: 'Order cancelled — value reversed',
-    }, transaction);
-    const refLedger = await appendEntry(order.id, {
-      type: LEDGER_ENTRY_TYPE.REFUND, amount: refundAmount, direction: LEDGER_DIRECTION.DEBIT,
-      referenceType: LEDGER_REFERENCE_TYPE.ORDER, note: 'Cancellation refund',
-    }, transaction);
-    await RefundTransaction.create({
-      order_id: order.id, ledger_entry_id: refLedger?.id || null,
-      gateway: 'original_gateway', amount: refundAmount, status: 'Pending',
-    }, { transaction });
-  }
-  return { refundAmount, walletRefund: totals.wallet_amount };
-};
-
-// Partial (single-item) cancellation settlement with coupon recalculation.
-// Returns { refundAmount, newTotal }.
-const settlePartialCancelLedger = async (order, item, transaction) => {
-  const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction }));
-  const isCod = String(order.payment_method || '').toUpperCase() === 'COD';
-  const itemValue = roundLedger(Number(item.price) * Number(item.quantity));
-  const newSubtotal = roundLedger(Math.max(0, totals.subtotal_amount - itemValue));
-
-  let newCoupon = roundLedger(totals.discount_amount);
-  if (order.coupon_code) {
-    const Coupon = require('../models/Coupon');
-    const coupon = await Coupon.findOne({ where: { code: order.coupon_code, is_active: true }, transaction });
-    if (coupon) {
-      if (String(coupon.discount_type || '').toLowerCase() === 'percentage') {
-        newCoupon = (newSubtotal * Number(coupon.discount_percent || 0)) / 100;
-        if (coupon.max_discount_amount) newCoupon = Math.min(newCoupon, Number(coupon.max_discount_amount));
-      } else {
-        newCoupon = Math.min(Number(coupon.discount_amount || 0), newSubtotal);
-      }
-      newCoupon = roundLedger(newCoupon);
-    } else {
-      newCoupon = 0;
-    }
-  }
-  const couponReduction = roundLedger(Math.max(0, totals.discount_amount - newCoupon));
-
-  // Reverse the item value; shrink the coupon discount accordingly.
-  await appendEntry(order.id, {
-    type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: itemValue, direction: LEDGER_DIRECTION.CREDIT,
-    referenceType: LEDGER_REFERENCE_TYPE.ORDER, note: `Item cancelled: ${item.product_name}`,
-  }, transaction);
-  if (couponReduction > 0) {
-    await appendEntry(order.id, {
-      type: LEDGER_ENTRY_TYPE.COUPON_DISCOUNT, amount: couponReduction, direction: LEDGER_DIRECTION.DEBIT,
-      referenceType: LEDGER_REFERENCE_TYPE.ORDER, note: 'Coupon recalculated after item cancel',
-    }, transaction);
-  }
-
-  const refundAmount = roundLedger(Math.max(0, itemValue - couponReduction));
-  if (!isCod && refundAmount > 0) {
-    const refLedger = await appendEntry(order.id, {
-      type: LEDGER_ENTRY_TYPE.REFUND, amount: refundAmount, direction: LEDGER_DIRECTION.DEBIT,
-      referenceType: LEDGER_REFERENCE_TYPE.ORDER, note: 'Partial cancellation refund',
-    }, transaction);
-    await RefundTransaction.create({
-      order_id: order.id, ledger_entry_id: refLedger?.id || null,
-      gateway: 'original_gateway', amount: refundAmount, status: 'Pending',
-    }, { transaction });
-  }
-  const newTotal = roundLedger(newSubtotal + totals.shipping_charge + totals.payment_fee + totals.gift_charge - newCoupon - totals.wallet_amount);
-  return { refundAmount, newTotal };
-};
+// Cancellation is whole-order only and allowed only while the order is still in
+// its initial (pre-dispatch) state. 'Processing' / 'AWB Assigned' are reached
+// automatically by the ShipRocket push seconds after placement, so they count as
+// "unchanged". Anything beyond (shipped, delivered, RTO, admin-progressed…) locks
+// the order. Allowlist so unexpected statuses default to "not cancellable".
+const CANCELLABLE_STATUSES = ['pending', 'processing', 'awb assigned'];
 
 class OrderController {
   async createOrder(req, res) {
@@ -1225,305 +1144,6 @@ class OrderController {
     }
   }
 
-  // ── Modify an order within the 24h / pre-dispatch window ───────────────────
-  // Body: { items: [{ order_item_id, quantity }], address: {...}, reason }
-  //   - quantity 0 removes the line. Prepaid recalculates (refund on decrease,
-  //     balance owed on increase); COD just updates the amount to collect.
-  async modifyOrder(req, res) {
-    const t = await sequelize.transaction();
-    try {
-      await ensureOrderModelV2Tables();
-      const { id } = req.params;
-      const { items: itemChanges = [], address: newAddress = null, reason = null } = req.body;
-
-      const order = await Order.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
-      if (!order) {
-        await t.rollback();
-        return res.status(404).json({ message: 'Order not found' });
-      }
-
-      const isOwnedByCustomerId = Number(order.customer_id) === Number(req.user?.id);
-      const isLegacyOwnedByEmail = !order.customer_id
-        && req.user?.email
-        && String(order.customer_email || '').toLowerCase() === String(req.user.email).toLowerCase();
-      if (req.userRole !== 'admin' && !isOwnedByCustomerId && !isLegacyOwnedByEmail) {
-        await t.rollback();
-        return res.status(403).json({ message: 'This order does not belong to this customer.' });
-      }
-
-      // Window + state guards
-      const currentStatus = String(order.status || '').toLowerCase();
-      if (['cancelled', 'delivered', 'rto'].includes(currentStatus) || order.delivered_at) {
-        await t.rollback();
-        return res.status(400).json({ message: `Order cannot be modified once it is ${order.status}.` });
-      }
-      const dispatchedShipment = await Shipment.findOne({
-        where: {
-          order_id: order.id,
-          type: SHIPMENT_TYPE.FORWARD,
-          status: { [Op.in]: [SHIPMENT_STATUS.IN_TRANSIT, SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.RTO] },
-        },
-        transaction: t,
-      });
-      if (dispatchedShipment) {
-        await t.rollback();
-        return res.status(400).json({ message: 'Order has already been dispatched and can no longer be modified.' });
-      }
-      const hoursSinceOrder = (Date.now() - new Date(order.createdAt).getTime()) / (1000 * 60 * 60);
-      if (hoursSinceOrder > 24) {
-        await t.rollback();
-        return res.status(400).json({ message: 'Modification is available only within 24 hours of placing the order.' });
-      }
-
-      const isCod = String(order.payment_method || 'COD').toUpperCase() === 'COD';
-
-      // Active items (lock for stock adjustment)
-      const activeItems = await OrderItem.findAll({
-        where: { order_id: order.id, status: { [Op.notIn]: ['Cancelled', 'REMOVED'] } },
-        transaction: t,
-        lock: t.LOCK.UPDATE,
-      });
-      const itemsById = new Map(activeItems.map((it) => [Number(it.id), it]));
-      const finalQty = new Map(activeItems.map((it) => [Number(it.id), Number(it.quantity)]));
-
-      // Apply requested quantity changes
-      const qtyBefore = [];
-      const qtyAfter = [];
-      const changeLines = []; // per-item recalculation detail (saved on the modification)
-      for (const change of (Array.isArray(itemChanges) ? itemChanges : [])) {
-        const itemId = Number(change.order_item_id);
-        const item = itemsById.get(itemId);
-        if (!item) {
-          await t.rollback();
-          return res.status(400).json({ message: `Item ${change.order_item_id} is not part of this order.` });
-        }
-        const newQty = Math.max(0, Math.floor(Number(change.quantity)));
-        if (!Number.isFinite(newQty)) {
-          await t.rollback();
-          return res.status(400).json({ message: 'Invalid quantity in modification.' });
-        }
-        finalQty.set(itemId, newQty);
-      }
-
-      // Ensure at least one unit remains (full removal must go through cancel)
-      const remainingUnits = [...finalQty.values()].reduce((s, q) => s + q, 0);
-      if (remainingUnits <= 0) {
-        await t.rollback();
-        return res.status(400).json({ message: 'You cannot remove every item. Please cancel the order instead.' });
-      }
-
-      let oldSubtotal = 0;
-      let newSubtotal = 0;
-      let hasItemChange = false;
-      for (const item of activeItems) {
-        const itemId = Number(item.id);
-        const oldQty = Number(item.quantity);
-        const newQty = finalQty.get(itemId);
-        const price = Number(item.price);
-        oldSubtotal += oldQty * price;
-        newSubtotal += newQty * price;
-        if (newQty === oldQty) continue;
-        hasItemChange = true;
-        qtyBefore.push({ order_item_id: itemId, quantity: oldQty });
-        qtyAfter.push({ order_item_id: itemId, quantity: newQty });
-        // Per-item recalculation snapshot (the rearranged prices/quantities).
-        // NOTE: refund is intentionally aggregate-only for a modify — no per-item
-        // refund is recorded (unlike a return/cancel).
-        changeLines.push({
-          order_item_id: itemId,
-          product_name: item.product_name || null,
-          unit_price: roundLedger(price),
-          old_quantity: oldQty,
-          new_quantity: newQty,
-          old_line_total: roundLedger(oldQty * price),
-          new_line_total: roundLedger(newQty * price),
-          line_delta: roundLedger((newQty - oldQty) * price),
-          removed: newQty === 0,
-        });
-
-        const delta = newQty - oldQty;
-        const product = await Product.findByPk(item.product_id, {
-          attributes: ['id', 'name', 'stock_quantity', 'color_stocks'],
-          transaction: t,
-          lock: t.LOCK.UPDATE,
-        });
-        const colorId = item.colorId || item.color_id || null;
-        if (delta > 0) {
-          // Need more stock
-          if (!product || getColorStockValue(product, colorId) < delta || Number(product.stock_quantity || 0) < delta) {
-            await t.rollback();
-            return res.status(400).json({ message: `Not enough stock to increase ${product?.name || 'item'}.` });
-          }
-          await decrementProductInventory({ product, colorId, quantity: delta, transaction: t });
-        } else if (delta < 0 && product) {
-          // Restock the removed units
-          const back = -delta;
-          const stocks = { ...(product.color_stocks || {}) };
-          const restock = { stock_quantity: Number(product.stock_quantity || 0) + back };
-          if (colorId !== null && colorId !== undefined && colorId !== '') {
-            stocks[String(colorId)] = Number(stocks[String(colorId)] ?? product.stock_quantity ?? 0) + back;
-            restock.color_stocks = stocks;
-          }
-          await product.update(restock, { transaction: t });
-        }
-
-        await item.update(
-          { quantity: newQty, status: newQty === 0 ? 'REMOVED' : item.status },
-          { transaction: t },
-        );
-      }
-
-      // Address change → new versioned snapshot
-      let addressChanged = false;
-      if (newAddress && (newAddress.line || newAddress.address)) {
-        addressChanged = true;
-        const current = await OrderAddress.findOne({
-          where: { order_id: order.id, is_current: true },
-          transaction: t,
-          lock: t.LOCK.UPDATE,
-        });
-        const nextVersion = (current?.version || 0) + 1;
-        if (current) await current.update({ is_current: false }, { transaction: t });
-        const created = await OrderAddress.create({
-          order_id: order.id,
-          version: nextVersion,
-          is_current: true,
-          name: newAddress.name || order.customer_name,
-          phone: newAddress.phone || current?.phone,
-          line: newAddress.line || newAddress.address,
-          city: newAddress.city || current?.city,
-          state: newAddress.state || current?.state,
-          pincode: newAddress.pincode || current?.pincode,
-        }, { transaction: t });
-        await order.update({ current_address_id: created.id }, { transaction: t });
-        await OrderModification.create({
-          order_id: order.id,
-          type: MODIFICATION_TYPE.ADDRESS_CHANGE,
-          before_json: current ? { line: current.line, city: current.city, pincode: current.pincode, phone: current.phone } : null,
-          after_json: { line: created.line, city: created.city, pincode: created.pincode, phone: created.phone },
-          triggered_recalculation: false,
-          actor: req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER,
-        }, { transaction: t });
-      }
-
-      if (!hasItemChange && !addressChanged) {
-        await t.rollback();
-        return res.status(400).json({ message: 'No changes were provided.' });
-      }
-
-      const productDelta = roundLedger(newSubtotal - oldSubtotal);
-      let refundAmount = 0;
-      let additionalPaymentDue = 0;
-
-      if (hasItemChange && productDelta !== 0) {
-        const removedSome = qtyAfter.some((a) => a.quantity === 0);
-        const modRow = await OrderModification.create({
-          order_id: order.id,
-          type: removedSome ? MODIFICATION_TYPE.ITEM_REMOVED : MODIFICATION_TYPE.QTY_CHANGE,
-          before_json: { items: qtyBefore, subtotal: roundLedger(oldSubtotal) },
-          after_json: { items: qtyAfter, subtotal: roundLedger(newSubtotal) },
-          triggered_recalculation: true,
-          actor: req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER,
-        }, { transaction: t });
-
-        // Adjust the product charge on the ledger (DEBIT if more, CREDIT if less)
-        await appendEntry(order.id, {
-          type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE,
-          amount: Math.abs(productDelta),
-          direction: productDelta > 0 ? LEDGER_DIRECTION.DEBIT : LEDGER_DIRECTION.CREDIT,
-          referenceType: LEDGER_REFERENCE_TYPE.MODIFICATION,
-          referenceId: modRow.id,
-          note: `Modify: subtotal ${roundLedger(oldSubtotal)} → ${roundLedger(newSubtotal)}`,
-        }, t);
-
-        if (!isCod) {
-          if (productDelta < 0) {
-            // Prepaid decrease → refund the difference
-            refundAmount = Math.abs(productDelta);
-            // REFUND is a DEBIT: paying the customer back discharges what we owe
-            // them (created by the PRODUCT_CHARGE credit above), netting balance to 0.
-            const refundLedger = await appendEntry(order.id, {
-              type: LEDGER_ENTRY_TYPE.REFUND,
-              amount: refundAmount,
-              direction: LEDGER_DIRECTION.DEBIT,
-              referenceType: LEDGER_REFERENCE_TYPE.MODIFICATION,
-              referenceId: modRow.id,
-              note: 'Refund for reduced order',
-            }, t);
-            await RefundTransaction.create({
-              order_id: order.id,
-              ledger_entry_id: refundLedger?.id || null,
-              gateway: 'original_gateway',
-              amount: refundAmount,
-              status: 'Pending',
-            }, { transaction: t });
-            // Legacy refund worklist row (kept until refunds fully migrate)
-            await OrderRefund.create({
-              order_id: order.id,
-              refund_type: REFUND_TYPE.PARTIAL_CANCEL,
-              amount: refundAmount,
-              status: REFUND_STATUS.PENDING,
-              payment_method: REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-              note: `Order modified${reason ? ` | Reason: ${String(reason).trim()}` : ''}`,
-            }, { transaction: t });
-          } else {
-            // Prepaid increase → balance now owed; collected via a follow-up payment
-            additionalPaymentDue = productDelta;
-          }
-        }
-        // COD: the PRODUCT_CHARGE adjustment already updates the amount to collect.
-      }
-
-      // Mark modified + status history
-      const prevStatus = order.status;
-      await order.update({ status: 'Modified' }, { transaction: t });
-      await OrderStatusHistory.create({
-        order_id: order.id,
-        from_status: prevStatus,
-        to_status: 'Modified',
-        actor: req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER,
-        reason: reason ? String(reason).trim() : 'Order modified',
-      }, { transaction: t });
-
-      const balanceDue = await getOrderBalance(order.id, t);
-      await t.commit();
-
-      // Fire & forget: prepaid refund via gateway (wallet/original gateway)
-      if (!isCod && refundAmount > 0) {
-        Payment.findOne({ where: { order_id: order.id, status: 'Paid' } }).then((payment) => {
-          if (payment?.gateway_payment_id) {
-            return razorpayRefund(payment.gateway_payment_id, refundAmount, {
-              reason: 'Order modification',
-              orderId: String(order.id),
-            });
-          }
-        }).catch((err) => console.error(`[Razorpay] Modify refund failed for #${order.id}:`, err?.message || err));
-      }
-
-      if (order.shiprocket_order_id || dispatchedShipment) {
-        console.warn(`[ShipRocket] Order #${order.id} modified after SR push — SR order may need manual re-sync.`);
-      }
-
-      const fresh = await Order.findByPk(order.id, {
-        include: [
-          { model: OrderItem, include: [{ model: Product, attributes: ['id', 'name', 'slug', 'images'] }, { model: Color }] },
-          { model: OrderRefund, as: 'Refunds' },
-          ...ORDER_V2_INCLUDES,
-        ],
-      });
-      return res.status(200).json({
-        message: 'Order modified successfully',
-        refund_amount: refundAmount,
-        additional_payment_due: additionalPaymentDue,
-        balance_due: balanceDue,
-        order: serializeOrder(fresh),
-      });
-    } catch (error) {
-      await t.rollback();
-      return res.status(error.status || 500).json({ message: error.message });
-    }
-  }
-
   async cancelOrder(req, res) {
     const t = await sequelize.transaction();
     try {
@@ -1548,6 +1168,24 @@ class OrderController {
       if (['cancelled', 'delivered'].includes(currentStatus)) {
         await t.rollback();
         return res.status(400).json({ message: `Order is already ${order.status}.` });
+      }
+      if (!CANCELLABLE_STATUSES.includes(currentStatus)) {
+        await t.rollback();
+        return res.status(400).json({ message: `Order status has changed to "${order.status}" and it can no longer be cancelled.` });
+      }
+      // Physical safety net: even within the allowed statuses, block once the
+      // parcel has actually left (courier picked up / in transit).
+      const dispatchedShipment = await Shipment.findOne({
+        where: {
+          order_id: order.id,
+          type: SHIPMENT_TYPE.FORWARD,
+          status: { [Op.in]: [SHIPMENT_STATUS.IN_TRANSIT, SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.RTO] },
+        },
+        transaction: t,
+      });
+      if (dispatchedShipment) {
+        await t.rollback();
+        return res.status(400).json({ message: 'Order has already been dispatched and can no longer be cancelled.' });
       }
 
       const createdAt = new Date(order.createdAt);
@@ -1613,7 +1251,7 @@ class OrderController {
       const isCod = String(order.payment_method || 'COD').toUpperCase() === 'COD';
 
       // Reverse the order on the ledger and (prepaid) record the refund.
-      const { refundAmount, walletRefund } = await settleFullCancelLedger(order, isCod, t);
+      const { refundAmount, walletRefund } = await settleCancellation({ orderId: order.id, isCod, transaction: t });
       const paidAmount = refundAmount;
       let refundNote = isCod
         ? 'COD order cancelled. No online payment refund is needed.'
@@ -1693,222 +1331,6 @@ class OrderController {
       return res.status(200).json({
         message: 'Order cancelled successfully.',
         refund_message: refundNote,
-        shiprocket: shiprocketCancel,
-        order: serializeOrder(updatedOrder),
-      });
-    } catch (error) {
-      if (t && !t.finished) await t.rollback();
-      return res.status(500).json({ message: error.message });
-    }
-  }
-
-  async cancelOrderItem(req, res) {
-    const t = await sequelize.transaction();
-    try {
-      const { orderId, itemId } = req.params;
-      const { reason } = req.body;
-      const order = await Order.findByPk(orderId, { transaction: t, lock: t.LOCK.UPDATE });
-
-      if (!order) {
-        await t.rollback();
-        return res.status(404).json({ message: 'Order not found' });
-      }
-
-      const isOwnedByCustomerId = Number(order.customer_id) === Number(req.user?.id);
-      const isLegacyOwnedByEmail = !order.customer_id
-        && req.user?.email
-        && String(order.customer_email || '').toLowerCase() === String(req.user.email).toLowerCase();
-      if (req.userRole !== 'admin' && !isOwnedByCustomerId && !isLegacyOwnedByEmail) {
-        await t.rollback();
-        return res.status(403).json({ message: 'This order does not belong to this customer.' });
-      }
-
-      const currentStatus = String(order.status || '').toLowerCase();
-      if (['cancelled', 'delivered'].includes(currentStatus)) {
-        await t.rollback();
-        return res.status(400).json({ message: `Order is already ${order.status}.` });
-      }
-
-      const createdAt = new Date(order.createdAt);
-      const hoursSinceOrder = (Date.now() - createdAt.getTime()) / (1000 * 60 * 60);
-      if (hoursSinceOrder > 24) {
-        await t.rollback();
-        return res.status(400).json({ message: 'Cancellation is available only within 24 hours of placing the order.' });
-      }
-
-      const item = await OrderItem.findOne({
-        where: { id: itemId, order_id: orderId },
-        transaction: t,
-        lock: t.LOCK.UPDATE
-      });
-
-      if (!item) {
-        await t.rollback();
-        return res.status(404).json({ message: 'Order item not found' });
-      }
-
-      // Restock inventory
-      const product = await Product.findByPk(item.product_id, {
-        attributes: ['id', 'name', 'stock_quantity', 'color_stocks', 'status'],
-        transaction: t,
-        lock: t.LOCK.UPDATE
-      });
-      if (product) {
-        const qty = Number(item.quantity || 1);
-        const colorId = item.colorId || item.color_id;
-        const stocks = { ...(product.color_stocks || {}) };
-        const hasColor = colorId !== null && colorId !== undefined && colorId !== "";
-        
-        const updatePayload = { stock_quantity: Number(product.stock_quantity || 0) + qty };
-        if (hasColor) {
-          const currentColorStock = Number(stocks[String(colorId)] ?? product.stock_quantity ?? 0);
-          stocks[String(colorId)] = currentColorStock + qty;
-          updatePayload.color_stocks = stocks;
-        }
-        await product.update(updatePayload, { transaction: t });
-      }
-
-      // Calculate cancellation values
-      const itemPrice = Number(item.price) * Number(item.quantity);
-      
-      // Check active (not cancelled) items in this order
-      const activeItems = await OrderItem.findAll({
-        where: {
-          order_id: orderId,
-          status: { [Op.ne]: 'Cancelled' }
-        },
-        transaction: t,
-        lock: t.LOCK.UPDATE
-      });
-
-      let shiprocketCancel = null;
-
-      // If it was the only active item in the order, cancel the whole order
-      if (activeItems.length <= 1) {
-        const srOrderId = await getShiprocketOrderId(order.id, t);
-        if (srOrderId) {
-          try {
-            shiprocketCancel = await ShipRocketService.cancelOrders([srOrderId]);
-          } catch (error) {
-            console.error(`[ShipRocket] Cancel failed for order #${order.id}:`, error?.response?.data || error.message);
-          }
-        }
-
-        const isCodFull = String(order.payment_method || 'COD').toUpperCase() === 'COD';
-        const prevStatus = order.status;
-        const { refundAmount, walletRefund } = await settleFullCancelLedger(order, isCodFull, t);
-        let refundNote = isCodFull
-          ? 'COD order cancelled. No online payment refund is needed.'
-          : `Refund of Rs. ${refundAmount.toLocaleString('en-IN')} will be processed in 1-2 days.`;
-        if (reason && reason.trim()) refundNote += ` | Reason: ${reason.trim()}`;
-
-        await order.update({
-          status: 'Cancelled',
-          cancelled_at: new Date(),
-          payment_status: isCodFull ? 'Cancelled' : 'Refund Pending',
-        }, { transaction: t });
-        await item.update({ status: 'Cancelled' }, { transaction: t });
-        await OrderStatusHistory.create({
-          order_id: order.id, from_status: prevStatus, to_status: 'Cancelled',
-          actor: req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER, reason: `Item cancelled: ${item.product_name}`,
-        }, { transaction: t });
-
-        await OrderRefund.create({
-          order_id: order.id,
-          refund_type: REFUND_TYPE.FULL_CANCEL,
-          amount: isCodFull ? 0 : refundAmount,
-          status: isCodFull ? REFUND_STATUS.NOT_REQUIRED : REFUND_STATUS.PENDING,
-          payment_method: isCodFull ? REFUND_PAYMENT_METHOD.NOT_REQUIRED : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-          note: refundNote,
-        }, { transaction: t });
-
-        // Decrement coupon usage count on full cancellation
-        if (order.coupon_code) {
-          const Coupon = require('../models/Coupon');
-          await Coupon.decrement('usage_count', {
-            by: 1,
-            where: { code: order.coupon_code, usage_count: { [Op.gt]: 0 } },
-            transaction: t,
-          });
-        }
-
-        if (walletRefund > 0 && order.customer_id) {
-          await WalletTransaction.create({
-            customer_id: order.customer_id,
-            amount: walletRefund,
-            type: 'ORDER_CANCELLATION_REFUND',
-            status: 'completed',
-            available_at: null,
-            dedupe_key: `order_cancel_wallet:${order.id}`,
-            meta: { order_id: order.id },
-          }, { transaction: t });
-          await Customer.increment(
-            { wallet_balance: walletRefund },
-            { where: { id: order.customer_id }, transaction: t },
-          );
-        }
-      } else {
-        // Partial cancellation — reverse the item on the ledger, recompute coupon.
-        const srOrderId = await getShiprocketOrderId(order.id, t);
-        if (srOrderId) {
-          try {
-            shiprocketCancel = await ShipRocketService.cancelOrders([srOrderId]);
-          } catch (error) {
-            console.error(`[ShipRocket] Cancel failed for order #${order.id} on item cancellation:`, error?.response?.data || error.message);
-          }
-        }
-
-        const isCodPartial = String(order.payment_method || 'COD').toUpperCase() === 'COD';
-        const prevStatus = order.status;
-        const { refundAmount, newTotal } = await settlePartialCancelLedger(order, item, t);
-        let refundNote = isCodPartial
-          ? `Item '${item.product_name}' cancelled. Remaining COD amount: Rs. ${newTotal.toLocaleString('en-IN')}.`
-          : `Refund of Rs. ${refundAmount.toLocaleString('en-IN')} for cancelled item will be processed.`;
-        if (reason && reason.trim()) refundNote += ` | Reason: ${reason.trim()}`;
-
-        await order.update({
-          payment_status: isCodPartial ? order.payment_status : 'Refund Pending',
-        }, { transaction: t });
-        await item.update({ status: 'Cancelled' }, { transaction: t });
-        await OrderStatusHistory.create({
-          order_id: order.id, from_status: prevStatus, to_status: 'Partially Cancelled',
-          actor: req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER, reason: `Item cancelled: ${item.product_name}`,
-        }, { transaction: t });
-
-        await OrderRefund.create({
-          order_id: order.id,
-          refund_type: REFUND_TYPE.PARTIAL_CANCEL,
-          amount: isCodPartial ? 0 : refundAmount,
-          status: isCodPartial ? REFUND_STATUS.NOT_REQUIRED : REFUND_STATUS.PENDING,
-          payment_method: isCodPartial ? REFUND_PAYMENT_METHOD.NOT_REQUIRED : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-          note: refundNote,
-        }, { transaction: t });
-      }
-
-      await t.commit();
-
-      const EmailService = require('../services/EmailService');
-      const emailStatus = activeItems.length <= 1 ? 'Cancelled' : 'Partially Cancelled';
-      EmailService.sendOrderStatusUpdate(order, emailStatus).catch((error) => {
-        console.error(`[Email] Item cancellation email failed for status ${emailStatus}:`, error.message);
-      });
-
-      const updatedOrder = await Order.findByPk(orderId, {
-        include: [
-          {
-            model: OrderItem,
-            include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
-              { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
-            ],
-          },
-          { model: OrderRefund, as: 'Refunds' },
-          ...ORDER_V2_INCLUDES,
-        ],
-      });
-
-      return res.status(200).json({
-        message: 'Item cancelled successfully.',
         shiprocket: shiprocketCancel,
         order: serializeOrder(updatedOrder),
       });

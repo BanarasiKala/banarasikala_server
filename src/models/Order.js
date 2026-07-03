@@ -9,7 +9,6 @@ const { config } = require('../config/env');
  *   shipping address → order_addresses (versioned; current_address_id points here)
  *   RTO / redispatch → shipments / rto_events
  *   COD block        → customers.is_cod_blocked + cod_block_events
- *   modify flags     → order_modifications
  *   status timeline  → order_status_history
  *   courier / AWB    → shipments
  */

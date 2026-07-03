@@ -3,7 +3,7 @@
  *
  * Helpers for the append-only order_ledger — the single source of truth for
  * money on an order. Balance = Σ DEBIT − Σ CREDIT. Nothing is recomputed in
- * place; every flow (placement, modify, RTO, return) only APPENDS entries.
+ * place; every flow (placement, cancel, RTO, return) only APPENDS entries.
  */
 const OrderLedger = require('../models/OrderLedger');
 const RefundTransaction = require('../models/RefundTransaction');
@@ -150,7 +150,7 @@ const deriveOrderTotals = (ledgerRows = []) => {
   };
 };
 
-/** Append a single ledger entry (used by modify / RTO / return flows). */
+/** Append a single ledger entry (used by cancel / RTO / return flows). */
 const appendEntry = async (orderId, entry, transaction) => {
   const rows = [];
   pushEntry(rows, orderId, entry);
@@ -160,45 +160,30 @@ const appendEntry = async (orderId, entry, transaction) => {
 };
 
 /**
- * Settle a cancellation on the ledger (shared by both cancel entry points).
- *   isFull → reverse the whole order value, refund what was paid (prepaid) or
- *            zero the uncollected COD balance.
- *   partial → reverse the cancelled item value, shrink the coupon by couponLoss,
- *             refund the net (prepaid).
+ * Settle a full-order cancellation on the ledger (partial cancellation no
+ * longer exists — customers cancel the whole order or nothing).
+ *   Prepaid → reverse the order value, refund what was paid (balance stays 0).
+ *   COD     → zero the uncollected balance (nothing to refund).
+ * Wallet credit used on the order is reported via walletRefund; the caller
+ * credits it back to the customer's wallet (applies to COD orders too).
  * Returns { refundAmount, walletRefund }.
  */
-const settleCancellation = async ({ orderId, isFull, cancelledValue = 0, couponLoss = 0, isCod, transaction }) => {
+const settleCancellation = async ({ orderId, isCod, transaction }) => {
   const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: orderId }, transaction }));
 
-  if (isFull) {
-    if (isCod) {
-      if (totals.balance_due > 0) {
-        await appendEntry(orderId, { type: T.PRODUCT_CHARGE, amount: totals.balance_due, direction: D.CREDIT, referenceType: R.ORDER, note: 'Order cancelled — COD not collected' }, transaction);
-      }
-      return { refundAmount: 0, walletRefund: totals.wallet_amount };
+  if (isCod) {
+    if (totals.balance_due > 0) {
+      await appendEntry(orderId, { type: T.PRODUCT_CHARGE, amount: totals.balance_due, direction: D.CREDIT, referenceType: R.ORDER, note: 'Order cancelled — COD not collected' }, transaction);
     }
-    const refundAmount = round(totals.amount_paid);
-    if (refundAmount > 0) {
-      await appendEntry(orderId, { type: T.PRODUCT_CHARGE, amount: refundAmount, direction: D.CREDIT, referenceType: R.ORDER, note: 'Order cancelled — value reversed' }, transaction);
-      const refLedger = await appendEntry(orderId, { type: T.REFUND, amount: refundAmount, direction: D.DEBIT, referenceType: R.ORDER, note: 'Cancellation refund' }, transaction);
-      await RefundTransaction.create({ order_id: orderId, ledger_entry_id: refLedger?.id || null, gateway: 'original_gateway', amount: refundAmount, status: 'Pending' }, { transaction });
-    }
-    return { refundAmount, walletRefund: totals.wallet_amount };
+    return { refundAmount: 0, walletRefund: totals.wallet_amount };
   }
-
-  // Partial
-  if (cancelledValue > 0) {
-    await appendEntry(orderId, { type: T.PRODUCT_CHARGE, amount: cancelledValue, direction: D.CREDIT, referenceType: R.ORDER, note: 'Item cancelled — value reversed' }, transaction);
-  }
-  if (couponLoss > 0) {
-    await appendEntry(orderId, { type: T.COUPON_DISCOUNT, amount: couponLoss, direction: D.DEBIT, referenceType: R.ORDER, note: 'Coupon recalculated after cancellation' }, transaction);
-  }
-  const refundAmount = round(Math.max(0, cancelledValue - couponLoss));
-  if (!isCod && refundAmount > 0) {
-    const refLedger = await appendEntry(orderId, { type: T.REFUND, amount: refundAmount, direction: D.DEBIT, referenceType: R.ORDER, note: 'Partial cancellation refund' }, transaction);
+  const refundAmount = round(totals.amount_paid);
+  if (refundAmount > 0) {
+    await appendEntry(orderId, { type: T.PRODUCT_CHARGE, amount: refundAmount, direction: D.CREDIT, referenceType: R.ORDER, note: 'Order cancelled — value reversed' }, transaction);
+    const refLedger = await appendEntry(orderId, { type: T.REFUND, amount: refundAmount, direction: D.DEBIT, referenceType: R.ORDER, note: 'Cancellation refund' }, transaction);
     await RefundTransaction.create({ order_id: orderId, ledger_entry_id: refLedger?.id || null, gateway: 'original_gateway', amount: refundAmount, status: 'Pending' }, { transaction });
   }
-  return { refundAmount, walletRefund: 0 };
+  return { refundAmount, walletRefund: totals.wallet_amount };
 };
 
 module.exports = {

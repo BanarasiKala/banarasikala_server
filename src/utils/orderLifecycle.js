@@ -7,7 +7,7 @@ const CodBlockEvent = require("../models/CodBlockEvent");
 const { COD_BLOCK_ACTION } = require("./orderModelV2");
 
 // V2: these legacy order columns were dropped and now live in dedicated tables
-// (shipments, rto_events, order_modifications, order_status_history,
+// (shipments, rto_events, order_status_history,
 // cod_block_events, order_ledger). The list is intentionally empty so the
 // ensure helper no longer resurrects the dropped columns.
 const ORDER_LIFECYCLE_COLUMNS = {};

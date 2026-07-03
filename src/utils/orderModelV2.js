@@ -16,7 +16,6 @@ const { config } = require('../config/env');
 // Models — required in dependency order so associations are registered.
 const OrderAddress = require('../models/OrderAddress');
 const OrderStatusHistory = require('../models/OrderStatusHistory');
-const OrderModification = require('../models/OrderModification');
 const Shipment = require('../models/Shipment');
 const ShipmentItem = require('../models/ShipmentItem');
 const RtoEvent = require('../models/RtoEvent');
@@ -31,7 +30,6 @@ const CodBlockEvent = require('../models/CodBlockEvent');
 
 const ORDER_STATUS = Object.freeze({
   PLACED: 'PLACED',
-  MODIFIED: 'MODIFIED',
   DISPATCHED: 'DISPATCHED',
   DELIVERED: 'DELIVERED',
   RTO: 'RTO',
@@ -44,13 +42,6 @@ const ACTOR = Object.freeze({
   CUSTOMER: 'CUSTOMER',
   ADMIN: 'ADMIN',
   SYSTEM: 'SYSTEM',
-});
-
-const MODIFICATION_TYPE = Object.freeze({
-  QTY_CHANGE: 'QTY_CHANGE',
-  ITEM_REMOVED: 'ITEM_REMOVED',
-  ITEM_ADDED: 'ITEM_ADDED',
-  ADDRESS_CHANGE: 'ADDRESS_CHANGE',
 });
 
 const SHIPMENT_TYPE = Object.freeze({ FORWARD: 'FORWARD', REVERSE: 'REVERSE' });
@@ -106,7 +97,6 @@ const LEDGER_DIRECTION = Object.freeze({ DEBIT: 'DEBIT', CREDIT: 'CREDIT' });
 
 const LEDGER_REFERENCE_TYPE = Object.freeze({
   ORDER: 'ORDER',
-  MODIFICATION: 'MODIFICATION',
   SHIPMENT: 'SHIPMENT',
   RTO_EVENT: 'RTO_EVENT',
   RETURN: 'RETURN',
@@ -121,7 +111,6 @@ const COD_BLOCK_ACTION = Object.freeze({ BLOCK: 'BLOCK', UNBLOCK: 'UNBLOCK' });
 const SYNC_ORDER = [
   OrderAddress,
   OrderStatusHistory,
-  OrderModification,
   Shipment,
   ShipmentItem,
   RtoEvent,
@@ -154,6 +143,10 @@ const ensureOrderModelV2Tables = async () => {
     });
   }
 
+  // 3. Order modification was removed (cancellation is whole-order only) —
+  // drop its table if a previous deploy created it. Idempotent.
+  await sequelize.query(`DROP TABLE IF EXISTS "${config.dbSchema}"."order_modifications"`);
+
   modelV2Ready = true;
 };
 
@@ -161,7 +154,6 @@ module.exports = {
   ensureOrderModelV2Tables,
   ORDER_STATUS,
   ACTOR,
-  MODIFICATION_TYPE,
   SHIPMENT_TYPE,
   SHIPMENT_STATUS,
   RTO_RESOLUTION,
