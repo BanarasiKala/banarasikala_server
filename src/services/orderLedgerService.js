@@ -101,13 +101,18 @@ const getOrderBalance = async (orderId, transaction) => {
 };
 
 /**
- * Reconstruct the legacy money breakdown from ledger rows, so read endpoints
- * can keep returning the same shape the frontend expects (subtotal_amount,
- * shipping_charge, total_amount, …) without storing those columns.
+ * Reconstruct the customer-facing money breakdown from ledger rows, so read
+ * endpoints can keep returning the same shape the frontend expects
+ * (subtotal_amount, shipping_charge, total_amount, …) without storing those
+ * columns.
+ *
+ * Display fields use the GROSS sides — charges from DEBIT rows, discounts and
+ * payments from CREDIT rows — so the original bill is preserved after a
+ * cancellation / return / RTO appends reversal entries. Those reversals only
+ * move `balance_due` (the true net) and surface in `refund_amount`; they never
+ * rewrite what the customer originally ordered and paid.
  */
 const deriveOrderTotals = (ledgerRows = []) => {
-  // Accumulate debit/credit per entry_type so adjustment entries (e.g. a CREDIT
-  // PRODUCT_CHARGE that reduces the subtotal after a modify) net correctly.
   const acc = {};
   let totalDebit = 0;
   let totalCredit = 0;
@@ -117,23 +122,22 @@ const deriveOrderTotals = (ledgerRows = []) => {
     if (row.direction === D.DEBIT) { bucket.debit += a; totalDebit += a; }
     else { bucket.credit += a; totalCredit += a; }
   }
-  // Charge types: net = DEBIT − CREDIT. Credit/discount types: net = CREDIT − DEBIT.
-  const chargeNet = (type) => round((acc[type]?.debit || 0) - (acc[type]?.credit || 0));
-  const creditNet = (type) => round((acc[type]?.credit || 0) - (acc[type]?.debit || 0));
+  const debitOf = (type) => round(acc[type]?.debit || 0);
+  const creditOf = (type) => round(acc[type]?.credit || 0);
 
-  const subtotal_amount = chargeNet(T.PRODUCT_CHARGE);
-  const shipping_charge = chargeNet(T.SHIPPING_CHARGE);
-  const platform_fee = chargeNet(T.PLATFORM_FEE);
-  const cod_fee = chargeNet(T.COD_FEE);
-  const gift_charge = chargeNet(T.GIFT_CHARGE);
-  const rto_charge = chargeNet(T.RTO_CHARGE);
-  const redispatch_charge = chargeNet(T.REDISPATCH_CHARGE);
-  const discount_amount = creditNet(T.COUPON_DISCOUNT);
-  const payment_discount = creditNet(T.PREPAID_DISCOUNT);
-  const wallet_amount = creditNet(T.WALLET_CREDIT);
-  const amount_paid = round(creditNet(T.PAYMENT) + creditNet(T.COD_COLLECTION));
+  const subtotal_amount = debitOf(T.PRODUCT_CHARGE);
+  const shipping_charge = debitOf(T.SHIPPING_CHARGE);
+  const platform_fee = debitOf(T.PLATFORM_FEE);
+  const cod_fee = debitOf(T.COD_FEE);
+  const gift_charge = debitOf(T.GIFT_CHARGE);
+  const rto_charge = debitOf(T.RTO_CHARGE);
+  const redispatch_charge = debitOf(T.REDISPATCH_CHARGE);
+  const discount_amount = creditOf(T.COUPON_DISCOUNT);
+  const payment_discount = creditOf(T.PREPAID_DISCOUNT);
+  const wallet_amount = creditOf(T.WALLET_CREDIT);
+  const amount_paid = round(creditOf(T.PAYMENT) + creditOf(T.COD_COLLECTION));
   // REFUND is recorded as a DEBIT (money paid back to the customer).
-  const refund_amount = chargeNet(T.REFUND);
+  const refund_amount = debitOf(T.REFUND);
 
   const charges = subtotal_amount + shipping_charge + platform_fee
     + cod_fee + gift_charge + rto_charge + redispatch_charge;

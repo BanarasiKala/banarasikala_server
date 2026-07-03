@@ -43,6 +43,7 @@ const RtoEvent = require('../models/RtoEvent');
 const {
   seedPlacementLedger, getOrderBalance, deriveOrderTotals, appendEntry, settleCancellation,
 } = require('../services/orderLedgerService');
+const RefundTransaction = require('../models/RefundTransaction');
 
 const sortProductImages = (images = []) => [...images].sort((a, b) => {
   const left = Number.isFinite(Number(a.display_order)) ? Number(a.display_order) : 999;
@@ -338,16 +339,6 @@ const decrementProductInventory = async ({ product, colorId, quantity, transacti
   }
 
   await product.update(updatePayload, { transaction });
-};
-
-// Latest forward shipment's ShipRocket order id (for cancel calls). Null if none.
-const getShiprocketOrderId = async (orderId, transaction) => {
-  const fwd = await Shipment.findOne({
-    where: { order_id: orderId, type: SHIPMENT_TYPE.FORWARD, shiprocket_order_id: { [Op.ne]: null } },
-    order: [['created_at', 'DESC']],
-    transaction,
-  });
-  return fwd?.shiprocket_order_id || null;
 };
 
 // Cancellation is whole-order only and allowed only while the order is still in
@@ -722,6 +713,14 @@ class OrderController {
       // ── Fire & forget: push to ShipRocket (never blocks customer response) ──
       (async () => {
         try {
+          // The customer may cancel in the seconds before this push runs —
+          // don't create an SR order (or advance the status) for a dead order.
+          const liveOrder = await Order.findByPk(order.id, { attributes: ['id', 'status'] });
+          if (String(liveOrder?.status || '').toLowerCase() === 'cancelled') {
+            console.warn(`[ShipRocket] Order #${order.id} was cancelled before the SR push — skipping.`);
+            return;
+          }
+
           const srItems = enrichedItems.map((item, idx) => ({
             product_id: item.id,
             quantity: item.quantity,
@@ -767,14 +766,30 @@ class OrderController {
           );
 
           const nextStatus = srResult?.awb_code ? 'AWB Assigned' : 'Processing';
-          await Order.update({ status: nextStatus }, { where: { id: order.id } });
-          await OrderStatusHistory.create({
-            order_id: order.id,
-            from_status: 'Pending',
-            to_status: nextStatus,
-            actor: ACTOR.SYSTEM,
-            reason: 'ShipRocket order created',
-          });
+          // Conditional update: only advance a still-Pending order so this can
+          // never overwrite a cancellation that happened while SR was pushed.
+          const [advanced] = await Order.update(
+            { status: nextStatus },
+            { where: { id: order.id, status: 'Pending' } },
+          );
+          if (advanced > 0) {
+            await OrderStatusHistory.create({
+              order_id: order.id,
+              from_status: 'Pending',
+              to_status: nextStatus,
+              actor: ACTOR.SYSTEM,
+              reason: 'ShipRocket order created',
+            });
+          } else {
+            // Order moved on (e.g. cancelled) while SR was creating — cancel the
+            // freshly created SR order so it doesn't get shipped.
+            const current = await Order.findByPk(order.id, { attributes: ['status'] });
+            if (String(current?.status || '').toLowerCase() === 'cancelled' && srResult?.order_id) {
+              await ShipRocketService.cancelOrders([String(srResult.order_id)]).catch((e) => console.error(`[ShipRocket] Late cancel failed for order #${order.id}:`, e?.response?.data || e.message));
+              await shipment.update({ status: SHIPMENT_STATUS.CANCELLED });
+              console.warn(`[ShipRocket] Order #${order.id} was cancelled during the SR push — SR order ${srResult.order_id} cancelled.`);
+            }
+          }
 
           console.log(`[ShipRocket] ✅ Order #${order.id} pushed → SR Order: ${srResult.order_id}, Shipment: ${srResult.shipment_id}`);
         } catch (srErr) {
@@ -1235,11 +1250,18 @@ class OrderController {
         });
       }
 
-      const srOrderId = await getShiprocketOrderId(order.id, t);
+      // Cancel the forward shipment on ShipRocket and mirror it on our
+      // shipment row. Best-effort: an SR hiccup never blocks the cancellation.
+      const fwdShipment = await Shipment.findOne({
+        where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD, shiprocket_order_id: { [Op.ne]: null } },
+        order: [['created_at', 'DESC']],
+        transaction: t,
+      });
       let shiprocketCancel = null;
-      if (srOrderId) {
+      if (fwdShipment?.shiprocket_order_id) {
         try {
-          shiprocketCancel = await ShipRocketService.cancelOrders([srOrderId]);
+          shiprocketCancel = await ShipRocketService.cancelOrders([fwdShipment.shiprocket_order_id]);
+          await fwdShipment.update({ status: SHIPMENT_STATUS.CANCELLED }, { transaction: t });
         } catch (error) {
           console.error(`[ShipRocket] Cancel failed for order #${order.id}:`, error?.response?.data || error.message);
           shiprocketCancel = { warning: 'ShipRocket cancellation could not be confirmed automatically.' };
@@ -1296,18 +1318,39 @@ class OrderController {
 
       await t.commit();
 
-      // Initiate Razorpay refund for prepaid orders (fire & forget — wallet credit already given)
-      if (!isCod) {
-        Payment.findOne({ where: { order_id: order.id, status: 'Paid' } }).then((payment) => {
-          if (payment?.gateway_payment_id) {
-            return razorpayRefund(payment.gateway_payment_id, paidAmount, {
+      // Initiate the Razorpay refund for prepaid orders. Runs post-commit so a
+      // gateway hiccup never rolls back the cancellation; the outcome is written
+      // to the refund rows so admin can see Processing vs Failed and retry.
+      if (!isCod && paidAmount > 0) {
+        (async () => {
+          try {
+            const payment = await Payment.findOne({ where: { order_id: order.id, status: 'Paid' } });
+            if (!payment?.gateway_payment_id) {
+              console.error(`[Razorpay] No paid gateway payment found for order #${order.id} — refund needs manual processing.`);
+              return;
+            }
+            const gatewayRefund = await razorpayRefund(payment.gateway_payment_id, paidAmount, {
               reason: 'Customer cancellation',
               orderId: String(order.id),
             });
+            await OrderRefund.update(
+              { status: REFUND_STATUS.PROCESSING, gateway_refund_id: gatewayRefund?.id || null },
+              { where: { order_id: order.id, refund_type: REFUND_TYPE.FULL_CANCEL, status: REFUND_STATUS.PENDING } },
+            );
+            await RefundTransaction.update(
+              { status: 'Processing', gateway_ref: gatewayRefund?.id || null },
+              { where: { order_id: order.id, status: 'Pending' } },
+            );
+            console.log(`[Razorpay] ✅ Refund of Rs. ${paidAmount} initiated for order #${order.id} → ${gatewayRefund?.id}`);
+          } catch (err) {
+            console.error(`[Razorpay] Refund failed for order #${order.id}:`, err?.message || err);
+            // Surface the failure so admin can retry instead of it sitting silently Pending.
+            await OrderRefund.update(
+              { status: REFUND_STATUS.FAILED, note: sequelize.literal(`CONCAT(COALESCE(note, ''), ' | Automatic gateway refund failed — manual retry required.')`) },
+              { where: { order_id: order.id, refund_type: REFUND_TYPE.FULL_CANCEL, status: REFUND_STATUS.PENDING } },
+            ).catch((updateErr) => console.error('[Razorpay] Failed to mark refund Failed:', updateErr.message));
           }
-        }).catch((err) => {
-          console.error(`[Razorpay] Refund failed for order #${order.id}:`, err?.message || err);
-        });
+        })();
       }
 
       EmailService.sendOrderStatusUpdate(order, 'Cancelled').catch((error) => {
