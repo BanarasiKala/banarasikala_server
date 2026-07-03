@@ -53,8 +53,8 @@ const config = {
   cloudinaryApiSecret: readEnv("CLOUDINARY_API_SECRET"),
   razorpayKeyId: readEnv("RAZORPAY_KEY_ID"),
   razorpayKeySecret: readEnv("RAZORPAY_KEY_SECRET"),
-  // SMTP (Titan Email / any provider). Falls back to the legacy EMAIL_* vars.
-  emailHost: process.env.SMTP_HOST || "smtp.titan.email",
+  // SMTP (GoDaddy / any provider). Falls back to the legacy EMAIL_* vars.
+  emailHost: process.env.SMTP_HOST || "smtpout.secureserver.net",
   emailPort: Number(process.env.SMTP_PORT) || 465,
   emailUser: process.env.SMTP_USER || process.env.EMAIL_USER || readEnv("SMTP_USER"),
   emailPass: process.env.SMTP_PASS || process.env.EMAIL_PASS || readEnv("SMTP_PASS"),
