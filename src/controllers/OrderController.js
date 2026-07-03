@@ -108,6 +108,8 @@ const hydrateV2Fields = (json) => {
     json.shiprocket_order_id = forward.shiprocket_order_id;
     json.shiprocket_awb = forward.awb_number;
     json.courier = forward.courier;
+    // Alias for readers that expect courier_name (e.g. the order detail page).
+    json.courier_name = forward.courier;
     json.selected_courier_data = forward.selected_courier_data;
   }
 

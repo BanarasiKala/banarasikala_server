@@ -471,11 +471,21 @@ class ShipRocketController {
       }
       const payload = req.body || {};
       const awb = payload.awb || payload.awb_code || payload.awb_number || payload.shipment?.awb || payload.shipment_track?.awb_code;
-      const srOrderId = payload.order_id || payload.shiprocket_order_id || payload.sr_order_id || payload.shipment?.order_id;
+      // ShipRocket is inconsistent about ids across webhook variants: order_id
+      // may be their internal id OR the channel id (our order_number), with
+      // sr_order_id / channel_order_id present in some payloads. Collect every
+      // candidate and try them all.
+      const idCandidates = [payload.order_id, payload.sr_order_id, payload.shiprocket_order_id, payload.shipment?.order_id]
+        .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
+        .map((v) => String(v).trim());
+      const channelOrderNumber = payload.channel_order_id ? String(payload.channel_order_id).trim() : null;
+      // Best value to backfill shipments.shiprocket_order_id with — prefer
+      // ShipRocket's internal id over the (possibly channel) order_id.
+      const srInternalId = payload.sr_order_id || payload.shiprocket_order_id || payload.shipment?.order_id || payload.order_id || null;
       const rawStatus = payload.current_status || payload.shipment_status || payload.status || payload.activity || payload.shipment?.status;
       const nextStatus = mapShiprocketStatus(rawStatus);
 
-      if (!nextStatus || (!awb && !srOrderId)) {
+      if (!nextStatus || (!awb && !idCandidates.length && !channelOrderNumber)) {
         return res.status(200).json({ message: 'Webhook ignored' });
       }
 
@@ -490,8 +500,8 @@ class ShipRocketController {
       let reverseAction = null;
       let forwardShipment = null;
 
-      if (srOrderId) {
-        reverseAction = await OrderItemAction.findOne({ where: { shiprocket_return_order_id: String(srOrderId) }, transaction });
+      if (idCandidates.length) {
+        reverseAction = await OrderItemAction.findOne({ where: { shiprocket_return_order_id: { [Op.in]: idCandidates } }, transaction });
       }
       if (!reverseAction && awb) {
         reverseAction = await OrderItemAction.findOne({ where: { shiprocket_return_awb: String(awb) }, transaction });
@@ -501,7 +511,7 @@ class ShipRocketController {
         order = await Order.findByPk(reverseAction.order_id, { transaction, lock: Transaction.LOCK.UPDATE });
       } else {
         const shipWhere = [];
-        if (srOrderId) shipWhere.push({ shiprocket_order_id: String(srOrderId) });
+        if (idCandidates.length) shipWhere.push({ shiprocket_order_id: { [Op.in]: idCandidates } });
         if (awb) shipWhere.push({ awb_number: String(awb) });
         if (shipWhere.length) {
           forwardShipment = await Shipment.findOne({
@@ -514,11 +524,42 @@ class ShipRocketController {
         if (forwardShipment) {
           order = await Order.findByPk(forwardShipment.order_id, { transaction, lock: Transaction.LOCK.UPDATE });
         }
+
+        // Fallback: real ShipRocket webhooks often carry the CHANNEL order id
+        // (our order_number) instead of their internal id. Before the first
+        // AWB-assigned event no AWB is stored locally, so without this the
+        // initial webhook can never match the shipment.
+        if (!order) {
+          const numbers = [channelOrderNumber, ...idCandidates].filter(Boolean);
+          if (numbers.length) {
+            order = await Order.findOne({
+              where: { order_number: { [Op.in]: numbers } },
+              transaction,
+              lock: Transaction.LOCK.UPDATE,
+            });
+            if (order) {
+              forwardShipment = await Shipment.findOne({
+                where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD },
+                order: [['created_at', 'DESC']],
+                transaction,
+                lock: Transaction.LOCK.UPDATE,
+              });
+            }
+          }
+        }
       }
 
       if (!order) {
         await transaction.rollback();
         return res.status(200).json({ message: 'Order not found locally' });
+      }
+
+      // A cancelled order must never be revived by a late or redelivered
+      // courier webhook (e.g. an AWB-assigned event racing a cancellation).
+      if (['cancelled', 'seller cancelled'].includes(String(order.status || '').toLowerCase())) {
+        await transaction.rollback();
+        console.warn(`[ShipRocket] Webhook '${nextStatus}' ignored — order #${order.id} is ${order.status}.`);
+        return res.status(200).json({ message: 'Order is cancelled — webhook ignored' });
       }
 
       const isReverse = Boolean(reverseAction);
@@ -543,6 +584,11 @@ class ShipRocketController {
         }
       } else {
         // ── Forward shipment: update the shipment row, not the order ──
+        // Late or out-of-order pre-delivery scans must not regress a delivered order.
+        if (order.delivered_at && ['AWB Assigned', 'Shipped', 'Out For Delivery'].includes(nextStatus)) {
+          await transaction.rollback();
+          return res.status(200).json({ message: 'Stale webhook after delivery — ignored' });
+        }
         const shipStatusMap = {
           'AWB Assigned': SHIPMENT_STATUS.DISPATCHED,
           'Shipped': SHIPMENT_STATUS.IN_TRANSIT,
@@ -556,7 +602,23 @@ class ShipRocketController {
           const shipUpdate = {};
           if (shipStatusMap[nextStatus]) shipUpdate.status = shipStatusMap[nextStatus];
           if (awb && !forwardShipment.awb_number) shipUpdate.awb_number = String(awb);
-          if (srOrderId && !forwardShipment.shiprocket_order_id) shipUpdate.shiprocket_order_id = String(srOrderId);
+          if (srInternalId && !forwardShipment.shiprocket_order_id) shipUpdate.shiprocket_order_id = String(srInternalId);
+          // The webhook carries the courier ShipRocket actually assigned (which
+          // can differ from the one picked at checkout) — persist it so the
+          // order page and admin show the real courier.
+          if (payload.courier_name && forwardShipment.courier !== String(payload.courier_name)) {
+            shipUpdate.courier = String(payload.courier_name);
+          }
+          if (nextStatus === 'AWB Assigned') {
+            shipUpdate.selected_courier_data = {
+              ...(forwardShipment.selected_courier_data || {}),
+              courier_name: payload.courier_name || forwardShipment.selected_courier_data?.courier_name || null,
+              courier_company_id: payload.courier_id ?? forwardShipment.selected_courier_data?.courier_company_id ?? null,
+              awb_code: awb ? String(awb) : forwardShipment.awb_number || null,
+              etd: payload.etd || forwardShipment.selected_courier_data?.etd || null,
+              awb_assigned_date: payload.awb_assigned_date || payload.current_timestamp || null,
+            };
+          }
           if (nextStatus === 'Delivered' && !forwardShipment.delivered_at) shipUpdate.delivered_at = new Date();
           if (['RTO Initiated', 'RTO In Transit', 'RTO Delivered'].includes(nextStatus) && !forwardShipment.rto_at) shipUpdate.rto_at = new Date();
           if (Object.keys(shipUpdate).length) await forwardShipment.update(shipUpdate, { transaction });
@@ -644,14 +706,21 @@ class ShipRocketController {
       }
 
       orderUpdate.status = orderStatus;
+      const statusChanged = orderStatus !== prevStatus;
       await order.update(orderUpdate, { transaction });
-      await recordStatus(order.id, prevStatus, orderStatus, ACTOR.SYSTEM, isReverse ? 'Reverse shipment update' : 'Shipment update', transaction);
+      // Redelivered webhooks with an unchanged status shouldn't duplicate the
+      // history timeline or re-send the customer email.
+      if (statusChanged) {
+        await recordStatus(order.id, prevStatus, orderStatus, ACTOR.SYSTEM, isReverse ? 'Reverse shipment update' : 'Shipment update', transaction);
+      }
       await transaction.commit();
       committed = true;
 
-      EmailService.sendOrderStatusUpdate({ ...order.toJSON(), ...orderUpdate }, orderStatus).catch((emailError) => {
-        console.error(`[Email] ShipRocket webhook email failed for order #${order.id}:`, emailError.message);
-      });
+      if (statusChanged) {
+        EmailService.sendOrderStatusUpdate({ ...order.toJSON(), ...orderUpdate }, orderStatus).catch((emailError) => {
+          console.error(`[Email] ShipRocket webhook email failed for order #${order.id}:`, emailError.message);
+        });
+      }
 
       return res.status(200).json({ message: 'Order status synced', orderId: order.id, status: orderStatus });
       } catch (innerError) {
