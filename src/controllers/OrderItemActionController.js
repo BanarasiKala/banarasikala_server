@@ -428,7 +428,7 @@ class OrderItemActionController {
                 if (payment?.gateway_payment_id) {
                   razorpayRefund(payment.gateway_payment_id, Number(refund.amount), {
                     reason: 'Customer return approved',
-                  }).then(() => refund.update({ status: REFUND_STATUS.PROCESSING }))
+                  }).then((gatewayRefund) => refund.update({ status: REFUND_STATUS.PROCESSING, gateway_refund_id: gatewayRefund?.id || null }))
                     .catch((err) => {
                       console.error('[Razorpay] Return refund failed:', err.message);
                       // Surface the failure so admin can retry instead of it sitting silently Pending.

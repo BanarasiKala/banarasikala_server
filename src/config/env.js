@@ -53,6 +53,10 @@ const config = {
   cloudinaryApiSecret: readEnv("CLOUDINARY_API_SECRET"),
   razorpayKeyId: readEnv("RAZORPAY_KEY_ID"),
   razorpayKeySecret: readEnv("RAZORPAY_KEY_SECRET"),
+  // Signing secret chosen when creating the webhook in the Razorpay dashboard.
+  // Optional: without it the webhook endpoint rejects calls, and refund status
+  // still syncs via the lazy check on order reads.
+  razorpayWebhookSecret: (process.env.RAZORPAY_WEBHOOK_SECRET || "").trim(),
   // SMTP (GoDaddy / any provider). Falls back to the legacy EMAIL_* vars.
   emailHost: process.env.SMTP_HOST || "smtpout.secureserver.net",
   emailPort: Number(process.env.SMTP_PORT) || 465,

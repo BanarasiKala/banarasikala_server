@@ -25,4 +25,7 @@ const createOrder = async (amountRupees) => {
   });
 };
 
-module.exports = { razorpay, refundPayment, createOrder };
+// Current state of a refund (status: created | processed | failed).
+const fetchRefund = async (refundId) => razorpay.refunds.fetch(refundId);
+
+module.exports = { razorpay, refundPayment, createOrder, fetchRefund };

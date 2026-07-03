@@ -44,6 +44,7 @@ const {
   seedPlacementLedger, getOrderBalance, deriveOrderTotals, appendEntry, settleCancellation,
 } = require('../services/orderLedgerService');
 const RefundTransaction = require('../models/RefundTransaction');
+const { reconcileOrderRefunds } = require('../services/RefundSyncService');
 
 const sortProductImages = (images = []) => [...images].sort((a, b) => {
   const left = Number.isFinite(Number(a.display_order)) ? Number(a.display_order) : 999;
@@ -1125,6 +1126,11 @@ class OrderController {
       if (!req.user?.id || req.userRole === 'admin') {
         return res.status(401).json({ message: 'Customer authentication required' });
       }
+
+      // Lazy refund sync: if this order still has a Processing gateway refund,
+      // ask Razorpay for its current status so the customer sees "Refunded" as
+      // soon as it lands — no webhook required. Cheap no-op otherwise.
+      await reconcileOrderRefunds(req.params.id);
 
       const order = await Order.findOne({
         where: {

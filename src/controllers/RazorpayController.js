@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { config } = require('../config/env');
 const { createOrder: razorpayCreateOrder } = require('../services/RazorpayService');
+const { settleGatewayRefund } = require('../services/RefundSyncService');
 
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
 
@@ -60,6 +61,47 @@ class RazorpayController {
     } catch (error) {
       console.error('[Razorpay] verifyPayment error:', error?.message || error);
       return res.status(500).json({ success: false, message: 'Unable to verify payment.' });
+    }
+  }
+
+  /**
+   * Razorpay webhook. Configure in the Razorpay dashboard with events
+   * `refund.processed` and `refund.failed`, pointing at
+   * POST <api-host>/api/razorpay/webhook, and set the same signing secret in
+   * RAZORPAY_WEBHOOK_SECRET. Marks our refund rows Completed/Failed and flips
+   * the order's payment_status to Refunded.
+   */
+  async webhook(req, res) {
+    try {
+      if (!config.razorpayWebhookSecret) {
+        return res.status(503).json({ message: 'Webhook is not configured on this server.' });
+      }
+      const signature = String(req.headers['x-razorpay-signature'] || '');
+      if (!signature || !req.rawBody) {
+        return res.status(400).json({ message: 'Invalid webhook request.' });
+      }
+      const expected = crypto
+        .createHmac('sha256', config.razorpayWebhookSecret)
+        .update(req.rawBody)
+        .digest('hex');
+      const valid = expected.length === signature.length
+        && crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+      if (!valid) {
+        return res.status(400).json({ message: 'Webhook signature mismatch.' });
+      }
+
+      const event = JSON.parse(req.rawBody.toString('utf8'));
+      if (['refund.processed', 'refund.failed'].includes(event.event)) {
+        const refundEntity = event.payload?.refund?.entity;
+        const result = await settleGatewayRefund(refundEntity);
+        console.log(`[Razorpay] Webhook ${event.event} for ${refundEntity?.id}: ${result.matched ? 'settled' : 'no matching refund row'}`);
+      }
+      // Always 200 for verified events (including ones we ignore) so Razorpay
+      // doesn't keep retrying them.
+      return res.status(200).json({ ok: true });
+    } catch (error) {
+      console.error('[Razorpay] webhook error:', error?.message || error);
+      return res.status(500).json({ message: 'Webhook processing failed.' });
     }
   }
 }

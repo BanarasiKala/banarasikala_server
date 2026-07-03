@@ -162,7 +162,12 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: "1536mb" }));
+// verify() keeps the raw body bytes — required to check Razorpay's webhook
+// HMAC signature, which is computed over the exact payload as sent.
+app.use(express.json({
+  limit: "1536mb",
+  verify: (req, res, buf) => { req.rawBody = buf; },
+}));
 app.use(express.urlencoded({ limit: "1536mb", extended: true }));
 app.use(requestLogger);
 
