@@ -172,7 +172,10 @@ class ShipRocketService {
       shipping_charges: 0,
       giftwrap_charges: 0,
       transaction_charges: 0,
-      total_discount: Number(order.discount_amount) || 0,
+      // sub_total is the final payable amount (coupon/wallet/fees already
+      // applied), so total_discount must be 0 — otherwise ShipRocket subtracts
+      // the coupon a second time and shows a lower order value.
+      total_discount: 0,
       sub_total: Number(order.total_amount),
       length: pkgLength,
       breadth: pkgBreadth,
