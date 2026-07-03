@@ -69,8 +69,9 @@ const mapShiprocketStatus = (value = '') => {
   if (status.includes('rto initiated') || status.includes('rto_initiated') || status.includes('return to origin initiated')) return 'RTO Initiated';
   if (status.includes('undelivered') || status.includes('delivery failed') || status.includes('customer unavailable') || status.includes('address issue')) return 'Undelivered';
   
-  // Handle return/exchange reverse statuses first to avoid catching by standard shipped check
-  if (status.includes('returned')) return 'Returned';
+  // Handle return/exchange reverse statuses first to avoid catching by standard shipped check.
+  // Real ShipRocket sends "RETURN DELIVERED" when a return reaches the seller.
+  if (status.includes('return delivered') || status.includes('returned')) return 'Returned';
   if (status.includes('picked up') || status.includes('picked_up')) return 'Return Picked Up';
   if (status.includes('out for pickup') || status.includes('out_for_pickup')) return 'Out For Pickup';
   if (status.includes('pickup scheduled') || status.includes('pickup_scheduled') || status.includes('pickup queued') || status.includes('pickup_queued')) return 'Pickup Scheduled';
@@ -585,7 +586,7 @@ class ShipRocketController {
       } else {
         // ── Forward shipment: update the shipment row, not the order ──
         // Late or out-of-order pre-delivery scans must not regress a delivered order.
-        if (order.delivered_at && ['AWB Assigned', 'Shipped', 'Out For Delivery'].includes(nextStatus)) {
+        if (order.delivered_at && ['AWB Assigned', 'Shipped', 'Out For Delivery', 'Undelivered'].includes(nextStatus)) {
           await transaction.rollback();
           return res.status(200).json({ message: 'Stale webhook after delivery — ignored' });
         }
