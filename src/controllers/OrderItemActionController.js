@@ -134,9 +134,11 @@ class OrderItemActionController {
         estimated_refund_amount: roundMoney(sum.estimated_refund_amount + item.estimated_refund_amount),
       }), { item_amount: 0, forward_shipping_deduction: 0, reverse_shipping_deduction: 0, estimated_refund_amount: 0 });
 
-      // Coupon-aware preview: same maths as the real request, so the modal
-      // shows exactly what will be saved when the return is submitted.
+      // Coupon + pickup-charge preview: same maths as the real request, so the
+      // modal shows exactly what will be saved when the return is submitted.
       totals.coupon_adjustment = 0;
+      totals.return_shipping_charge = 0;
+      let couponBreakdown = null;
       if (actionType === ACTION_TYPES.RETURN && estimates.length) {
         const orderItems = order.OrderItems || [];
         const itemActions = orderItems.flatMap((item) => item.OrderItemActions || []);
@@ -146,10 +148,22 @@ class OrderItemActionController {
         }));
         const refundInfo = await OrderReturnService.computeReturnRefund({ order, orderItems, itemActions, targets });
         totals.coupon_adjustment = roundMoney(refundInfo.couponAdjustment);
+        totals.return_shipping_charge = roundMoney(refundInfo.returnShippingCharge);
         totals.estimated_refund_amount = roundMoney(refundInfo.refundAmount);
+        if (refundInfo.originalCouponCode && refundInfo.currentDiscount > 0) {
+          couponBreakdown = {
+            original_code: refundInfo.originalCouponCode,
+            original_discount: roundMoney(refundInfo.currentDiscount),
+            original_eligible: refundInfo.originalCouponEligible,
+            applied_code: refundInfo.appliedCouponCode,
+            new_discount: roundMoney(refundInfo.newDiscount),
+            remaining_subtotal: roundMoney(refundInfo.remainingSubtotal),
+            adjustment: roundMoney(refundInfo.couponAdjustment),
+          };
+        }
       }
 
-      return res.status(200).json({ items: estimates, totals });
+      return res.status(200).json({ items: estimates, totals, coupon: couponBreakdown });
     } catch (error) {
       console.error('[OrderItemAction] estimate error:', error.message);
       return res.status(500).json({ message: 'Unable to calculate this request right now.' });

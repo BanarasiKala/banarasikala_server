@@ -40,6 +40,7 @@ const ORDER_REFUND_COLUMNS = {
   gateway_refund_id:     { type: DataTypes.STRING,        allowNull: true },
   bank_details:          { type: DataTypes.JSONB,         allowNull: true },
   note:                  { type: DataTypes.TEXT,          allowNull: true },
+  breakdown:             { type: DataTypes.JSONB,         allowNull: true },
   processed_at:          { type: DataTypes.DATE,          allowNull: true },
   processed_by:          { type: DataTypes.INTEGER,       allowNull: true },
   created_at:            { type: DataTypes.DATE,          allowNull: false,  defaultValue: DataTypes.NOW },

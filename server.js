@@ -7,6 +7,7 @@ const { config } = require("./src/config/env");
 const WalletService = require("./src/services/WalletService");
 const { ensureWalletConstraint, ensureProductOrderColumns, ensureIndexes } = require("./src/utils/dbConstraints");
 const { cleanupUnverifiedCustomers } = require("./src/utils/customerVerificationSchema");
+const { ensureOrderTransactionTables } = require("./src/utils/orderTransactions");
 
 const PORT = config.port;
 
@@ -50,6 +51,7 @@ const startReferralPayoutJob = () => {
 const startServer = async () => {
   try {
     await connectDB();
+    await ensureOrderTransactionTables();
     await ensureWalletConstraint();
     await ensureProductOrderColumns();
     await ensureIndexes();

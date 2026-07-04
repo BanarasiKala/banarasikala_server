@@ -71,6 +71,14 @@ const OrderRefund = sequelize.define('OrderRefund', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+  // Structured money breakage saved at request time so it can always be
+  // replayed to the customer: { returned_value, coupon: { original_code,
+  // original_discount, applied_code, new_discount, adjustment },
+  // return_shipping_charge, refund_amount, items: [...] }
+  breakdown: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+  },
   processed_at: {
     type: DataTypes.DATE,
     allowNull: true,
