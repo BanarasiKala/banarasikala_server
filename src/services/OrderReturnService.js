@@ -19,14 +19,15 @@
  * deliberately performed AFTER commit (finalizeReverseActions) so a slow/failing
  * courier API never holds a DB transaction open or rolls back a valid request.
  */
+const { Op } = require('sequelize');
 const OrderItemAction = require('../models/OrderItemAction');
 const OrderRefund = require('../models/OrderRefund');
-const Shipment = require('../models/Shipment');
 const OrderStatusHistory = require('../models/OrderStatusHistory');
 const ReturnRequest = require('../models/ReturnRequest');
 const ReturnItem = require('../models/ReturnItem');
 const OrderAddress = require('../models/OrderAddress');
 const OrderLedger = require('../models/OrderLedger');
+const Coupon = require('../models/Coupon');
 const { deriveOrderTotals } = require('./orderLedgerService');
 const ShipRocketService = require('./ShipRocketService');
 const WalletService = require('./WalletService');
@@ -41,16 +42,8 @@ const {
 } = require('../utils/orderItemActions');
 const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 const {
-  SHIPMENT_TYPE, RETURN_TYPE, RETURN_STATUS, ACTOR,
+  RETURN_TYPE, RETURN_STATUS, ACTOR,
 } = require('../utils/orderModelV2');
-
-// Reverse (pickup) shipping cost, sourced from the latest forward shipment's
-// rate card now that the order no longer stores courier data.
-const reverseChargeFromShipment = (shipment) => {
-  const d = shipment?.selected_courier_data || {};
-  const candidate = [d.freight_charge, d.rate, d.shipping_charge, d.charge].find((v) => Number(v) > 0);
-  return roundMoney(Number(candidate) || Number(shipment?.forward_charge) || 0);
-};
 
 const RETURN_WINDOW_DAYS = 7;
 
@@ -144,6 +137,86 @@ const resolveTargets = ({ orderItems, itemActions, selections }) => {
 };
 
 /**
+ * Coupon-aware refund maths for a return request.
+ *
+ * Policy: the customer gets back exactly what they paid for the returned
+ * items — no shipping deductions. Wallet money counts as paid (its share is
+ * credited back to the wallet on completion). The only reduction is the
+ * coupon: the discount is recomputed against the subtotal of the items the
+ * customer KEEPS, under the coupon's own rules —
+ *   - kept subtotal below the coupon's min-purchase bracket → discount drops
+ *     to zero and the whole benefit is adjusted out of the refund;
+ *   - percentage coupons shrink naturally with the smaller subtotal (capped
+ *     by max_discount_amount);
+ *   - fixed-amount coupons that still qualify keep their full value, so the
+ *     returned items refund in full.
+ * Earlier return requests' adjustments are excluded so sequential partial
+ * returns never claw back the same rupee twice.
+ *
+ * @returns {{ returnedValue, remainingSubtotal, currentDiscount, newDiscount,
+ *             couponAdjustment, refundAmount }}
+ */
+const computeReturnRefund = async ({ order, orderItems, itemActions, targets, transaction = null }) => {
+  const returnedValue = roundMoney(
+    targets.reduce((sum, { item, quantity }) => sum + Number(item.price || 0) * Number(quantity || 0), 0),
+  );
+
+  // Subtotal of the items still active BEFORE this request (cancelled and
+  // previously returned/exchanged quantities excluded).
+  const activeSubtotal = roundMoney(orderItems.reduce(
+    (sum, item) => sum + Number(item.price || 0) * getActionableQuantity(item, itemActions),
+    0,
+  ));
+  const remainingSubtotal = roundMoney(Math.max(0, activeSubtotal - returnedValue));
+
+  // Discount actually granted on the order (from the ledger), minus the
+  // adjustments earlier return requests already reserved.
+  const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction }));
+  const grantedDiscount = roundMoney(Number(totals.discount_amount || 0));
+  const alreadyAdjusted = roundMoney((itemActions || [])
+    .filter((a) => String(a.action_type || '').toLowerCase() === ACTION_TYPES.RETURN && isUsableAction(a))
+    .reduce((sum, a) => sum + Number(a.meta?.coupon_adjustment || 0), 0));
+  const currentDiscount = roundMoney(Math.max(0, grantedDiscount - alreadyAdjusted));
+
+  if (currentDiscount <= 0 || returnedValue <= 0) {
+    return {
+      returnedValue, remainingSubtotal, currentDiscount,
+      newDiscount: currentDiscount, couponAdjustment: 0, refundAmount: returnedValue,
+    };
+  }
+
+  // Recompute what the kept items would earn under the same coupon.
+  const code = String(order.coupon_code || '').trim();
+  const coupon = code
+    ? await Coupon.findOne({ where: { code: { [Op.iLike]: code } }, transaction })
+    : null;
+  let newDiscount;
+  if (coupon) {
+    const minPurchase = Number(coupon.min_purchase_amount || 0);
+    if (remainingSubtotal <= 0 || remainingSubtotal < minPurchase) {
+      newDiscount = 0;
+    } else if (String(coupon.discount_type) === 'fixed_amount' && Number(coupon.discount_amount) > 0) {
+      newDiscount = Math.min(Number(coupon.discount_amount), remainingSubtotal);
+    } else if (Number(coupon.discount_percent) > 0) {
+      newDiscount = (Number(coupon.discount_percent) / 100) * remainingSubtotal;
+      const cap = Number(coupon.max_discount_amount || 0);
+      if (cap > 0) newDiscount = Math.min(newDiscount, cap);
+    } else {
+      newDiscount = currentDiscount;
+    }
+  } else {
+    // Coupon record no longer exists — fall back to a proportional split.
+    newDiscount = activeSubtotal > 0 ? currentDiscount * (remainingSubtotal / activeSubtotal) : 0;
+  }
+  // Never grant more than the customer actually received.
+  newDiscount = roundMoney(Math.min(Math.max(0, newDiscount), currentDiscount));
+
+  const couponAdjustment = roundMoney(Math.min(returnedValue, roundMoney(currentDiscount - newDiscount)));
+  const refundAmount = roundMoney(Math.max(0, returnedValue - couponAdjustment));
+  return { returnedValue, remainingSubtotal, currentDiscount, newDiscount, couponAdjustment, refundAmount };
+};
+
+/**
  * Create return/exchange action rows + a single refund row, and move the order
  * into the reverse-flow status. Runs entirely inside `transaction`.
  *
@@ -175,16 +248,26 @@ const createReverseActions = async ({
   const cleanReason = String(reason || '').trim() || null;
   const entries = [];
 
-  // Reverse shipping comes from the latest forward shipment's rate card.
-  const forwardShipment = await Shipment.findOne({
-    where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD },
-    order: [['created_at', 'DESC']],
-    transaction,
-  });
-  const reverseShippingCharge = reverseChargeFromShipment(forwardShipment);
+  // Coupon-aware refund for the whole request, then allocated pro-rata across
+  // the selected items (the last item absorbs the rounding remainder) so the
+  // per-action rows always sum to the refund row.
+  const refundInfo = actionType === ACTION_TYPES.RETURN
+    ? await computeReturnRefund({ order, orderItems, itemActions, targets, transaction })
+    : null;
+  let adjustmentLeft = refundInfo ? refundInfo.couponAdjustment : 0;
 
-  for (const { item, quantity } of targets) {
-    const calculation = calculateItemAction({ item, actionType, quantity, reverseShippingCharge });
+  for (let index = 0; index < targets.length; index += 1) {
+    const { item, quantity } = targets[index];
+    const calculation = calculateItemAction({ item, actionType, quantity });
+    let couponShare = 0;
+    if (refundInfo && refundInfo.couponAdjustment > 0 && refundInfo.returnedValue > 0) {
+      couponShare = index === targets.length - 1
+        ? roundMoney(adjustmentLeft)
+        : roundMoney(refundInfo.couponAdjustment * (calculation.item_amount / refundInfo.returnedValue));
+      couponShare = roundMoney(Math.min(couponShare, calculation.item_amount, adjustmentLeft));
+      adjustmentLeft = roundMoney(adjustmentLeft - couponShare);
+      calculation.estimated_refund_amount = roundMoney(Math.max(0, calculation.item_amount - couponShare));
+    }
     const action = await OrderItemAction.create({
       order_id: order.id,
       order_item_id: item.id,
@@ -199,6 +282,7 @@ const createReverseActions = async ({
         customer_message: comments || null,
         sku: item.sku || null,
         color_id: item.colorId || item.color_id || null,
+        ...(couponShare > 0 ? { coupon_adjustment: couponShare, coupon_code: order.coupon_code || null } : {}),
       },
     }, { transaction });
 
@@ -225,9 +309,14 @@ const createReverseActions = async ({
       amount: totalRefund,
       status: REFUND_STATUS.PENDING,
       payment_method: isCod ? REFUND_PAYMENT_METHOD.BANK_TRANSFER : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-      note: isCod
-        ? 'Customer bank details are required before manual refund.'
-        : 'Refund will be processed back to the original prepaid payment method.',
+      note: [
+        isCod
+          ? 'Customer bank details are required before manual refund.'
+          : 'Refund will be processed back to the original prepaid payment method.',
+        refundInfo && refundInfo.couponAdjustment > 0
+          ? `Coupon${order.coupon_code ? ` ${order.coupon_code}` : ''} adjustment of Rs. ${refundInfo.couponAdjustment.toLocaleString('en-IN')} applied — the remaining items no longer earn the full coupon discount.`
+          : null,
+      ].filter(Boolean).join(' '),
     }, { transaction });
 
     // Normalized V2 mirror: return_requests + return_items (gross values).
@@ -334,6 +423,7 @@ module.exports = {
   ReverseActionError,
   RETURN_WINDOW_DAYS,
   isWithinReturnWindow,
+  computeReturnRefund,
   createReverseActions,
   finalizeReverseActions,
 };

@@ -111,29 +111,21 @@ const getActionableQuantity = (item, actions = []) => {
   return Math.max(0, quantity - used);
 };
 
-// Forward delivery deduction comes from the item's own shipping snapshot.
-const getForwardDeduction = (item) => {
-  const rules = item?.shipping_meta?.refund_rules || {};
-  return roundMoney(rules.return_delivery_deduction ?? item?.shipping_meta?.delivery_charge ?? 0);
-};
-
-// Reverse (pickup) shipping is now passed in by the caller, sourced from the
-// forward shipment's rate card rather than the (dropped) order columns.
-const calculateItemAction = ({ item, actionType, quantity, reverseShippingCharge = 0 }) => {
+// Refund policy: the customer gets back what they paid for the item — no
+// forward/reverse shipping deductions. The only reduction is the coupon
+// adjustment, computed at request level in OrderReturnService when the
+// remaining order no longer earns the (full) coupon discount. The deduction
+// columns are kept at 0 so old rows (which carried shipping deductions) still
+// settle correctly on completion.
+const calculateItemAction = ({ item, actionType, quantity }) => {
   const qty = Math.max(1, Number(quantity || 1));
   const itemAmount = roundMoney(Number(item.price || 0) * qty);
-  const forwardDeduction = actionType === ACTION_TYPES.RETURN ? getForwardDeduction(item) : 0;
-  const reverseDeduction = actionType === ACTION_TYPES.RETURN ? roundMoney(reverseShippingCharge) : 0;
-  const estimatedRefund = actionType === ACTION_TYPES.RETURN
-    ? Math.max(0, roundMoney(itemAmount - forwardDeduction - reverseDeduction))
-    : actionType === ACTION_TYPES.CANCEL
-      ? itemAmount
-      : 0;
+  const estimatedRefund = actionType === ACTION_TYPES.EXCHANGE ? 0 : itemAmount;
 
   return {
     item_amount: itemAmount,
-    forward_shipping_deduction: roundMoney(forwardDeduction),
-    reverse_shipping_deduction: roundMoney(reverseDeduction),
+    forward_shipping_deduction: 0,
+    reverse_shipping_deduction: 0,
     estimated_refund_amount: roundMoney(estimatedRefund),
   };
 };

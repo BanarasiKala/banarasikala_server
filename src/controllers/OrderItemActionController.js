@@ -134,6 +134,21 @@ class OrderItemActionController {
         estimated_refund_amount: roundMoney(sum.estimated_refund_amount + item.estimated_refund_amount),
       }), { item_amount: 0, forward_shipping_deduction: 0, reverse_shipping_deduction: 0, estimated_refund_amount: 0 });
 
+      // Coupon-aware preview: same maths as the real request, so the modal
+      // shows exactly what will be saved when the return is submitted.
+      totals.coupon_adjustment = 0;
+      if (actionType === ACTION_TYPES.RETURN && estimates.length) {
+        const orderItems = order.OrderItems || [];
+        const itemActions = orderItems.flatMap((item) => item.OrderItemActions || []);
+        const targets = estimates.map((estimateRow) => ({
+          item: itemMap.get(estimateRow.order_item_id),
+          quantity: estimateRow.quantity,
+        }));
+        const refundInfo = await OrderReturnService.computeReturnRefund({ order, orderItems, itemActions, targets });
+        totals.coupon_adjustment = roundMoney(refundInfo.couponAdjustment);
+        totals.estimated_refund_amount = roundMoney(refundInfo.refundAmount);
+      }
+
       return res.status(200).json({ items: estimates, totals });
     } catch (error) {
       console.error('[OrderItemAction] estimate error:', error.message);
@@ -340,20 +355,26 @@ class OrderItemActionController {
       }, { transaction });
 
       // On return completion, settle the refund on the ledger atomically:
-      // reverse the product value, keep forward + reverse shipping, refund the rest.
+      // reverse the product value, reverse any coupon benefit the remaining
+      // items no longer earn, retain legacy shipping deductions (old rows),
+      // and refund the rest.
       let returnRefundAmount = 0;
       if (nextStatus === ACTION_STATUS.COMPLETED && action.action_type === ACTION_TYPES.RETURN) {
         const orderForRefund = await Order.findByPk(action.order_id, { transaction });
         const isCodOrder = String(orderForRefund?.payment_method || '').toUpperCase() === 'COD';
         const itemValue = roundMoney(Number(action.item_amount || 0));
         const deductions = roundMoney(Number(action.forward_shipping_deduction || 0) + Number(action.reverse_shipping_deduction || 0));
-        returnRefundAmount = roundMoney(Math.max(0, Number(action.estimated_refund_amount ?? (itemValue - deductions))));
+        const couponAdjustment = roundMoney(Number(action.meta?.coupon_adjustment || 0));
+        returnRefundAmount = roundMoney(Math.max(0, Number(action.estimated_refund_amount ?? (itemValue - deductions - couponAdjustment))));
 
         if (itemValue > 0) {
           await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: itemValue, direction: LEDGER_DIRECTION.CREDIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: action.id, note: 'Return — product value reversed' }, transaction);
         }
         if (deductions > 0) {
           await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.SHIPPING_CHARGE, amount: deductions, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: action.id, note: 'Return — forward + reverse shipping retained' }, transaction);
+        }
+        if (couponAdjustment > 0) {
+          await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.COUPON_DISCOUNT, amount: couponAdjustment, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: action.id, note: 'Return — coupon benefit no longer earned by remaining items' }, transaction);
         }
         if (returnRefundAmount > 0) {
           const refLedger = await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.REFUND, amount: returnRefundAmount, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: action.id, note: 'Return refund' }, transaction);
@@ -397,14 +418,15 @@ class OrderItemActionController {
               const refund = await OrderRefund.findOne({ where: { order_item_action_id: action.id } });
 
               // Wallet proportional refund — wallet/subtotal sourced from the ledger.
+              // The refund splits: the wallet-paid share goes back to the wallet,
+              // the remainder goes to the original gateway (never both in full).
               const orderTotals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: fullOrder.id } }));
               const walletTotal = Number(orderTotals.wallet_amount || 0);
-              if (walletTotal > 0 && fullOrder.customer_id) {
-                const subtotal = Number(orderTotals.subtotal_amount || 0);
-                const refundAmt = Number(refund?.amount || 0);
-                const walletShare = subtotal > 0 && refundAmt > 0
-                  ? Math.round((refundAmt / subtotal) * walletTotal * 100) / 100
-                  : 0;
+              const refundAmt = Number(refund?.amount || 0);
+              const subtotal = Number(orderTotals.subtotal_amount || 0);
+              let walletShare = 0;
+              if (walletTotal > 0 && fullOrder.customer_id && subtotal > 0 && refundAmt > 0) {
+                walletShare = Math.min(walletTotal, refundAmt, Math.round((refundAmt / subtotal) * walletTotal * 100) / 100);
                 if (walletShare > 0) {
                   const dedupeKey = `return_wallet:${action.id}`;
                   const existing = await WalletTransaction.findOne({ where: { dedupe_key: dedupeKey } });
@@ -422,11 +444,20 @@ class OrderItemActionController {
                 }
               }
 
-              // Bug #1: Razorpay gateway refund
-              if (refund && Number(refund.amount) > 0 && refund.payment_method === REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY) {
-                const payment = await Payment.findOne({ where: { order_id: fullOrder.id, status: 'Paid' } });
-                if (payment?.gateway_payment_id) {
-                  razorpayRefund(payment.gateway_payment_id, Number(refund.amount), {
+              // Bug #1: Razorpay gateway refund (total minus the wallet share —
+              // the wallet money never reached the gateway).
+              if (refund && refundAmt > 0 && refund.payment_method === REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY) {
+                const gatewayAmount = Math.round(Math.max(0, refundAmt - walletShare) * 100) / 100;
+                const payment = gatewayAmount > 0
+                  ? await Payment.findOne({ where: { order_id: fullOrder.id, status: 'Paid' } })
+                  : null;
+                if (gatewayAmount <= 0) {
+                  refund.update({
+                    status: REFUND_STATUS.COMPLETED,
+                    note: `${refund.note || ''}${refund.note ? ' | ' : ''}Fully refunded to wallet (Rs. ${walletShare.toLocaleString('en-IN')}).`.slice(0, 1000),
+                  }).catch((updateErr) => console.error('[Refund] Failed to mark wallet-only refund Completed:', updateErr.message));
+                } else if (payment?.gateway_payment_id) {
+                  razorpayRefund(payment.gateway_payment_id, gatewayAmount, {
                     reason: 'Customer return approved',
                   }).then((gatewayRefund) => refund.update({ status: REFUND_STATUS.PROCESSING, gateway_refund_id: gatewayRefund?.id || null }))
                     .catch((err) => {
