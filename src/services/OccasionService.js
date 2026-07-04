@@ -16,7 +16,7 @@ class OccasionService {
       ? Math.min(50, Math.max(1, parsedLimit))
       : 0;
     return await Occasion.findAll({
-      attributes: pickAttributes(filters.fields, ["id", "name", "slug", "image", "createdAt", "updatedAt"]),
+      attributes: pickAttributes(filters.fields, ["id", "name", "slug", "image", "video", "createdAt", "updatedAt"]),
       order: [['name', 'ASC']],
       ...(limit ? { limit } : {}),
     });

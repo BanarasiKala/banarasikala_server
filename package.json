@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "migrate:reels": "node scripts/create-reel-tables.js"
+    "migrate:reels": "node scripts/create-reel-tables.js",
+    "migrate:occasion-video": "node scripts/add-occasion-video-column.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1075.0",

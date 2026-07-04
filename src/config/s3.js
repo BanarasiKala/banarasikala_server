@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const { config } = require("./env");
 
 // Object-key prefixes this app owns and is allowed to create/delete.
-const MANAGED_FOLDERS = ["product-videos", "reels"];
+const MANAGED_FOLDERS = ["product-videos", "reels", "occasions"];
 
 const s3Client =
   config.s3AccessKeyId && config.s3SecretAccessKey && config.s3Bucket
