@@ -23,18 +23,16 @@ const getOrdersToday = async () => {
   return count;
 };
 
-// ─── Orders for a specific product in the last hour (cached per product) ─────
-const PRODUCT_ORDER_WINDOW_MS = 60 * 60 * 1000; // rolling 1 hour
+// ─── Orders for a specific product today (cached per product) ────────────────
 const PRODUCT_ORDERS_TTL_MS = 60000;
 const productOrdersCache = new Map(); // productKey -> { at, count }
 
-const getProductOrdersRecent = async (productId) => {
+const getProductOrdersToday = async (productId) => {
   const key = String(productId);
   const cached = productOrdersCache.get(key);
   if (cached && Date.now() - cached.at < PRODUCT_ORDERS_TTL_MS) return cached.count;
 
-  const since = new Date(Date.now() - PRODUCT_ORDER_WINDOW_MS);
-  // Distinct non-cancelled orders that contain this product within the window.
+  // Distinct non-cancelled orders that contain this product since IST midnight.
   const count = await OrderItem.count({
     distinct: true,
     col: "order_id",
@@ -44,7 +42,7 @@ const getProductOrdersRecent = async (productId) => {
         model: Order,
         attributes: [],
         required: true,
-        where: { created_at: { [Op.gte]: since }, cancelled_at: null },
+        where: { created_at: { [Op.gte]: startOfTodayIST() }, cancelled_at: null },
       },
     ],
   });
@@ -72,15 +70,21 @@ const seededRange = (seed, min, max) => min + Math.floor(hashToUnit(seed) * (max
 const bucket = (ms) => Math.floor(Date.now() / ms);
 
 const viewerFloor = (productId) => {
-  const base = seededRange(`vb:${productId}:${bucket(5 * 60 * 1000)}`, 112, 188); // drifts every 5 min
-  const jitter = seededRange(`vj:${productId}:${bucket(12000)}`, 0, 16) - 8; // ±8, changes every ~12s
-  return Math.min(200, Math.max(100, base + jitter));
+  const base = seededRange(`vb:${productId}:${bucket(5 * 60 * 1000)}`, 22, 28); // drifts every 5 min
+  const jitter = seededRange(`vj:${productId}:${bucket(12000)}`, 0, 4) - 2; // ±2, changes every ~12s
+  return Math.min(30, Math.max(20, base + jitter));
 };
 
+// Synthetic "orders today": climbs 5 → 10 across the IST day and resets at
+// midnight. A small per-product/per-day offset staggers the step times so all
+// products don't tick up at the same moment.
 const orderFloor = (productId) => {
-  const base = seededRange(`ob:${productId}:${bucket(15 * 60 * 1000)}`, 56, 92); // drifts every 15 min
-  const jitter = seededRange(`oj:${productId}:${bucket(30000)}`, 0, 8) - 4; // ±4, changes every ~30s
-  return Math.min(100, Math.max(50, base + jitter));
+  const dayStart = startOfTodayIST().getTime();
+  const dayFraction = Math.min(0.999, Math.max(0, (Date.now() - dayStart) / (24 * 60 * 60 * 1000)));
+  const dayKey = new Date(dayStart + IST_OFFSET_MIN * 60000).toISOString().slice(0, 10);
+  const offset = hashToUnit(`of:${productId}:${dayKey}`) * 0.12 - 0.06; // ±6% of the day
+  const staggered = Math.min(0.999, Math.max(0, dayFraction + offset));
+  return 5 + Math.floor(staggered * 6); // 5..10, monotonically increasing
 };
 
 // ─── Live product viewers (in-memory presence) ───────────────────────────────
@@ -127,7 +131,7 @@ if (sweep.unref) sweep.unref();
 
 module.exports = {
   getOrdersToday,
-  getProductOrdersRecent,
+  getProductOrdersToday,
   touchViewer,
   countViewers,
   viewerFloor,
