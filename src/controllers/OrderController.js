@@ -906,7 +906,13 @@ class OrderController {
           updated_at: new Date().toISOString(),
         },
         payment_method: REFUND_PAYMENT_METHOD.BANK_TRANSFER,
-        status: refund.status === REFUND_STATUS.NOT_REQUIRED ? refund.status : REFUND_STATUS.PENDING,
+        // "Bank Details Required" → "Bank Details Submitted" so the admin
+        // queue shows the transfer is ready to make; other states unchanged.
+        status: refund.status === REFUND_STATUS.NOT_REQUIRED
+          ? refund.status
+          : String(refund.status || '').toLowerCase().includes('bank')
+            ? 'Bank Details Submitted'
+            : refund.status || REFUND_STATUS.PENDING,
       });
 
       return res.status(200).json({ message: 'Bank details saved for refund.' });

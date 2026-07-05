@@ -20,7 +20,7 @@ const {
   blockCustomerCodForOrder,
   toMoney,
 } = require('../utils/orderLifecycle');
-const { ACTION_TYPES, ACTION_STATUS } = require('../utils/orderItemActions');
+const { ACTION_TYPES, ACTION_STATUS, statusAfterCompletedAction } = require('../utils/orderItemActions');
 const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 const {
   SHIPMENT_TYPE, SHIPMENT_STATUS, RTO_RESOLUTION, ACTOR,
@@ -601,6 +601,50 @@ class ShipRocketController {
 
         if (awb && !reverseAction.shiprocket_return_awb) {
           await reverseAction.update({ shiprocket_return_awb: String(awb) }, { transaction });
+        }
+
+        // Terminal reverse scan — the parcel is back with us. Close the open
+        // action rows and item status pointers so the item-wise status matches
+        // the order status (previously only the order flipped, leaving items
+        // stuck on "Return Initiated"). No money moves here — the admin still
+        // presses "Initiate refund" explicitly.
+        if (orderStatus === `${prefix} Completed`) {
+          const reverseType = reverseAction.action_type;
+          const allTypeActions = await OrderItemAction.findAll({
+            where: { order_id: order.id, action_type: reverseType },
+            transaction,
+          });
+          const openActions = allTypeActions.filter(
+            (act) => ![ACTION_STATUS.COMPLETED, ACTION_STATUS.REJECTED, ACTION_STATUS.CANCELLED].includes(act.status),
+          );
+          for (const act of openActions) {
+            await act.update({ status: ACTION_STATUS.COMPLETED, completed_at: new Date() }, { transaction });
+            const itemRow = await OrderItem.findByPk(act.order_item_id, { transaction });
+            if (itemRow) {
+              const completedQty = allTypeActions
+                .filter((a) => Number(a.order_item_id) === Number(itemRow.id))
+                .filter((a) => a.id === act.id || a.status === ACTION_STATUS.COMPLETED)
+                .reduce((sum, a) => sum + Number(a.quantity || 0), 0);
+              await itemRow.update(
+                { status: statusAfterCompletedAction(reverseType, completedQty >= Number(itemRow.quantity || 0)) },
+                { transaction },
+              );
+            }
+          }
+
+          // COD returns are paid by manual bank transfer — ask the customer
+          // for bank details the moment the parcel is back.
+          if (reverseType === ACTION_TYPES.RETURN && String(order.payment_method || '').toUpperCase() === 'COD') {
+            const refundRow = await OrderRefund.findOne({ where: { order_item_action_id: reverseAction.id }, transaction })
+              || await OrderRefund.findOne({
+                where: { order_id: order.id, refund_type: REFUND_TYPE.RETURN },
+                order: [['created_at', 'DESC']],
+                transaction,
+              });
+            if (refundRow && !refundRow.bank_details && refundRow.status === REFUND_STATUS.PENDING) {
+              await refundRow.update({ status: 'Bank Details Required' }, { transaction });
+            }
+          }
         }
       } else {
         // The mapper labels pickup scans with reverse-flavoured names because

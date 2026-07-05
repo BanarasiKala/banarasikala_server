@@ -148,6 +148,20 @@ const ensureOrderModelV2Tables = async () => {
   // drop its table if a previous deploy created it. Idempotent.
   await sequelize.query(`DROP TABLE IF EXISTS "${config.dbSchema}"."order_modifications"`);
 
+  // 4. Additive: order_refunds.breakdown (JSONB) — the persisted refund
+  // breakage shown to the customer. Global sync is off, so added here.
+  const refundsTable = { tableName: 'order_refunds', schema: config.dbSchema };
+  try {
+    const refundsColumns = await qi.describeTable(refundsTable);
+    if (!refundsColumns.breakdown) {
+      await qi.addColumn(refundsTable, 'breakdown', { type: DataTypes.JSONB, allowNull: true });
+    }
+  } catch {
+    // Table missing entirely (fresh database) — create it from the model,
+    // which already includes the breakdown column.
+    await require('../models/OrderRefund').sync();
+  }
+
   modelV2Ready = true;
 };
 

@@ -19,6 +19,9 @@ router.get('/track/:orderId', authMiddleware, OrderController.trackOrder);
 // Admin queues for partial cancellations, returns and exchanges.
 router.get('/admin/item-actions', authMiddleware, adminMiddleware, OrderItemActionController.listAdmin);
 router.patch('/admin/item-actions/:actionId/status', authMiddleware, adminMiddleware, OrderItemActionController.updateAdminStatus);
+// Completing a return does NOT move money — this button does (ledger + wallet
+// share + automatic gateway refund for prepaid).
+router.post('/admin/item-actions/:actionId/initiate-refund', authMiddleware, adminMiddleware, OrderItemActionController.initiateRefund);
 
 // Customer return and exchange requests (post-delivery). Item-level
 // cancellation was removed — cancellation is whole-order only via /:id/cancel.

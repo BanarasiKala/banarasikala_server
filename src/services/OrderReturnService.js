@@ -45,14 +45,41 @@ const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/
 const {
   SHIPMENT_TYPE, RETURN_TYPE, RETURN_STATUS, ACTOR,
 } = require('../utils/orderModelV2');
+const { config } = require('../config/env');
 
-// Return-pickup (reverse) shipping cost, sourced from the latest forward
-// shipment's rate card. This is the only delivery money deducted from a
-// return refund — the original (forward) delivery is never adjusted.
+// Fallback pickup cost when the live courier lookup fails: the latest forward
+// shipment's rate card. The original (forward) delivery is never adjusted.
 const reverseChargeFromShipment = (shipment) => {
   const d = shipment?.selected_courier_data || {};
   const candidate = [d.freight_charge, d.rate, d.shipping_charge, d.charge].find((v) => Number(v) > 0);
   return roundMoney(Number(candidate) || Number(shipment?.forward_charge) || 0);
+};
+
+// Live weight-based pickup rate: cheapest serviceable courier between the
+// customer's pincode and the store, at the returned parcel's billable weight
+// (the same env box-weight × units that the ShipRocket return order will
+// declare). Cached per pincode+weight so the submit call — which runs inside
+// a DB transaction — reuses the estimate's lookup instead of a fresh HTTP
+// round-trip.
+const PICKUP_RATE_TTL_MS = 6 * 60 * 60 * 1000;
+const PICKUP_RATE_CACHE_MAX = 500;
+const pickupRateCache = new Map();
+const getWeightBasedPickupRate = async (pincode, weightKg) => {
+  const key = `${pincode}|${weightKg}`;
+  const hit = pickupRateCache.get(key);
+  if (hit && Date.now() - hit.at < PICKUP_RATE_TTL_MS) return hit.rate;
+
+  const data = await ShipRocketService.getServiceableCouries(null, pincode, weightKg, false);
+  const rates = (data?.data?.available_courier_companies || [])
+    .map((courier) => Number(courier.rate || courier.freight_charge || 0))
+    .filter((rate) => rate > 0);
+  const rate = rates.length ? roundMoney(Math.min(...rates)) : 0;
+
+  pickupRateCache.set(key, { rate, at: Date.now() });
+  if (pickupRateCache.size > PICKUP_RATE_CACHE_MAX) {
+    pickupRateCache.delete(pickupRateCache.keys().next().value);
+  }
+  return rate;
 };
 
 const RETURN_WINDOW_DAYS = 7;
@@ -221,20 +248,36 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
 
   const code = String(order.coupon_code || '').trim() || null;
 
-  // One return-pickup charge per request (not per item), from the forward
-  // shipment's rate card, capped so the refund can never go negative.
-  const forwardShipment = await Shipment.findOne({
-    where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD },
-    order: [['created_at', 'DESC']],
-    transaction,
-  });
-  const rawPickupCharge = reverseChargeFromShipment(forwardShipment);
+  // One return-pickup charge per request (not per item), rated live for the
+  // billable weight of the returned units (env box-weight × units — exactly
+  // what the ShipRocket return order declares) against the customer's pincode.
+  // Falls back to the forward shipment's rate card if the courier API fails.
+  const returnedUnits = targets.reduce((sum, target) => sum + Number(target.quantity || 0), 0);
+  const pickupWeightKg = Math.max(0.1, Number(((Number(config.packageWeightKg) || 0.5) * returnedUnits).toFixed(2)));
+  const address = await OrderAddress.findOne({ where: { order_id: order.id, is_current: true }, transaction });
+  const pincode = String(address?.pincode || order.pincode || '').trim();
+  let rawPickupCharge = 0;
+  try {
+    if (/^\d{6}$/.test(pincode)) {
+      rawPickupCharge = await getWeightBasedPickupRate(pincode, pickupWeightKg);
+    }
+  } catch (error) {
+    console.error('[OrderReturnService] pickup rate lookup failed:', error?.response?.data || error.message);
+  }
+  if (rawPickupCharge <= 0) {
+    const forwardShipment = await Shipment.findOne({
+      where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD },
+      order: [['created_at', 'DESC']],
+      transaction,
+    });
+    rawPickupCharge = reverseChargeFromShipment(forwardShipment);
+  }
 
   if (currentDiscount <= 0 || returnedValue <= 0) {
     const returnShippingCharge = roundMoney(Math.min(rawPickupCharge, returnedValue));
     return {
       returnedValue, remainingSubtotal, currentDiscount,
-      newDiscount: currentDiscount, couponAdjustment: 0, returnShippingCharge,
+      newDiscount: currentDiscount, couponAdjustment: 0, returnShippingCharge, pickupWeightKg,
       refundAmount: roundMoney(Math.max(0, returnedValue - returnShippingCharge)),
       originalCouponCode: code, originalCouponEligible: true, appliedCouponCode: code,
     };
@@ -281,7 +324,7 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
   const refundAmount = roundMoney(Math.max(0, returnedValue - couponAdjustment - returnShippingCharge));
   return {
     returnedValue, remainingSubtotal, currentDiscount, newDiscount, couponAdjustment,
-    returnShippingCharge, refundAmount,
+    returnShippingCharge, pickupWeightKg, refundAmount,
     originalCouponCode: code, originalCouponEligible, appliedCouponCode,
   };
 };
@@ -400,6 +443,7 @@ const createReverseActions = async ({
         adjustment: refundInfo.couponAdjustment,
       } : null,
       return_shipping_charge: refundInfo.returnShippingCharge,
+      return_shipping_weight_kg: refundInfo.pickupWeightKg,
       refund_amount: totalRefund,
       items: entries.map(({ action, item, quantity, calculation }) => ({
         order_item_id: item.id,
@@ -486,21 +530,36 @@ const createReverseActions = async ({
 const finalizeReverseActions = async ({ order, entries, actionType, reason }) => {
   const result = { shiprocketReturnId: null, shipmentId: null, detail: null };
 
-  const items = entries.map(({ item, quantity }) => ({
-    product_id: item.product_id,
-    quantity,
-    price: item.price,
-    name: item.product_name || `Product #${item.product_id}`,
-    sku: item.sku,
-  }));
+  // Declared values on the ShipRocket return must match what the website
+  // shows for this request: a return declares each item at its per-unit
+  // REFUND value (item value minus the coupon adjustment and pickup-charge
+  // shares), an exchange declares the item price (no refund applies). The
+  // return's sub_total is the sum of these lines — never the whole-order
+  // total, which made ShipRocket show a different amount than the site.
+  const items = entries.map(({ item, quantity, calculation }) => {
+    const qty = Math.max(1, Number(quantity || 1));
+    const unitValue = actionType === ACTION_TYPES.RETURN
+      ? Math.max(1, roundMoney(Number(calculation?.estimated_refund_amount || 0) / qty))
+      : Number(item.price);
+    return {
+      product_id: item.product_id,
+      quantity,
+      price: unitValue,
+      name: item.product_name || `Product #${item.product_id}`,
+      sku: item.sku,
+    };
+  });
+  const declaredTotal = roundMoney(items.reduce(
+    (sum, line) => sum + Number(line.price) * Math.max(1, Number(line.quantity || 1)),
+    0,
+  ));
 
-  // Enrich the order with the current address + total (no longer on the order row).
+  // Enrich the order with the current address (no longer on the order row).
   const address = await OrderAddress.findOne({ where: { order_id: order.id, is_current: true } });
-  const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id } }));
   const srOrder = {
     ...order.toJSON(),
     address: address?.line, city: address?.city, pincode: address?.pincode,
-    phone: address?.phone, state: address?.state, total_amount: totals.total_amount,
+    phone: address?.phone, state: address?.state, total_amount: declaredTotal,
   };
 
   try {
@@ -515,8 +574,18 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason }) =>
     result.shipmentId = data?.shipment_id || null;
     const srId = data?.order_id ? String(data.order_id) : null;
     result.shiprocketReturnId = srId;
-    if (srId && entries[0]?.action) {
-      await entries[0].action.update({ shiprocket_return_order_id: srId });
+    // Persist both ShipRocket identifiers on the request's first action row:
+    // the return ORDER id (webhooks match reverse scans by it) and the return
+    // SHIPMENT id (needed for label/pickup/cancel calls on ShipRocket's side).
+    if ((srId || result.shipmentId) && entries[0]?.action) {
+      const firstAction = entries[0].action;
+      await firstAction.update({
+        ...(srId ? { shiprocket_return_order_id: srId } : {}),
+        meta: {
+          ...(firstAction.meta || {}),
+          ...(result.shipmentId ? { shiprocket_return_shipment_id: String(result.shipmentId) } : {}),
+        },
+      });
     }
   } catch (error) {
     console.error('[OrderReturnService] reverse pickup booking failed:', error?.response?.data || error.message);
