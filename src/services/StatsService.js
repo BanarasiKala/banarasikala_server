@@ -75,7 +75,7 @@ const viewerFloor = (productId) => {
   return Math.min(30, Math.max(20, base + jitter));
 };
 
-// Synthetic "orders today": climbs 5 → 10 across the IST day and resets at
+// Synthetic "orders today": climbs 0 → 15 across the IST day and resets at
 // midnight. A small per-product/per-day offset staggers the step times so all
 // products don't tick up at the same moment.
 const orderFloor = (productId) => {
@@ -84,7 +84,7 @@ const orderFloor = (productId) => {
   const dayKey = new Date(dayStart + IST_OFFSET_MIN * 60000).toISOString().slice(0, 10);
   const offset = hashToUnit(`of:${productId}:${dayKey}`) * 0.12 - 0.06; // ±6% of the day
   const staggered = Math.min(0.999, Math.max(0, dayFraction + offset));
-  return 5 + Math.floor(staggered * 6); // 5..10, monotonically increasing
+  return Math.floor(staggered * 16); // 0..15, monotonically increasing
 };
 
 // ─── Live product viewers (in-memory presence) ───────────────────────────────

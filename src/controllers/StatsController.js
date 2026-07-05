@@ -25,10 +25,10 @@ const StatsController = {
       const realOrders = await StatsService.getProductOrdersToday(productId);
 
       // Show a plausible floor when genuine activity is low: viewers sit in a
-      // 20–30 band until the real count reaches 30; today's orders ramp 5→10
-      // through the day until the real count reaches 10 (never understated).
+      // 20–30 band until the real count reaches 30; today's orders ramp 0→15
+      // through the day until the real count reaches 15 (never understated).
       const viewers = realViewers >= 30 ? realViewers : StatsService.viewerFloor(productId);
-      const ordersToday = realOrders >= 10 ? realOrders : Math.max(realOrders, StatsService.orderFloor(productId));
+      const ordersToday = realOrders >= 15 ? realOrders : Math.max(realOrders, StatsService.orderFloor(productId));
 
       res.json({ viewers, ordersToday, ordersRecent: ordersToday });
     } catch (error) {
