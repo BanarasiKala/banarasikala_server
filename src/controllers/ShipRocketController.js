@@ -11,6 +11,8 @@ const ShipmentItem = require('../models/ShipmentItem');
 const RtoEvent = require('../models/RtoEvent');
 const OrderStatusHistory = require('../models/OrderStatusHistory');
 const OrderAddress = require('../models/OrderAddress');
+const Customer = require('../models/Customer');
+const WalletTransaction = require('../models/WalletTransaction');
 const EmailService = require('../services/EmailService');
 const WalletService = require('../services/WalletService');
 const { sequelize } = require('../config/db');
@@ -738,14 +740,40 @@ class ShipRocketController {
                   note: 'COD RTO — order returned, nothing collected',
                 }, transaction);
               }
+              // Restore any wallet credit spent on this COD order. Nothing was
+              // collected and no logistics are charged back on COD RTO, so the
+              // full wallet amount is returned to the customer's wallet.
+              const codTotals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction }));
+              const codWallet = toMoney(codTotals.wallet_amount);
+              if (codWallet > 0 && order.customer_id) {
+                const dedupeKey = `rto_wallet:${rtoEvent.id}`;
+                const existingWallet = await WalletTransaction.findOne({ where: { dedupe_key: dedupeKey }, transaction });
+                if (!existingWallet) {
+                  await WalletTransaction.create({
+                    customer_id: order.customer_id,
+                    amount: codWallet,
+                    type: 'RTO_REFUND',
+                    status: 'completed',
+                    available_at: null,
+                    dedupe_key: dedupeKey,
+                    meta: { order_id: order.id, rto_event_id: rtoEvent.id },
+                  }, { transaction });
+                  await Customer.increment({ wallet_balance: codWallet }, { where: { id: order.customer_id }, transaction });
+                }
+              }
               orderUpdate.cancelled_at = new Date();
               orderStatus = 'Seller Cancelled';
               const existingRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction });
               if (!existingRtoRefund) {
                 await OrderRefund.create({
-                  order_id: order.id, refund_type: REFUND_TYPE.RTO, amount: 0,
-                  status: REFUND_STATUS.NOT_REQUIRED, payment_method: REFUND_PAYMENT_METHOD.NOT_REQUIRED,
-                  note: 'Order cancelled due to unsuccessful delivery. COD is now blocked for this account.',
+                  order_id: order.id, refund_type: REFUND_TYPE.RTO,
+                  amount: codWallet,
+                  status: codWallet > 0 ? REFUND_STATUS.COMPLETED : REFUND_STATUS.NOT_REQUIRED,
+                  payment_method: REFUND_PAYMENT_METHOD.NOT_REQUIRED,
+                  ...(codWallet > 0 ? { processed_at: new Date() } : {}),
+                  note: codWallet > 0
+                    ? `Order cancelled due to unsuccessful delivery. COD is now blocked for this account. Rs. ${codWallet.toLocaleString('en-IN')} wallet credit returned to your wallet.`
+                    : 'Order cancelled due to unsuccessful delivery. COD is now blocked for this account.',
                 }, { transaction });
               }
             } else {
@@ -966,38 +994,86 @@ class ShipRocketController {
       }
 
       // ── Abandon: refund what the customer paid, minus the forward + RTO charges ──
+      // The customer's contribution has two sources: gateway money (amount_paid)
+      // and wallet credit spent at checkout (wallet_amount). We keep F + R and
+      // refund the rest, splitting it proportionally so the wallet-paid share
+      // goes back to the wallet and the remainder to the original gateway
+      // (mirrors the return-refund policy). If no wallet was used this collapses
+      // to the old gateway-only behaviour.
       const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction }));
-      const refund = Math.max(0, toMoney(totals.amount_paid - F - R));
+      const walletPaid = toMoney(totals.wallet_amount);
+      const contribution = toMoney(totals.amount_paid + walletPaid);
+      const refund = Math.max(0, toMoney(contribution - F - R));
+      const walletShare = (walletPaid > 0 && order.customer_id && contribution > 0 && refund > 0)
+        ? Math.min(walletPaid, refund, toMoney((refund / contribution) * walletPaid))
+        : 0;
+      const gatewayRefund = toMoney(Math.max(0, refund - walletShare));
+
       if (refund > 0) {
         // Reverse order value by the refund, then pay it back (balance-neutral, nets to 0).
         await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: refund, direction: LEDGER_DIRECTION.CREDIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'RTO abandoned — value returned' }, transaction);
         const refLedger = await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.REFUND, amount: refund, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'RTO refund (less forward + RTO charges)' }, transaction);
-        await RefundTransaction.create({
-          order_id: order.id, ledger_entry_id: refLedger?.id || null,
-          gateway: 'original_gateway', amount: refund, status: 'Pending',
-        }, { transaction });
+        // The gateway leg (RefundTransaction) tracks only the non-wallet remainder.
+        if (gatewayRefund > 0) {
+          await RefundTransaction.create({
+            order_id: order.id, ledger_entry_id: refLedger?.id || null,
+            gateway: 'original_gateway', amount: gatewayRefund, status: 'Pending',
+          }, { transaction });
+        }
+
+        // Restore the wallet-paid share to the customer's wallet (atomic with
+        // the rest of the resolution; deduped so a retry can't double-credit).
+        if (walletShare > 0) {
+          const dedupeKey = `rto_wallet:${rto.id}`;
+          const existingWallet = await WalletTransaction.findOne({ where: { dedupe_key: dedupeKey }, transaction });
+          if (!existingWallet) {
+            await WalletTransaction.create({
+              customer_id: order.customer_id,
+              amount: walletShare,
+              type: 'RTO_REFUND',
+              status: 'completed',
+              available_at: null,
+              dedupe_key: dedupeKey,
+              meta: { order_id: order.id, rto_event_id: rto.id },
+            }, { transaction });
+            await Customer.increment({ wallet_balance: walletShare }, { where: { id: order.customer_id }, transaction });
+          }
+        }
       }
 
+      const walletNote = walletShare > 0 ? ` (incl. Rs. ${walletShare.toLocaleString('en-IN')} back to wallet)` : '';
+      // No refund → nothing required. A gateway leg stays Pending until Razorpay
+      // settles it; a wallet-only refund is already done inside this transaction.
+      const refundStatus = refund <= 0
+        ? REFUND_STATUS.NOT_REQUIRED
+        : gatewayRefund > 0 ? REFUND_STATUS.PENDING : REFUND_STATUS.COMPLETED;
       await rto.update({ resolution: RTO_RESOLUTION.ABANDONED }, { transaction });
       await order.update({ status: 'Seller Cancelled', cancelled_at: new Date() }, { transaction });
       await recordStatus(order.id, 'RTO', 'Seller Cancelled', req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER, 'RTO abandoned — refund', transaction);
       await OrderRefund.update(
-        { amount: refund, status: refund > 0 ? REFUND_STATUS.PENDING : REFUND_STATUS.NOT_REQUIRED, note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics).` },
+        {
+          amount: refund,
+          status: refundStatus,
+          ...(refundStatus === REFUND_STATUS.COMPLETED ? { processed_at: new Date() } : {}),
+          note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics)${walletNote}.`,
+        },
         { where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction },
       );
 
       await transaction.commit();
       committed = true;
 
-      if (refund > 0) {
+      // Gateway refund covers only the non-wallet remainder (the wallet share was
+      // already credited back above and never touched the gateway).
+      if (gatewayRefund > 0) {
         Payment.findOne({ where: { order_id: order.id, status: 'Paid' } }).then((payment) => {
           if (payment?.gateway_payment_id) {
-            return razorpayRefund(payment.gateway_payment_id, refund, { reason: 'RTO abandoned', orderId: String(order.id) });
+            return razorpayRefund(payment.gateway_payment_id, gatewayRefund, { reason: 'RTO abandoned', orderId: String(order.id) });
           }
         }).catch((err) => console.error(`[Razorpay] RTO refund failed for #${order.id}:`, err?.message || err));
       }
 
-      return res.status(200).json({ message: 'RTO abandoned. Refund initiated.', refund_amount: refund });
+      return res.status(200).json({ message: 'RTO abandoned. Refund initiated.', refund_amount: refund, wallet_refund: walletShare, gateway_refund: gatewayRefund });
     } catch (error) {
       if (!committed) await transaction.rollback();
       console.error('[ShipRocket] resolveRto error:', error?.response?.data || error.message);

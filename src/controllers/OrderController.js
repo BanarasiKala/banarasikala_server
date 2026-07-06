@@ -77,6 +77,7 @@ const ORDER_V2_INCLUDES = [
   { model: OrderLedger, as: 'Ledger' },
   { model: Shipment, as: 'Shipments' },
   { model: OrderStatusHistory, as: 'StatusHistory' },
+  { model: RtoEvent, as: 'RtoEvents' },
 ];
 
 // Rebuild the legacy order shape (address fields, money breakdown, AWB, status
@@ -111,6 +112,28 @@ const hydrateV2Fields = (json) => {
     // Alias for readers that expect courier_name (e.g. the order detail page).
     json.courier_name = forward.courier;
     json.selected_courier_data = forward.selected_courier_data;
+  }
+
+  // RTO → latest rto_events row. Surfaces the logistics owed (forward + RTO)
+  // so the customer can be offered "pay to re-dispatch" vs. "refund", and the
+  // terminal COD-blocked state so the UI can explain the account is prepaid-only.
+  const rtoEvents = Array.isArray(json.RtoEvents) ? json.RtoEvents : [];
+  const latestRto = rtoEvents
+    .slice()
+    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0] || null;
+  if (latestRto) {
+    const forwardCharge = Number(latestRto.forward_charge_to_recover) || 0;
+    const rtoCharge = Number(latestRto.rto_charge) || 0;
+    json.rto_action = {
+      event_id: latestRto.id,
+      payment_method: latestRto.payment_method,
+      resolution: latestRto.resolution,
+      forward_charge: Math.round(forwardCharge * 100) / 100,
+      rto_charge: Math.round(rtoCharge * 100) / 100,
+      redispatch_fee: Math.round((forwardCharge + rtoCharge) * 100) / 100,
+      // Only a prepaid RTO awaiting the customer's choice is actionable.
+      awaiting: latestRto.resolution === 'AWAITING_PAYMENT',
+    };
   }
 
   // Status timeline → order_status_history (legacy {status,timestamp,actor,note} shape)
@@ -1439,6 +1462,7 @@ class OrderController {
           const cd = fwd.selected_courier_data || {};
           const fwdCharge = toMoney([cd.freight_charge, cd.rate, cd.charge].find((v) => Number(v) > 0) || fwd.forward_charge);
           const rtoCharge = toMoney([cd.rto_charges, cd.rto_charge].find((v) => Number(v) > 0) || 0);
+          let codWalletRefund = 0;
           if (isCodOrder) {
             const rtoEvent = await RtoEvent.create({
               shipment_id: fwd.id, order_id: order.id, payment_method: 'COD',
@@ -1448,6 +1472,26 @@ class OrderController {
             const bal = await getOrderBalance(order.id, t);
             if (bal > 0) {
               await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: bal, direction: LEDGER_DIRECTION.CREDIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rtoEvent.id, note: 'COD RTO — order returned' }, t);
+            }
+            // Return any wallet credit spent on this COD order (nothing collected,
+            // no logistics charged back on COD RTO → full wallet amount restored).
+            const codTotals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction: t }));
+            codWalletRefund = toMoney(codTotals.wallet_amount);
+            if (codWalletRefund > 0 && order.customer_id) {
+              const dedupeKey = `rto_wallet:${rtoEvent.id}`;
+              const existingWallet = await WalletTransaction.findOne({ where: { dedupe_key: dedupeKey }, transaction: t });
+              if (!existingWallet) {
+                await WalletTransaction.create({
+                  customer_id: order.customer_id,
+                  amount: codWalletRefund,
+                  type: 'RTO_REFUND',
+                  status: 'completed',
+                  available_at: null,
+                  dedupe_key: dedupeKey,
+                  meta: { order_id: order.id, rto_event_id: rtoEvent.id },
+                }, { transaction: t });
+                await Customer.increment({ wallet_balance: codWalletRefund }, { where: { id: order.customer_id }, transaction: t });
+              }
             }
             updatePayload.cancelled_at = new Date();
           } else {
@@ -1460,11 +1504,17 @@ class OrderController {
           const existingRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction: t });
           if (!existingRtoRefund) {
             await OrderRefund.create({
-              order_id: order.id, refund_type: REFUND_TYPE.RTO, amount: 0,
-              status: isCodOrder ? REFUND_STATUS.NOT_REQUIRED : 'RTO Action Required',
+              order_id: order.id, refund_type: REFUND_TYPE.RTO,
+              amount: isCodOrder ? codWalletRefund : 0,
+              status: isCodOrder
+                ? (codWalletRefund > 0 ? REFUND_STATUS.COMPLETED : REFUND_STATUS.NOT_REQUIRED)
+                : 'RTO Action Required',
               payment_method: isCodOrder ? REFUND_PAYMENT_METHOD.NOT_REQUIRED : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
+              ...(isCodOrder && codWalletRefund > 0 ? { processed_at: new Date() } : {}),
               note: isCodOrder
-                ? 'COD order returned to seller. No payment was collected.'
+                ? (codWalletRefund > 0
+                  ? `COD order returned to seller. No payment was collected. Rs. ${codWalletRefund.toLocaleString('en-IN')} wallet credit returned to your wallet.`
+                  : 'COD order returned to seller. No payment was collected.')
                 : `Order returned to seller. Pay Rs. ${toMoney(fwdCharge + rtoCharge).toLocaleString('en-IN')} to re-dispatch, or request a refund.`,
             }, { transaction: t });
           }

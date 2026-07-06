@@ -17,6 +17,7 @@ class CustomerController {
           "referral_code",
           "referred_by_id",
           "avatar_url",
+          "is_cod_blocked",
           "createdAt",
         ],
       });
