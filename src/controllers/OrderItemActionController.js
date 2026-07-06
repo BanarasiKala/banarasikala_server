@@ -47,10 +47,19 @@ const normalizeItems = (items = []) => {
     const orderItemId = Number(item.orderItemId || item.order_item_id || item.id);
     if (Number.isInteger(orderItemId) && orderItemId > 0) {
       const qty = Number(item.quantity || item.qty || 0);
-      itemMap.set(orderItemId, qty > 0 ? qty : null);
+      // Exchange only: the colour variant of the SAME product the customer
+      // wants instead. Null/absent means "same colour" (or a single-variant
+      // product with no choice to make).
+      const rawColor = item.exchangeColorId ?? item.exchange_color_id ?? null;
+      const exchangeColorId = Number(rawColor) > 0 ? Number(rawColor) : null;
+      itemMap.set(orderItemId, { quantity: qty > 0 ? qty : null, exchangeColorId });
     }
   });
-  return Array.from(itemMap.entries()).map(([orderItemId, quantity]) => ({ orderItemId, quantity }));
+  return Array.from(itemMap.entries()).map(([orderItemId, value]) => ({
+    orderItemId,
+    quantity: value.quantity,
+    exchangeColorId: value.exchangeColorId,
+  }));
 };
 
 const isActionClosedByRejection = (action) => {
@@ -220,6 +229,34 @@ class OrderItemActionController {
       if (!selections.length) {
         await transaction.rollback();
         return res.status(400).json({ message: 'Please select at least one product.' });
+      }
+
+      // Exchange: validate & name each requested colour variant against the
+      // product's live per-colour stock (Product.color_stocks: colorId → qty),
+      // so a stale/forged client can't request an unavailable colour and the
+      // stored request carries a human-readable colour for the admin queue.
+      if (actionType === ACTION_TYPES.EXCHANGE) {
+        for (const selection of selections) {
+          if (!selection.exchangeColorId) continue;
+          const orderItem = orderItems.find((it) => Number(it.id) === Number(selection.orderItemId));
+          if (!orderItem) continue;
+          const product = await Product.findByPk(orderItem.product_id, {
+            attributes: ['id', 'color_stocks'],
+            transaction,
+          });
+          const stocks = product?.color_stocks || {};
+          const key = String(selection.exchangeColorId);
+          if (!(key in stocks)) {
+            await transaction.rollback();
+            return res.status(400).json({ message: 'The selected colour is not available for this product.' });
+          }
+          if (Number(stocks[key]) <= 0) {
+            await transaction.rollback();
+            return res.status(400).json({ message: 'The selected colour is out of stock. Please choose another colour.' });
+          }
+          const color = await Color.findByPk(selection.exchangeColorId, { attributes: ['id', 'name'], transaction });
+          selection.exchangeColorName = color?.name || null;
+        }
       }
 
       // ── Return / Exchange → unified OrderReturnService (also books reverse pickup) ──

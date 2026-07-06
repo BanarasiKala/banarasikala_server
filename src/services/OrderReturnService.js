@@ -177,7 +177,12 @@ const resolveTargets = ({ orderItems, itemActions, selections }) => {
       if (quantity < 1) {
         throw err(400, `${item.product_name || 'This product'} is not available for this request.`);
       }
-      return { item, quantity };
+      return {
+        item,
+        quantity,
+        exchangeColorId: selection.exchangeColorId ?? null,
+        exchangeColorName: selection.exchangeColorName ?? null,
+      };
     });
   }
 
@@ -371,7 +376,7 @@ const createReverseActions = async ({
   let pickupLeft = refundInfo ? refundInfo.returnShippingCharge : 0;
 
   for (let index = 0; index < targets.length; index += 1) {
-    const { item, quantity } = targets[index];
+    const { item, quantity, exchangeColorId, exchangeColorName } = targets[index];
     const calculation = calculateItemAction({ item, actionType, quantity });
     let couponShare = 0;
     let pickupShare = 0;
@@ -408,6 +413,10 @@ const createReverseActions = async ({
         customer_message: comments || null,
         sku: item.sku || null,
         color_id: item.colorId || item.color_id || null,
+        // Exchange: the colour variant of the same product the customer wants.
+        ...(actionType === ACTION_TYPES.EXCHANGE && exchangeColorId
+          ? { exchange_color_id: exchangeColorId, exchange_color_name: exchangeColorName || null }
+          : {}),
         ...(couponShare > 0 ? { coupon_adjustment: couponShare, coupon_code: order.coupon_code || null } : {}),
       },
     }, { transaction });
