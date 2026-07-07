@@ -60,6 +60,14 @@ const Shipment = sequelize.define('Shipment', {
     type: DataTypes.STRING,
     allowNull: true,
   },
+  // Set on a FORWARD shipment that was raised to re-dispatch an RTO. Points at
+  // the rto_events row it resolved (whose own shipment_id is the ORIGINAL
+  // forward shipment that came back), giving an explicit redispatch trail.
+  // Plain INTEGER (no model-level FK) to avoid a circular require with RtoEvent.
+  rto_event_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   selected_courier_data: {
     type: DataTypes.JSONB,
     allowNull: true,

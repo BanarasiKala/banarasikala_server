@@ -61,5 +61,9 @@ Order.hasMany(RtoEvent, { foreignKey: 'order_id', as: 'RtoEvents' });
 RtoEvent.belongsTo(Order, { foreignKey: 'order_id' });
 Shipment.hasMany(RtoEvent, { foreignKey: 'shipment_id' });
 RtoEvent.belongsTo(Shipment, { foreignKey: 'shipment_id' });
+// A redispatch raises a new FORWARD shipment that points back here via
+// shipments.rto_event_id (defined from this side to avoid a circular require).
+RtoEvent.hasMany(Shipment, { foreignKey: 'rto_event_id', as: 'RedispatchShipments' });
+Shipment.belongsTo(RtoEvent, { foreignKey: 'rto_event_id', as: 'RtoEvent' });
 
 module.exports = RtoEvent;

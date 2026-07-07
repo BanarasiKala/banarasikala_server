@@ -553,9 +553,15 @@ class ShipRocketController {
         // initial webhook can never match the shipment.
         if (!order) {
           const numbers = [channelOrderNumber, ...idCandidates].filter(Boolean);
-          if (numbers.length) {
+          // A redispatch pushes ShipRocket a suffixed channel id (<order_number>-R1);
+          // match on the base order_number too so its webhooks still resolve.
+          const withBase = Array.from(new Set([
+            ...numbers,
+            ...numbers.map((n) => String(n).replace(/-R\d+$/i, '')),
+          ]));
+          if (withBase.length) {
             order = await Order.findOne({
-              where: { order_number: { [Op.in]: numbers } },
+              where: { order_number: { [Op.in]: withBase } },
               transaction,
               lock: Transaction.LOCK.UPDATE,
             });
@@ -952,9 +958,16 @@ class ShipRocketController {
         // New forward shipment (same order) from the current address + active items.
         const addr = await OrderAddress.findOne({ where: { order_id: order.id, is_current: true }, transaction });
         const items = await OrderItem.findAll({ where: { order_id: order.id, status: { [Op.notIn]: ['Cancelled', 'REMOVED'] } }, transaction });
+        // Redispatch attempt number = how many forward shipments already exist
+        // (the original that RTO'd counts as #1). Drives a UNIQUE ShipRocket
+        // channel order id so the re-push isn't rejected as a duplicate.
+        const priorForwardCount = await Shipment.count({ where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD }, transaction });
+        const redispatchSeq = Math.max(1, priorForwardCount);
+        const redispatchChannelId = `${order.order_number}-R${redispatchSeq}`;
         const shipment = await Shipment.create({
           order_id: order.id, address_id: addr?.id || null,
           type: SHIPMENT_TYPE.FORWARD, status: SHIPMENT_STATUS.CREATED, forward_charge: F,
+          rto_event_id: rto.id,
         }, { transaction });
         await ShipmentItem.bulkCreate(items.map((i) => ({ shipment_id: shipment.id, order_item_id: i.id, quantity: i.quantity })), { transaction });
 
@@ -975,7 +988,9 @@ class ShipRocketController {
             const srItems = items.map((i, idx) => ({ product_id: i.product_id, quantity: i.quantity, price: i.price, name: i.product_name || `Product ${idx + 1}`, sku: i.sku }));
             const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id } }));
             const srResult = await ShipRocketService.createOrder({
-              order: { ...order.toJSON(), address: addr?.line, city: addr?.city, pincode: addr?.pincode, phone: addr?.phone, state: addr?.state, total_amount: totals.total_amount, discount_amount: totals.discount_amount },
+              // order_number overridden so the re-dispatch is a NEW, unique
+              // ShipRocket channel order id (else ShipRocket rejects the duplicate).
+              order: { ...order.toJSON(), order_number: redispatchChannelId, address: addr?.line, city: addr?.city, pincode: addr?.pincode, phone: addr?.phone, state: addr?.state, total_amount: totals.total_amount, discount_amount: totals.discount_amount },
               items: srItems,
             });
             await shipment.update({

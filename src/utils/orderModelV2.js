@@ -148,6 +148,19 @@ const ensureOrderModelV2Tables = async () => {
   // drop its table if a previous deploy created it. Idempotent.
   await sequelize.query(`DROP TABLE IF EXISTS "${config.dbSchema}"."order_modifications"`);
 
+  // 3b. Additive: shipments.rto_event_id — links a redispatch's new forward
+  // shipment back to the RTO it resolved. Idempotent.
+  const shipmentsTable = { tableName: 'shipments', schema: config.dbSchema };
+  try {
+    const shipmentsColumns = await qi.describeTable(shipmentsTable);
+    if (!shipmentsColumns.rto_event_id) {
+      await qi.addColumn(shipmentsTable, 'rto_event_id', { type: DataTypes.INTEGER, allowNull: true });
+    }
+  } catch {
+    // Table missing entirely (fresh DB) — the model.sync above already created
+    // it with the column.
+  }
+
   // 4. Additive: order_refunds.breakdown (JSONB) — the persisted refund
   // breakage shown to the customer. Global sync is off, so added here.
   const refundsTable = { tableName: 'order_refunds', schema: config.dbSchema };
