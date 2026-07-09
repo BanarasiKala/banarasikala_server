@@ -258,6 +258,18 @@ const ensureOrderItemAccountingColumns = async () => {
 const roundMoney = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const toPaise = (value) => Math.round(roundMoney(value) * 100);
 
+// COD handling charge the chosen courier bills: cod_charges + orderValue × cod_multiplier.
+// Mirrors the client's computeCourierCodCharge so the COD fee actually collected matches
+// what the shopper was shown at checkout. selected_courier_data carries the raw Shiprocket
+// courier fields captured when the order was placed.
+const computeCourierCodCharge = (courierData, orderValue = 0) => {
+  const d = courierData || {};
+  const codCharges = Number(d.cod_charges ?? d.cod_charge ?? 0) || 0;
+  const codMultiplier = Number(d.cod_multiplier ?? 0) || 0;
+  const charge = codCharges + Number(orderValue || 0) * codMultiplier;
+  return charge > 0 ? roundMoney(charge) : 0;
+};
+
 const verifyRazorpayPayment = ({ orderId, paymentId, signature }) => {
   if (!orderId || !paymentId || !signature) return false;
   const expectedSignature = crypto
@@ -484,7 +496,13 @@ class OrderController {
       const normalizedPaymentMethod = String(payment_method || 'Prepaid').toUpperCase() === 'COD' ? 'COD' : 'Prepaid';
       const normalizedPaymentStatus = normalizedPaymentMethod === 'COD' ? 'Pending' : (payment_status || 'Paid');
       const actualPlatformFee = Math.max(0, Number(config.platformFeeAmount || 0));
-      const actualCodFee = normalizedPaymentMethod === 'COD' ? Math.max(0, Number(config.codFeeAmount || 0)) : 0;
+      // COD fee = the courier's own COD handling charge, floored at the configured minimum.
+      const courierCodCharge = normalizedPaymentMethod === 'COD'
+        ? computeCourierCodCharge(selected_courier_data, itemSubtotal)
+        : 0;
+      const actualCodFee = normalizedPaymentMethod === 'COD'
+        ? Math.max(Number(config.codFeeAmount || 0), courierCodCharge)
+        : 0;
       const actualPaymentFee = actualPlatformFee + actualCodFee;
       const actualPaymentDiscount = normalizedPaymentMethod === 'Prepaid'
         ? Math.min(Number(config.prepaidDiscountAmount || 0), itemSubtotal)
