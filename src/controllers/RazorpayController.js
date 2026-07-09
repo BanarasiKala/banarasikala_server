@@ -92,7 +92,6 @@ class RazorpayController {
       }
 
       const event = JSON.parse(req.rawBody.toString('utf8'));
-      console.log(`Razorpay: ${JSON.stringify(event)}`);
       if (['refund.processed', 'refund.failed'].includes(event.event)) {
         const refundEntity = event.payload?.refund?.entity;
         const result = await settleGatewayRefund(refundEntity);
