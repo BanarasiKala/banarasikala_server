@@ -42,9 +42,20 @@ const courierMoney = (data, keys) => {
   }
   return 0;
 };
-const forwardChargeOf = (shipment) =>
-  courierMoney(shipment?.selected_courier_data, ['freight_charge', 'rate', 'charge', 'shipping_charge'])
-  || toMoney(shipment?.forward_charge);
+// The forward charge to recover on an RTO is the full delivery charge the buyer was
+// quoted — base rate + WhatsApp charge (and the COD charge for a COD order) — which is
+// stored on the shipment's forward_charge at checkout. Prefer it so the re-dispatch
+// quote matches our prepaid/COD delivery logic. The raw courier rate card is only a
+// fallback for legacy shipments with no stored forward_charge — and even then it must
+// add back the WhatsApp charge, or a prepaid re-dispatch quote silently drops it.
+const forwardChargeOf = (shipment) => {
+  const stored = toMoney(shipment?.forward_charge);
+  if (stored) return stored;
+  const cd = shipment?.selected_courier_data || {};
+  const rate = courierMoney(cd, ['freight_charge', 'rate', 'charge', 'shipping_charge']);
+  const whatsappCharge = courierMoney(cd, ['whatsapp_charges', 'whatsapp_charge']);
+  return toMoney(rate + whatsappCharge);
+};
 const rtoChargeOf = (shipment) =>
   courierMoney(shipment?.selected_courier_data, ['rto_charges', 'rto_charge', 'rto_freight_charge', 'rto_shipping_charge']);
 
@@ -1010,21 +1021,19 @@ class ShipRocketController {
         return res.status(200).json({ message: 'Order re-dispatched.', redispatch_fee: payable, balance_due: balance, shipment_id: shipment.id });
       }
 
-      // ── Abandon: refund what the customer paid, minus the forward + RTO charges ──
-      // The customer's contribution has two sources: gateway money (amount_paid)
-      // and wallet credit spent at checkout (wallet_amount). We keep F + R and
-      // refund the rest, splitting it proportionally so the wallet-paid share
-      // goes back to the wallet and the remainder to the original gateway
-      // (mirrors the return-refund policy). If no wallet was used this collapses
-      // to the old gateway-only behaviour.
+      // ── Abandon: refund what the customer paid, minus the platform fee and the
+      // forward + RTO charges the seller keeps ──
+      // Those deductions come out of the GATEWAY money only. The wallet credit spent
+      // at checkout is never part of the deduction math — it is returned to the
+      // wallet in full. (If there's no account to credit — a legacy email-only order
+      // — the wallet portion folds into the gateway refund so it isn't dropped.)
       const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction }));
       const walletPaid = toMoney(totals.wallet_amount);
-      const contribution = toMoney(totals.amount_paid + walletPaid);
-      const refund = Math.max(0, toMoney(contribution - F - R));
-      const walletShare = (walletPaid > 0 && order.customer_id && contribution > 0 && refund > 0)
-        ? Math.min(walletPaid, refund, toMoney((refund / contribution) * walletPaid))
-        : 0;
-      const gatewayRefund = toMoney(Math.max(0, refund - walletShare));
+      const platformFee = toMoney(totals.platform_fee);
+      const walletShare = (walletPaid > 0 && order.customer_id) ? walletPaid : 0;
+      const gatewayContribution = toMoney(totals.amount_paid + (walletPaid - walletShare));
+      const gatewayRefund = Math.max(0, toMoney(gatewayContribution - platformFee - F - R));
+      const refund = toMoney(gatewayRefund + walletShare);
 
       if (refund > 0) {
         // Reverse order value by the refund, then pay it back (balance-neutral, nets to 0).
@@ -1072,7 +1081,7 @@ class ShipRocketController {
           amount: refund,
           status: refundStatus,
           ...(refundStatus === REFUND_STATUS.COMPLETED ? { processed_at: new Date() } : {}),
-          note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics)${walletNote}.`,
+          note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${platformFee.toLocaleString('en-IN')} platform fee + Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics)${walletNote}.`,
         },
         { where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction },
       );

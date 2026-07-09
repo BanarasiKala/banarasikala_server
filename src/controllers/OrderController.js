@@ -1478,7 +1478,14 @@ class OrderController {
         const existingRto = fwd ? await RtoEvent.findOne({ where: { shipment_id: fwd.id }, transaction: t }) : null;
         if (fwd && !existingRto) {
           const cd = fwd.selected_courier_data || {};
-          const fwdCharge = toMoney([cd.freight_charge, cd.rate, cd.charge].find((v) => Number(v) > 0) || fwd.forward_charge);
+          // Recover the full delivery charge the buyer was quoted (rate + WhatsApp
+          // charge, plus COD charge for COD) — stored on forward_charge at checkout.
+          // Raw courier rate card is only a fallback for legacy shipments, and even
+          // then must add back the WhatsApp charge (otherwise a prepaid re-dispatch
+          // quote silently drops it).
+          const fwdRateOnly = toMoney([cd.freight_charge, cd.rate, cd.charge].find((v) => Number(v) > 0) || 0);
+          const fwdWhatsappCharge = toMoney(cd.whatsapp_charges ?? cd.whatsapp_charge ?? 0);
+          const fwdCharge = toMoney(fwd.forward_charge) || toMoney(fwdRateOnly + fwdWhatsappCharge);
           const rtoCharge = toMoney([cd.rto_charges, cd.rto_charge].find((v) => Number(v) > 0) || 0);
           let codWalletRefund = 0;
           if (isCodOrder) {
