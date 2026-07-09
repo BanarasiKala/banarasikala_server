@@ -379,12 +379,12 @@ const decrementProductInventory = async ({ product, colorId, quantity, transacti
   await product.update(updatePayload, { transaction });
 };
 
-// Cancellation is whole-order only and allowed only while the order is still in
-// its initial (pre-dispatch) state. 'Processing' / 'AWB Assigned' are reached
-// automatically by the ShipRocket push seconds after placement, so they count as
-// "unchanged". Anything beyond (shipped, delivered, RTO, admin-progressed…) locks
-// the order. Allowlist so unexpected statuses default to "not cancellable".
-const CANCELLABLE_STATUSES = ['pending', 'processing', 'awb assigned'];
+// Cancellation is whole-order only and allowed only while the order is still being
+// prepared. Placement lands the order on 'Pending', and the async ShipRocket
+// create/adhoc push advances it to 'Processing' (no AWB is assigned there). Once a
+// courier/AWB is assigned (an admin dispatch action) or the order ships, delivers,
+// RTOs, etc., it locks. Allowlist so unexpected statuses default to "not cancellable".
+const CANCELLABLE_STATUSES = ['pending', 'processing'];
 
 class OrderController {
   async createOrder(req, res) {
