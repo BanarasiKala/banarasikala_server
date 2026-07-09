@@ -107,14 +107,21 @@ class ShipRocketService {
   }
 
   // ─── PACKAGE METRICS (env-based box dimensions) ───────────────────────────────
-  // Weight/dimensions use the fixed box size from .env, NOT product DB values.
-  // PACKAGE_WEIGHT_KG × totalQty, PACKAGE_HEIGHT_CM × totalQty (stacking).
-  // Length & Breadth stay fixed (the box never changes width/length).
+  // Dimensions always use the fixed box size from .env (PACKAGE_HEIGHT_CM ×
+  // totalQty for stacking; length & breadth stay fixed).
+  // Weight: PACKAGE_WEIGHT_KG × totalQty by default (forward shipments). If a
+  // caller supplies a real per-line `weight` (product + box — see
+  // OrderReturnService.itemWeightKg), that's used instead, so a return pickup
+  // isn't booked lighter than the rate the customer was actually quoted for it.
 
   _computePackageMetrics(items) {
     const totalQty = items.reduce((sum, item) => sum + (Number(item.quantity) || 1), 0);
+    const hasItemWeights = items.some((item) => Number(item.weight) > 0);
+    const totalWeight = hasItemWeights
+      ? items.reduce((sum, item) => sum + (Number(item.weight) || 0) * (Number(item.quantity) || 1), 0)
+      : config.packageWeightKg * totalQty;
     return {
-      pkgWeight:  Math.max(parseFloat((config.packageWeightKg  * totalQty).toFixed(2)), 0.1),
+      pkgWeight:  Math.max(parseFloat(totalWeight.toFixed(2)), 0.1),
       pkgLength:  config.packageLengthCm,
       pkgBreadth: config.packageBreadthCm,
       pkgHeight:  Math.max(config.packageHeightCm * totalQty, 1),

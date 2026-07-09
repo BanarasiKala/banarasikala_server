@@ -55,6 +55,18 @@ const reverseChargeFromShipment = (shipment) => {
   return roundMoney(Number(candidate) || Number(shipment?.forward_charge) || 0);
 };
 
+// Per-unit weight for a return: product weight (snapshotted per item in
+// shipping_meta at checkout — see allocateItemShipping in OrderController)
+// plus box weight. This is the SAME basis the forward delivery charge was
+// quoted on, so both the return pickup rate quote AND the real ShipRocket
+// return-order weight declaration match what the customer was shown, instead
+// of understating the parcel with a box-weight-only figure.
+const itemWeightKg = (item) => {
+  const productWeightKg = Number(item?.shipping_meta?.product_weight_kg);
+  return (Number.isFinite(productWeightKg) && productWeightKg > 0 ? productWeightKg : 0.5)
+    + Math.max(0, Number(config.packageWeightKg) || 0);
+};
+
 // Live weight-based pickup rate: cheapest serviceable courier between the
 // customer's pincode and the store, at the returned parcel's billable weight
 // (the same env box-weight × units that the ShipRocket return order will
@@ -254,11 +266,16 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
   const code = String(order.coupon_code || '').trim() || null;
 
   // One return-pickup charge per request (not per item), rated live for the
-  // billable weight of the returned units (env box-weight × units — exactly
-  // what the ShipRocket return order declares) against the customer's pincode.
-  // Falls back to the forward shipment's rate card if the courier API fails.
-  const returnedUnits = targets.reduce((sum, target) => sum + Number(target.quantity || 0), 0);
-  const pickupWeightKg = Math.max(0.1, Number(((Number(config.packageWeightKg) || 0.5) * returnedUnits).toFixed(2)));
+  // billable weight of the returned units against the customer's pincode.
+  // Must use the SAME (product weight + box weight) basis the forward
+  // delivery charge was quoted on at checkout (see allocateItemShipping in
+  // OrderController — product_weight_kg is snapshotted per item in
+  // shipping_meta precisely so this stays in sync), not just the box weight.
+  // Box-weight-only understates the parcel and quotes a cheaper pickup rate
+  // than the delivery charge the customer was actually shown for it.
+  const pickupWeightKg = Math.max(0.1, roundMoney(
+    targets.reduce((sum, { item, quantity }) => sum + itemWeightKg(item) * Number(quantity || 0), 0),
+  ));
   const address = await OrderAddress.findOne({ where: { order_id: order.id, is_current: true }, transaction });
   const pincode = String(address?.pincode || order.pincode || '').trim();
   let rawPickupCharge = 0;
@@ -278,6 +295,42 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
     rawPickupCharge = reverseChargeFromShipment(forwardShipment);
   }
 
+  // Full-order return — nothing is kept, so there's no "remaining subtotal"
+  // to re-rate a coupon against. Skip that machinery entirely.
+  //
+  // Money moves back to TWO separate places:
+  //   • wallet credit spent at checkout → returned to the wallet IN FULL
+  //     (it's store credit; the service fees and pickup charge never erode it);
+  //   • what the customer actually paid us (amount_paid = gateway/COD) →
+  //     refunded minus the non-refundable fees (platform/COD/gift) and the
+  //     return pickup charge.
+  // Only if the paid amount can't absorb the fees + pickup does the shortfall
+  // fall back onto the wallet return (so we never refund more than was paid).
+  if (remainingSubtotal <= 0) {
+    const amountPaid = roundMoney(Number(totals.amount_paid || 0));
+    const walletAmount = roundMoney(Number(totals.wallet_amount || 0));
+    const platformFee = roundMoney(Number(totals.platform_fee || 0));
+    const codFee = roundMoney(Number(totals.cod_fee || 0));
+    const giftCharge = roundMoney(Number(totals.gift_charge || 0));
+    const grossRefundable = roundMoney(Math.max(0, amountPaid + walletAmount - platformFee - codFee - giftCharge));
+    const returnShippingCharge = roundMoney(Math.min(rawPickupCharge, grossRefundable));
+    // Fees + pickup come out of the paid (gateway/COD) money first; wallet is
+    // returned in full unless the paid money can't cover the charges.
+    const totalDeductions = roundMoney(platformFee + codFee + giftCharge + returnShippingCharge);
+    const gatewayRefund = roundMoney(Math.max(0, amountPaid - totalDeductions));
+    const deductionShortfall = roundMoney(Math.max(0, totalDeductions - amountPaid));
+    const walletReturn = roundMoney(Math.max(0, walletAmount - deductionShortfall));
+    const refundAmount = roundMoney(gatewayRefund + walletReturn);
+    const couponAdjustment = roundMoney(Math.max(0, roundMoney(returnedValue - grossRefundable)));
+    return {
+      returnedValue, remainingSubtotal, currentDiscount, newDiscount: 0, couponAdjustment,
+      returnShippingCharge, pickupWeightKg, refundAmount,
+      originalCouponCode: code, originalCouponEligible: false, appliedCouponCode: null,
+      isFullReturn: true, amountPaid, walletAmount, platformFee, codFee, giftCharge,
+      gatewayRefund, walletReturn,
+    };
+  }
+
   if (currentDiscount <= 0 || returnedValue <= 0) {
     const returnShippingCharge = roundMoney(Math.min(rawPickupCharge, returnedValue));
     return {
@@ -285,6 +338,7 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
       newDiscount: currentDiscount, couponAdjustment: 0, returnShippingCharge, pickupWeightKg,
       refundAmount: roundMoney(Math.max(0, returnedValue - returnShippingCharge)),
       originalCouponCode: code, originalCouponEligible: true, appliedCouponCode: code,
+      isFullReturn: false,
     };
   }
 
@@ -331,6 +385,7 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
     returnedValue, remainingSubtotal, currentDiscount, newDiscount, couponAdjustment,
     returnShippingCharge, pickupWeightKg, refundAmount,
     originalCouponCode: code, originalCouponEligible, appliedCouponCode,
+    isFullReturn: false,
   };
 };
 
@@ -443,7 +498,23 @@ const createReverseActions = async ({
     const breakdown = {
       returned_value: refundInfo.returnedValue,
       remaining_subtotal: refundInfo.remainingSubtotal,
-      coupon: refundInfo.originalCouponCode && refundInfo.currentDiscount > 0 ? {
+      is_full_return: Boolean(refundInfo.isFullReturn),
+      // Full return: the wallet credit is returned to the wallet IN FULL
+      // (wallet_return), while the money paid to us (amount_paid) is refunded
+      // to the gateway/COD minus the non-refundable fees and pickup charge
+      // (gateway_refund) — see OrderItemActionController.initiateRefund.
+      // Persisted line by line so the order page and admin can always replay
+      // the exact formula instead of one lumped figure.
+      ...(refundInfo.isFullReturn ? {
+        amount_paid: refundInfo.amountPaid,
+        wallet_amount: refundInfo.walletAmount,
+        wallet_return: refundInfo.walletReturn,
+        gateway_refund: refundInfo.gatewayRefund,
+        platform_fee: refundInfo.platformFee,
+        cod_fee: refundInfo.codFee,
+        gift_charge: refundInfo.giftCharge,
+      } : {}),
+      coupon: (refundInfo.originalCouponCode && refundInfo.currentDiscount > 0) || refundInfo.couponAdjustment > 0 ? {
         original_code: refundInfo.originalCouponCode,
         original_discount: refundInfo.currentDiscount,
         original_eligible: refundInfo.originalCouponEligible,
@@ -479,7 +550,13 @@ const createReverseActions = async ({
         refundInfo && refundInfo.returnShippingCharge > 0
           ? `Return pickup charge of Rs. ${refundInfo.returnShippingCharge.toLocaleString('en-IN')} deducted.`
           : null,
-        refundInfo && refundInfo.couponAdjustment > 0
+        refundInfo && refundInfo.isFullReturn && (refundInfo.platformFee > 0 || refundInfo.codFee > 0 || refundInfo.giftCharge > 0)
+          ? `Platform fee${refundInfo.codFee > 0 ? ', COD charge' : ''}${refundInfo.giftCharge > 0 ? ' and gift charge' : ''} already paid on this order are not refunded.`
+          : null,
+        refundInfo && refundInfo.isFullReturn && refundInfo.walletReturn > 0
+          ? `Rs. ${refundInfo.walletReturn.toLocaleString('en-IN')} paid from your wallet will be credited back to your wallet in full; the remaining Rs. ${refundInfo.gatewayRefund.toLocaleString('en-IN')} goes to your original payment method.`
+          : null,
+        refundInfo && !refundInfo.isFullReturn && refundInfo.couponAdjustment > 0
           ? (refundInfo.originalCouponEligible
             ? `Coupon ${refundInfo.originalCouponCode || ''} re-rated on the remaining items (worth Rs. ${refundInfo.newDiscount.toLocaleString('en-IN')} instead of Rs. ${refundInfo.currentDiscount.toLocaleString('en-IN')}) — difference of Rs. ${refundInfo.couponAdjustment.toLocaleString('en-IN')} deducted from the refund.`
             : refundInfo.appliedCouponCode
@@ -556,6 +633,10 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason }) =>
       price: unitValue,
       name: item.product_name || `Product #${item.product_id}`,
       sku: item.sku,
+      // Real per-unit weight (product + box) — same basis the pickup rate
+      // quote used, so the actual ShipRocket return AWB isn't booked lighter
+      // than what the customer was quoted for the pickup charge.
+      weight: itemWeightKg(item),
     };
   });
   const declaredTotal = roundMoney(items.reduce(

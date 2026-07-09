@@ -160,7 +160,22 @@ class OrderItemActionController {
         totals.return_shipping_charge = roundMoney(refundInfo.returnShippingCharge);
         totals.return_shipping_weight_kg = refundInfo.pickupWeightKg;
         totals.estimated_refund_amount = roundMoney(refundInfo.refundAmount);
-        if (refundInfo.originalCouponCode && refundInfo.currentDiscount > 0) {
+        totals.is_full_return = Boolean(refundInfo.isFullReturn);
+        // Full return: the paid money (amount_paid) is refunded to the gateway
+        // minus the non-refundable fees + pickup charge (gateway_refund), while
+        // the wallet credit is returned to the wallet IN FULL (wallet_return).
+        // Exposed line by line so the modal can show the formula instead of a
+        // single lumped figure.
+        if (refundInfo.isFullReturn) {
+          totals.amount_paid = roundMoney(refundInfo.amountPaid);
+          totals.wallet_amount = roundMoney(refundInfo.walletAmount);
+          totals.wallet_return = roundMoney(refundInfo.walletReturn);
+          totals.gateway_refund = roundMoney(refundInfo.gatewayRefund);
+          totals.platform_fee = roundMoney(refundInfo.platformFee);
+          totals.cod_fee = roundMoney(refundInfo.codFee);
+          totals.gift_charge = roundMoney(refundInfo.giftCharge);
+        }
+        if ((refundInfo.originalCouponCode && refundInfo.currentDiscount > 0) || refundInfo.couponAdjustment > 0) {
           couponBreakdown = {
             original_code: refundInfo.originalCouponCode,
             original_discount: roundMoney(refundInfo.currentDiscount),
@@ -601,16 +616,25 @@ class OrderItemActionController {
           if (!fullOrder) return;
           const refund = await OrderRefund.findOne({ where: { order_item_action_id: action.id } });
 
-          // Wallet proportional refund — wallet/subtotal sourced from the ledger.
-          // The refund splits: the wallet-paid share goes back to the wallet,
-          // the remainder goes to the original gateway (never both in full).
+          // Wallet refund — wallet/subtotal sourced from the ledger. The refund
+          // splits between the wallet and the original gateway (never both in
+          // full):
+          //   • Full return → the wallet credit is returned IN FULL (capped at
+          //     the total refund); the gateway gets the remainder. computeReturnRefund
+          //     already sized the total so the fees + pickup come out of the paid
+          //     money, not the wallet.
+          //   • Partial return → the wallet-paid share is refunded PROPORTIONALLY
+          //     to the value being returned.
           const orderTotals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: fullOrder.id } }));
           const walletTotal = Number(orderTotals.wallet_amount || 0);
           const refundAmt = Number(refund?.amount || 0);
           const subtotal = Number(orderTotals.subtotal_amount || 0);
+          const isFullReturn = Boolean(refund?.breakdown?.is_full_return);
           let walletShare = 0;
-          if (walletTotal > 0 && fullOrder.customer_id && subtotal > 0 && refundAmt > 0) {
-            walletShare = Math.min(walletTotal, refundAmt, Math.round((refundAmt / subtotal) * walletTotal * 100) / 100);
+          if (walletTotal > 0 && fullOrder.customer_id && refundAmt > 0 && (isFullReturn || subtotal > 0)) {
+            walletShare = isFullReturn
+              ? Math.min(walletTotal, refundAmt)
+              : Math.min(walletTotal, refundAmt, Math.round((refundAmt / subtotal) * walletTotal * 100) / 100);
             if (walletShare > 0) {
               const dedupeKey = `return_wallet:${action.id}`;
               const existing = await WalletTransaction.findOne({ where: { dedupe_key: dedupeKey } });
