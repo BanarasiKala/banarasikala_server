@@ -705,7 +705,8 @@ class ShipRocketController {
         if (nextStatus === 'Delivered' && !order.delivered_at) {
           orderUpdate.delivered_at = new Date();
           // COD: the courier collected cash on delivery — record it so the
-          // ledger balance settles to 0.
+          // ledger balance settles to 0, and flip payment_status so the admin
+          // panel (which reads this field directly) stops showing "Pending".
           if (String(order.payment_method || '').toUpperCase() === 'COD') {
             const bal = await getOrderBalance(order.id, transaction);
             if (bal > 0) {
@@ -715,6 +716,7 @@ class ShipRocketController {
                 note: 'COD collected on delivery',
               }, transaction);
             }
+            orderUpdate.payment_status = 'Paid';
           }
         }
 
