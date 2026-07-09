@@ -72,7 +72,7 @@ class RazorpayController {
    * the order's payment_status to Refunded.
    */
   async webhook(req, res) {
-    console.log('[Razorpay] webhook received:', req.rawBody?.toString('utf8') || '<empty body>');
+    console.log('[Razorpay] webhook received:');
     try {
       if (!config.razorpayWebhookSecret) {
         return res.status(503).json({ message: 'Webhook is not configured on this server.' });
