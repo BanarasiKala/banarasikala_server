@@ -602,6 +602,25 @@ class ShipRocketController {
         return res.status(200).json({ message: 'Order is cancelled — webhook ignored' });
       }
 
+      // A webhook for a SUPERSEDED forward shipment — an earlier dispatch that RTO'd
+      // before a paid re-dispatch — must never drive the live order's status. The
+      // re-dispatch cancels that old ShipRocket order, which emits a 'Cancelled' scan;
+      // applying it here would cancel the whole re-dispatched order, and every later
+      // webhook for the NEW shipment would then be dropped by the guard above. Only the
+      // current forward shipment speaks for the order.
+      if (!reverseAction && forwardShipment) {
+        const latestForward = await Shipment.findOne({
+          where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD },
+          order: [['created_at', 'DESC']],
+          transaction,
+        });
+        if (latestForward && Number(latestForward.id) !== Number(forwardShipment.id)) {
+          await transaction.rollback();
+          console.warn(`[ShipRocket] Webhook '${nextStatus}' ignored — shipment #${forwardShipment.id} is superseded by #${latestForward.id} on order #${order.id}.`);
+          return res.status(200).json({ message: 'Superseded shipment — webhook ignored' });
+        }
+      }
+
       const isReverse = Boolean(reverseAction);
       const prevStatus = order.status;
       let orderStatus = nextStatus;
@@ -797,15 +816,16 @@ class ShipRocketController {
                 }, { transaction });
               }
             } else {
-              // Prepaid: record the event with the logistics owed. The ledger
-              // money is posted at resolve time (redispatch payment vs. abandon),
-              // so the charges aren't stranded if the customer chooses a refund.
-              // A repeat RTO (already re-dispatched once) is refund-only.
-              const priorRedispatch = await RtoEvent.count({
-                where: { order_id: order.id, resolution: RTO_RESOLUTION.REDISPATCHED },
-                transaction,
-              });
-              const redispatchAllowed = priorRedispatch === 0;
+              // Prepaid: record the event with the logistics owed. The ledger money is
+              // posted at resolve time (redispatch payment vs. abandon), so the charges
+              // aren't stranded if the customer chooses a refund.
+              //
+              // Deliberately NO order_refunds row here: nothing has been refunded and the
+              // customer hasn't chosen yet. The row is written only when a refund is
+              // actually requested (resolveRto → abandon). A placeholder row used to leak
+              // a phantom "RTO refund" into the customer's refund ledger and leave a stale
+              // note behind after a re-dispatch. Whether a re-dispatch is still offered is
+              // derived from rto_events (see hydrateV2Fields / resolveRto), not from here.
               await RtoEvent.create({
                 shipment_id: forwardShipment.id,
                 order_id: order.id,
@@ -815,25 +835,6 @@ class ShipRocketController {
                 resolution: RTO_RESOLUTION.AWAITING_PAYMENT,
               }, { transaction });
               orderStatus = 'RTO';
-              const payable = toMoney(forwardCharge + rtoCharge);
-              const rtoNote = redispatchAllowed
-                ? `Order returned to seller. Pay Rs. ${payable.toLocaleString('en-IN')} (forward Rs. ${toMoney(forwardCharge).toLocaleString('en-IN')} + RTO Rs. ${toMoney(rtoCharge).toLocaleString('en-IN')}) to re-dispatch, or request a refund.`
-                : 'Order returned to seller again. This order can now only be refunded.';
-              // Upsert so a repeat RTO refreshes the note/status instead of leaving the
-              // previous cycle's "paid to re-dispatch" note stale.
-              const existingRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction });
-              const rtoRefundFields = {
-                amount: 0,
-                status: 'RTO Action Required',
-                payment_method: REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-                note: rtoNote,
-                processed_at: null,
-              };
-              if (existingRtoRefund) {
-                await existingRtoRefund.update(rtoRefundFields, { transaction });
-              } else {
-                await OrderRefund.create({ order_id: order.id, refund_type: REFUND_TYPE.RTO, ...rtoRefundFields }, { transaction });
-              }
             }
           }
         }
@@ -1027,6 +1028,9 @@ class ShipRocketController {
         await rto.update({ resolution: RTO_RESOLUTION.REDISPATCHED }, { transaction });
         await order.update({ status: 'Processing', cancelled_at: null }, { transaction });
         await recordStatus(order.id, 'RTO', 'Processing', req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER, 'RTO redispatch paid', transaction);
+        // A prepaid RTO no longer pre-creates an order_refunds row, so there is normally
+        // nothing to close out here. Legacy orders that still carry the old placeholder
+        // get it retired (0 rows updated otherwise).
         await OrderRefund.update(
           { status: REFUND_STATUS.NOT_REQUIRED, note: 'Customer paid to re-dispatch the order.' },
           { where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction },
@@ -1130,15 +1134,24 @@ class ShipRocketController {
       await rto.update({ resolution: RTO_RESOLUTION.ABANDONED }, { transaction });
       await order.update({ status: 'Seller Cancelled', cancelled_at: new Date() }, { transaction });
       await recordStatus(order.id, 'RTO', 'Seller Cancelled', req.userRole === 'admin' ? ACTOR.ADMIN : ACTOR.CUSTOMER, 'RTO abandoned — refund', transaction);
-      await OrderRefund.update(
-        {
-          amount: refund,
-          status: refundStatus,
-          ...(refundStatus === REFUND_STATUS.COMPLETED ? { processed_at: new Date() } : {}),
-          note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${platformFee.toLocaleString('en-IN')} platform fee + Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics)${walletNote}.`,
-        },
-        { where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction },
-      );
+      // This is the moment a refund is actually decided, so this is where the
+      // order_refunds row is born. Upsert rather than update: a prepaid RTO no longer
+      // pre-creates a placeholder, but legacy orders (and COD) may already have one.
+      const rtoRefundFields = {
+        amount: refund,
+        status: refundStatus,
+        payment_method: REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
+        processed_at: refundStatus === REFUND_STATUS.COMPLETED ? new Date() : null,
+        note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${platformFee.toLocaleString('en-IN')} platform fee + Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics)${walletNote}.`,
+      };
+      const existingRtoRefund = await OrderRefund.findOne({
+        where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction,
+      });
+      if (existingRtoRefund) {
+        await existingRtoRefund.update(rtoRefundFields, { transaction });
+      } else {
+        await OrderRefund.create({ order_id: order.id, refund_type: REFUND_TYPE.RTO, ...rtoRefundFields }, { transaction });
+      }
 
       await transaction.commit();
       committed = true;

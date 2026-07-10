@@ -1597,7 +1597,6 @@ class OrderController {
           const fwdCharge = toMoney(fwd.forward_charge) || toMoney(fwdRateOnly + fwdWhatsappCharge);
           const rtoCharge = toMoney([cd.rto_charges, cd.rto_charge].find((v) => Number(v) > 0) || 0);
           let codWalletRefund = 0;
-          let redispatchAllowed = true;
           if (isCodOrder) {
             const rtoEvent = await RtoEvent.create({
               shipment_id: fwd.id, order_id: order.id, payment_method: 'COD',
@@ -1629,41 +1628,31 @@ class OrderController {
               }
             }
             updatePayload.cancelled_at = new Date();
+            // COD RTO is terminal and the wallet credit is returned right here, so this
+            // IS a real refund — record it.
+            const codRtoRefundFields = {
+              amount: codWalletRefund,
+              status: codWalletRefund > 0 ? REFUND_STATUS.COMPLETED : REFUND_STATUS.NOT_REQUIRED,
+              payment_method: REFUND_PAYMENT_METHOD.NOT_REQUIRED,
+              processed_at: codWalletRefund > 0 ? new Date() : null,
+              note: codWalletRefund > 0
+                ? `COD order returned to seller. No payment was collected. Rs. ${codWalletRefund.toLocaleString('en-IN')} wallet credit returned to your wallet.`
+                : 'COD order returned to seller. No payment was collected.',
+            };
+            const existingCodRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction: t });
+            if (existingCodRtoRefund) {
+              await existingCodRtoRefund.update(codRtoRefundFields, { transaction: t });
+            } else {
+              await OrderRefund.create({ order_id: order.id, refund_type: REFUND_TYPE.RTO, ...codRtoRefundFields }, { transaction: t });
+            }
           } else {
-            // A repeat RTO (already re-dispatched once) is refund-only.
-            const priorRedispatch = await RtoEvent.count({
-              where: { order_id: order.id, resolution: RTO_RESOLUTION.REDISPATCHED }, transaction: t,
-            });
-            redispatchAllowed = priorRedispatch === 0;
+            // Prepaid: nothing is refunded yet and the customer hasn't chosen between
+            // re-dispatch and refund, so NO order_refunds row is created here. It is
+            // written only when a refund is actually requested (resolveRto → abandon).
             await RtoEvent.create({
               shipment_id: fwd.id, order_id: order.id, payment_method: 'Prepaid',
               forward_charge_to_recover: fwdCharge, rto_charge: rtoCharge, resolution: RTO_RESOLUTION.AWAITING_PAYMENT,
             }, { transaction: t });
-            updatePayload.payment_status = 'Refund Pending';
-          }
-          // Upsert the RTO refund so a repeat RTO refreshes the note/status instead of
-          // leaving the previous cycle's "paid to re-dispatch" note stale.
-          const prepaidRtoNote = redispatchAllowed
-            ? `Order returned to seller. Pay Rs. ${toMoney(fwdCharge + rtoCharge).toLocaleString('en-IN')} to re-dispatch, or request a refund.`
-            : 'Order returned to seller again. This order can now only be refunded.';
-          const rtoRefundFields = {
-            amount: isCodOrder ? codWalletRefund : 0,
-            status: isCodOrder
-              ? (codWalletRefund > 0 ? REFUND_STATUS.COMPLETED : REFUND_STATUS.NOT_REQUIRED)
-              : 'RTO Action Required',
-            payment_method: isCodOrder ? REFUND_PAYMENT_METHOD.NOT_REQUIRED : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-            processed_at: (isCodOrder && codWalletRefund > 0) ? new Date() : null,
-            note: isCodOrder
-              ? (codWalletRefund > 0
-                ? `COD order returned to seller. No payment was collected. Rs. ${codWalletRefund.toLocaleString('en-IN')} wallet credit returned to your wallet.`
-                : 'COD order returned to seller. No payment was collected.')
-              : prepaidRtoNote,
-          };
-          const existingRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction: t });
-          if (existingRtoRefund) {
-            await existingRtoRefund.update(rtoRefundFields, { transaction: t });
-          } else {
-            await OrderRefund.create({ order_id: order.id, refund_type: REFUND_TYPE.RTO, ...rtoRefundFields }, { transaction: t });
           }
         }
       }
