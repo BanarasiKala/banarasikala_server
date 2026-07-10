@@ -38,6 +38,7 @@ const { ensureOrderTransactionTables, REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT
 const {
   ensureOrderModelV2Tables, SHIPMENT_TYPE, SHIPMENT_STATUS, ACTOR,
   LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE, RTO_RESOLUTION,
+  RTO_REDISPATCH_WINDOW_MS, rtoEventTime, isWithinRedispatchWindow,
 } = require('../utils/orderModelV2');
 const RtoEvent = require('../models/RtoEvent');
 const {
@@ -162,6 +163,12 @@ const hydrateV2Fields = (json) => {
   if (latestRto) {
     const forwardCharge = Number(latestRto.forward_charge_to_recover) || 0;
     const rtoCharge = Number(latestRto.rto_charge) || 0;
+    // Re-dispatch is offered only while BOTH hold:
+    //  · the order hasn't already been re-dispatched once (a repeat RTO is refund-only)
+    //  · we're still inside the window that opened when the parcel came back to us
+    const alreadyRedispatched = rtoEvents.some((e) => e.resolution === RTO_RESOLUTION.REDISPATCHED);
+    const inRedispatchWindow = isWithinRedispatchWindow(latestRto);
+    const raisedAt = rtoEventTime(latestRto);
     json.rto_action = {
       event_id: latestRto.id,
       payment_method: latestRto.payment_method,
@@ -169,9 +176,12 @@ const hydrateV2Fields = (json) => {
       forward_charge: Math.round(forwardCharge * 100) / 100,
       rto_charge: Math.round(rtoCharge * 100) / 100,
       redispatch_fee: Math.round((forwardCharge + rtoCharge) * 100) / 100,
-      // A repeat RTO — the order was already re-dispatched once — is refund-only; no
-      // second re-dispatch is offered.
-      redispatch_allowed: !rtoEvents.some((e) => e.resolution === 'REDISPATCHED'),
+      returned_at: raisedAt > 0 ? new Date(raisedAt).toISOString() : null,
+      redispatch_window_ends_at: raisedAt > 0 ? new Date(raisedAt + RTO_REDISPATCH_WINDOW_MS).toISOString() : null,
+      redispatch_allowed: !alreadyRedispatched && inRedispatchWindow,
+      redispatch_blocked_reason: alreadyRedispatched
+        ? 'already_redispatched'
+        : (!inRedispatchWindow ? 'window_expired' : null),
       // Only a prepaid RTO awaiting the customer's choice is actionable.
       awaiting: latestRto.resolution === 'AWAITING_PAYMENT',
     };

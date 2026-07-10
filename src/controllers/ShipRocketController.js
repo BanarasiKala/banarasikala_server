@@ -27,6 +27,7 @@ const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/
 const {
   SHIPMENT_TYPE, SHIPMENT_STATUS, RTO_RESOLUTION, ACTOR,
   LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE,
+  RTO_REDISPATCH_WINDOW_DAYS, isWithinRedispatchWindow,
 } = require('../utils/orderModelV2');
 const { appendEntry, getOrderBalance, deriveOrderTotals } = require('../services/orderLedgerService');
 const OrderLedger = require('../models/OrderLedger');
@@ -980,6 +981,13 @@ class ShipRocketController {
         if (priorRedispatch > 0) {
           await transaction.rollback();
           return res.status(400).json({ message: 'This order was already re-dispatched once and can now only be refunded.' });
+        }
+        // The re-dispatch window opened when the parcel came back to us and has closed.
+        if (!isWithinRedispatchWindow(rto)) {
+          await transaction.rollback();
+          return res.status(400).json({
+            message: `The ${RTO_REDISPATCH_WINDOW_DAYS}-day window to re-dispatch this order has closed. It can now only be refunded.`,
+          });
         }
         // Customer paid the redispatch fee (forward + RTO). Record charges + payment.
         if (F > 0) await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.SHIPPING_CHARGE, amount: F, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'Redispatch: forward shipping' }, transaction);

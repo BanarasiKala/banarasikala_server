@@ -66,6 +66,22 @@ const RTO_RESOLUTION = Object.freeze({
   PRODUCT_RETURNED_COD_BLOCKED: 'PRODUCT_RETURNED_COD_BLOCKED',
 });
 
+// How long after a parcel is returned to the seller (the rto_events row is raised on
+// the "RTO Delivered" scan) the customer may still pay to have it re-dispatched.
+// Once the window closes the order can only be refunded.
+const RTO_REDISPATCH_WINDOW_DAYS = 7;
+const RTO_REDISPATCH_WINDOW_MS = RTO_REDISPATCH_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+/** ms timestamp of the rto_events row (models are `underscored`: attr is createdAt). */
+const rtoEventTime = (rtoEvent) =>
+  new Date(rtoEvent?.created_at || rtoEvent?.createdAt || 0).getTime();
+
+/** Is a re-dispatch still offerable for this RTO event? (time window only) */
+const isWithinRedispatchWindow = (rtoEvent, now = Date.now()) => {
+  const raisedAt = rtoEventTime(rtoEvent);
+  return raisedAt > 0 && (now - raisedAt) <= RTO_REDISPATCH_WINDOW_MS;
+};
+
 const RETURN_TYPE = Object.freeze({ PARTIAL: 'PARTIAL', FULL: 'FULL' });
 
 const RETURN_STATUS = Object.freeze({
@@ -185,6 +201,10 @@ module.exports = {
   SHIPMENT_TYPE,
   SHIPMENT_STATUS,
   RTO_RESOLUTION,
+  RTO_REDISPATCH_WINDOW_DAYS,
+  RTO_REDISPATCH_WINDOW_MS,
+  rtoEventTime,
+  isWithinRedispatchWindow,
   RETURN_TYPE,
   RETURN_STATUS,
   LEDGER_ENTRY_TYPE,
