@@ -127,6 +127,16 @@ const hydrateV2Fields = (json) => {
   const latestRto = rtoEvents
     .slice()
     .sort((a, b) => rowTime(b) - rowTime(a))[0] || null;
+
+  // The 24h cancellation window normally starts at order placement. A re-dispatch
+  // re-enters Processing possibly days later (after a full RTO round trip), so its
+  // window restarts at the re-dispatch moment instead of the original placement.
+  const lastRedispatchedAt = rtoEvents
+    .filter((e) => e.resolution === RTO_RESOLUTION.REDISPATCHED)
+    .map((e) => e.updatedAt || e.updated_at)
+    .filter(Boolean)
+    .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
+  json.cancel_window_started_at = lastRedispatchedAt || json.createdAt;
   if (latestRto) {
     const forwardCharge = Number(latestRto.forward_charge_to_recover) || 0;
     const rtoCharge = Number(latestRto.rto_charge) || 0;
@@ -1270,11 +1280,26 @@ class OrderController {
         return res.status(400).json({ message: 'Order has already been dispatched and can no longer be cancelled.' });
       }
 
-      const createdAt = new Date(order.createdAt);
-      const hoursSinceOrder = (Date.now() - createdAt.getTime()) / (1000 * 60 * 60);
-      if (hoursSinceOrder > 24) {
+      // The 24h cancellation window normally starts at order placement. A re-dispatch
+      // re-enters Processing possibly days later (after a full RTO round trip), so its
+      // window restarts at the re-dispatch moment instead of the original placement.
+      const redispatchEvents = await RtoEvent.findAll({
+        where: { order_id: order.id, resolution: RTO_RESOLUTION.REDISPATCHED },
+        transaction: t,
+      });
+      const wasRedispatched = redispatchEvents.length > 0;
+      const lastRedispatchedAt = redispatchEvents
+        .map((e) => e.updatedAt)
+        .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null;
+      const cancelWindowStart = new Date(lastRedispatchedAt || order.createdAt);
+      const hoursSinceWindowStart = (Date.now() - cancelWindowStart.getTime()) / (1000 * 60 * 60);
+      if (hoursSinceWindowStart > 24) {
         await t.rollback();
-        return res.status(400).json({ message: 'Cancellation is available only within 24 hours of placing the order.' });
+        return res.status(400).json({
+          message: wasRedispatched
+            ? 'Cancellation is available only within 24 hours of the re-dispatch.'
+            : 'Cancellation is available only within 24 hours of placing the order.',
+        });
       }
 
       // Restock all non-cancelled items
@@ -1339,12 +1364,30 @@ class OrderController {
       const prevStatus = order.status;
       const isCod = String(order.payment_method || 'COD').toUpperCase() === 'COD';
 
+      // A cancellation on an order that was previously RTO'd and re-dispatched keeps
+      // back money a plain cancellation wouldn't: the forward + RTO charge paid to
+      // re-dispatch (already spent on logistics either way) plus, only in this
+      // scenario, the platform fee and gift charge. A first-time cancel (never RTO'd)
+      // is unaffected and still refunds everything paid. (redispatchEvents/wasRedispatched
+      // computed above for the cancellation window check.)
+      let nonRefundable = 0;
+      if (!isCod && wasRedispatched) {
+        const redispatchFeePaid = redispatchEvents.reduce(
+          (sum, e) => sum + Number(e.forward_charge_to_recover || 0) + Number(e.rto_charge || 0),
+          0,
+        );
+        const orderTotals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction: t }));
+        nonRefundable = redispatchFeePaid + Number(orderTotals.platform_fee || 0) + Number(orderTotals.gift_charge || 0);
+      }
+
       // Reverse the order on the ledger and (prepaid) record the refund.
-      const { refundAmount, walletRefund } = await settleCancellation({ orderId: order.id, isCod, transaction: t });
+      const { refundAmount, walletRefund } = await settleCancellation({ orderId: order.id, isCod, transaction: t, nonRefundable });
       const paidAmount = refundAmount;
       let refundNote = isCod
         ? 'COD order cancelled. No online payment refund is needed.'
-        : `Refund of Rs. ${paidAmount.toLocaleString('en-IN')} will be processed in 1-2 days.`;
+        : wasRedispatched
+          ? `Refund of Rs. ${paidAmount.toLocaleString('en-IN')} will be processed in 1-2 days (after deducting the re-dispatch logistics, platform fee and gift charge).`
+          : `Refund of Rs. ${paidAmount.toLocaleString('en-IN')} will be processed in 1-2 days.`;
       if (reason && reason.trim()) refundNote += ` | Reason: ${reason.trim()}`;
 
       await order.update({

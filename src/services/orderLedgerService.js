@@ -170,9 +170,16 @@ const appendEntry = async (orderId, entry, transaction) => {
  *   COD     → zero the uncollected balance (nothing to refund).
  * Wallet credit used on the order is reported via walletRefund; the caller
  * credits it back to the customer's wallet (applies to COD orders too).
+ *
+ * `nonRefundable` (prepaid only) lets the caller keep back money already spent
+ * that a plain cancellation shouldn't return — used when a previously RTO'd
+ * order was re-dispatched and is now being cancelled: the paid-again forward +
+ * RTO logistics charge is gone regardless, and (only in that scenario) the
+ * platform fee and gift charge are kept too. A first-time cancellation (never
+ * RTO'd) is unaffected and still refunds everything paid.
  * Returns { refundAmount, walletRefund }.
  */
-const settleCancellation = async ({ orderId, isCod, transaction }) => {
+const settleCancellation = async ({ orderId, isCod, transaction, nonRefundable = 0 }) => {
   const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: orderId }, transaction }));
 
   if (isCod) {
@@ -181,7 +188,7 @@ const settleCancellation = async ({ orderId, isCod, transaction }) => {
     }
     return { refundAmount: 0, walletRefund: totals.wallet_amount };
   }
-  const refundAmount = round(totals.amount_paid);
+  const refundAmount = round(Math.max(0, totals.amount_paid - round(nonRefundable)));
   if (refundAmount > 0) {
     await appendEntry(orderId, { type: T.PRODUCT_CHARGE, amount: refundAmount, direction: D.CREDIT, referenceType: R.ORDER, note: 'Order cancelled — value reversed' }, transaction);
     const refLedger = await appendEntry(orderId, { type: T.REFUND, amount: refundAmount, direction: D.DEBIT, referenceType: R.ORDER, note: 'Cancellation refund' }, transaction);
