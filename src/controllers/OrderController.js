@@ -586,8 +586,11 @@ class OrderController {
         }
       }
 
+      // COD already lets the customer pay cash on arrival — wallet credit is
+      // prepaid-only. Enforced here too (not just client-side) so a tampered
+      // request can't redeem wallet balance against a COD order.
       let walletDebit = 0;
-      if (Number(wallet_amount || 0) > 0) {
+      if (normalizedPaymentMethod !== 'COD' && Number(wallet_amount || 0) > 0) {
         if (!customer) {
           await t.rollback();
           return res.status(400).json({ message: 'Wallet can be used only by logged in customers.' });
