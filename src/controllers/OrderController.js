@@ -80,6 +80,12 @@ const ORDER_V2_INCLUDES = [
   { model: RtoEvent, as: 'RtoEvents' },
 ];
 
+// Row timestamp from a toJSON()'d association. The models are `underscored`, which
+// maps the COLUMN to created_at but leaves the Sequelize ATTRIBUTE as `createdAt` —
+// so toJSON() emits `createdAt`. Reading only `created_at` yields undefined, which
+// made every "latest row" sort below a no-op (it silently returned the OLDEST row).
+const rowTime = (row) => new Date(row?.created_at || row?.createdAt || 0).getTime();
+
 // Rebuild the legacy order shape (address fields, money breakdown, AWB, status
 // timeline) from the V2 associations so the frontend contract is unchanged.
 const hydrateV2Fields = (json) => {
@@ -104,7 +110,7 @@ const hydrateV2Fields = (json) => {
   const shipments = Array.isArray(json.Shipments) ? json.Shipments : [];
   const forward = shipments
     .filter((s) => s.type === SHIPMENT_TYPE.FORWARD)
-    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0] || null;
+    .sort((a, b) => rowTime(b) - rowTime(a))[0] || null;
   if (forward) {
     json.shiprocket_order_id = forward.shiprocket_order_id;
     json.shiprocket_awb = forward.awb_number;
@@ -120,7 +126,7 @@ const hydrateV2Fields = (json) => {
   const rtoEvents = Array.isArray(json.RtoEvents) ? json.RtoEvents : [];
   const latestRto = rtoEvents
     .slice()
-    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0] || null;
+    .sort((a, b) => rowTime(b) - rowTime(a))[0] || null;
   if (latestRto) {
     const forwardCharge = Number(latestRto.forward_charge_to_recover) || 0;
     const rtoCharge = Number(latestRto.rto_charge) || 0;
@@ -131,6 +137,9 @@ const hydrateV2Fields = (json) => {
       forward_charge: Math.round(forwardCharge * 100) / 100,
       rto_charge: Math.round(rtoCharge * 100) / 100,
       redispatch_fee: Math.round((forwardCharge + rtoCharge) * 100) / 100,
+      // A repeat RTO — the order was already re-dispatched once — is refund-only; no
+      // second re-dispatch is offered.
+      redispatch_allowed: !rtoEvents.some((e) => e.resolution === 'REDISPATCHED'),
       // Only a prepaid RTO awaiting the customer's choice is actionable.
       awaiting: latestRto.resolution === 'AWAITING_PAYMENT',
     };
@@ -140,10 +149,10 @@ const hydrateV2Fields = (json) => {
   const history = Array.isArray(json.StatusHistory) ? json.StatusHistory : [];
   json.status_history = history
     .slice()
-    .sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0))
+    .sort((a, b) => rowTime(a) - rowTime(b))
     .map((h) => ({
       status: h.to_status,
-      timestamp: h.created_at,
+      timestamp: h.created_at || h.createdAt,
       actor: String(h.actor || '').toLowerCase(),
       note: h.reason || null,
     }));
@@ -194,7 +203,7 @@ const serializeOrder = (order, feedbackRows = [], actionRows = []) => {
     feedback: feedbackByItem.get(`${json.id}:${item.id}:${item.product_id}`) || null,
   }));
   // Expose refunds array and flatten the latest one to top-level for frontend compat
-  const refunds = (json.Refunds || []).slice().sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  const refunds = (json.Refunds || []).slice().sort((a, b) => rowTime(b) - rowTime(a));
   json.refunds = refunds;
   const latestRefund = refunds[0] || null;
   if (latestRefund) {
@@ -1488,6 +1497,7 @@ class OrderController {
           const fwdCharge = toMoney(fwd.forward_charge) || toMoney(fwdRateOnly + fwdWhatsappCharge);
           const rtoCharge = toMoney([cd.rto_charges, cd.rto_charge].find((v) => Number(v) > 0) || 0);
           let codWalletRefund = 0;
+          let redispatchAllowed = true;
           if (isCodOrder) {
             const rtoEvent = await RtoEvent.create({
               shipment_id: fwd.id, order_id: order.id, payment_method: 'COD',
@@ -1520,28 +1530,40 @@ class OrderController {
             }
             updatePayload.cancelled_at = new Date();
           } else {
+            // A repeat RTO (already re-dispatched once) is refund-only.
+            const priorRedispatch = await RtoEvent.count({
+              where: { order_id: order.id, resolution: RTO_RESOLUTION.REDISPATCHED }, transaction: t,
+            });
+            redispatchAllowed = priorRedispatch === 0;
             await RtoEvent.create({
               shipment_id: fwd.id, order_id: order.id, payment_method: 'Prepaid',
               forward_charge_to_recover: fwdCharge, rto_charge: rtoCharge, resolution: RTO_RESOLUTION.AWAITING_PAYMENT,
             }, { transaction: t });
             updatePayload.payment_status = 'Refund Pending';
           }
+          // Upsert the RTO refund so a repeat RTO refreshes the note/status instead of
+          // leaving the previous cycle's "paid to re-dispatch" note stale.
+          const prepaidRtoNote = redispatchAllowed
+            ? `Order returned to seller. Pay Rs. ${toMoney(fwdCharge + rtoCharge).toLocaleString('en-IN')} to re-dispatch, or request a refund.`
+            : 'Order returned to seller again. This order can now only be refunded.';
+          const rtoRefundFields = {
+            amount: isCodOrder ? codWalletRefund : 0,
+            status: isCodOrder
+              ? (codWalletRefund > 0 ? REFUND_STATUS.COMPLETED : REFUND_STATUS.NOT_REQUIRED)
+              : 'RTO Action Required',
+            payment_method: isCodOrder ? REFUND_PAYMENT_METHOD.NOT_REQUIRED : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
+            processed_at: (isCodOrder && codWalletRefund > 0) ? new Date() : null,
+            note: isCodOrder
+              ? (codWalletRefund > 0
+                ? `COD order returned to seller. No payment was collected. Rs. ${codWalletRefund.toLocaleString('en-IN')} wallet credit returned to your wallet.`
+                : 'COD order returned to seller. No payment was collected.')
+              : prepaidRtoNote,
+          };
           const existingRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction: t });
-          if (!existingRtoRefund) {
-            await OrderRefund.create({
-              order_id: order.id, refund_type: REFUND_TYPE.RTO,
-              amount: isCodOrder ? codWalletRefund : 0,
-              status: isCodOrder
-                ? (codWalletRefund > 0 ? REFUND_STATUS.COMPLETED : REFUND_STATUS.NOT_REQUIRED)
-                : 'RTO Action Required',
-              payment_method: isCodOrder ? REFUND_PAYMENT_METHOD.NOT_REQUIRED : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-              ...(isCodOrder && codWalletRefund > 0 ? { processed_at: new Date() } : {}),
-              note: isCodOrder
-                ? (codWalletRefund > 0
-                  ? `COD order returned to seller. No payment was collected. Rs. ${codWalletRefund.toLocaleString('en-IN')} wallet credit returned to your wallet.`
-                  : 'COD order returned to seller. No payment was collected.')
-                : `Order returned to seller. Pay Rs. ${toMoney(fwdCharge + rtoCharge).toLocaleString('en-IN')} to re-dispatch, or request a refund.`,
-            }, { transaction: t });
+          if (existingRtoRefund) {
+            await existingRtoRefund.update(rtoRefundFields, { transaction: t });
+          } else {
+            await OrderRefund.create({ order_id: order.id, refund_type: REFUND_TYPE.RTO, ...rtoRefundFields }, { transaction: t });
           }
         }
       }

@@ -799,6 +799,12 @@ class ShipRocketController {
               // Prepaid: record the event with the logistics owed. The ledger
               // money is posted at resolve time (redispatch payment vs. abandon),
               // so the charges aren't stranded if the customer chooses a refund.
+              // A repeat RTO (already re-dispatched once) is refund-only.
+              const priorRedispatch = await RtoEvent.count({
+                where: { order_id: order.id, resolution: RTO_RESOLUTION.REDISPATCHED },
+                transaction,
+              });
+              const redispatchAllowed = priorRedispatch === 0;
               await RtoEvent.create({
                 shipment_id: forwardShipment.id,
                 order_id: order.id,
@@ -808,14 +814,24 @@ class ShipRocketController {
                 resolution: RTO_RESOLUTION.AWAITING_PAYMENT,
               }, { transaction });
               orderStatus = 'RTO';
+              const payable = toMoney(forwardCharge + rtoCharge);
+              const rtoNote = redispatchAllowed
+                ? `Order returned to seller. Pay Rs. ${payable.toLocaleString('en-IN')} (forward Rs. ${toMoney(forwardCharge).toLocaleString('en-IN')} + RTO Rs. ${toMoney(rtoCharge).toLocaleString('en-IN')}) to re-dispatch, or request a refund.`
+                : 'Order returned to seller again. This order can now only be refunded.';
+              // Upsert so a repeat RTO refreshes the note/status instead of leaving the
+              // previous cycle's "paid to re-dispatch" note stale.
               const existingRtoRefund = await OrderRefund.findOne({ where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction });
-              if (!existingRtoRefund) {
-                const payable = toMoney(forwardCharge + rtoCharge);
-                await OrderRefund.create({
-                  order_id: order.id, refund_type: REFUND_TYPE.RTO, amount: 0,
-                  status: 'RTO Action Required', payment_method: REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
-                  note: `Order returned to seller. Pay Rs. ${payable.toLocaleString('en-IN')} (forward Rs. ${toMoney(forwardCharge).toLocaleString('en-IN')} + RTO Rs. ${toMoney(rtoCharge).toLocaleString('en-IN')}) to re-dispatch, or request a refund.`,
-                }, { transaction });
+              const rtoRefundFields = {
+                amount: 0,
+                status: 'RTO Action Required',
+                payment_method: REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
+                note: rtoNote,
+                processed_at: null,
+              };
+              if (existingRtoRefund) {
+                await existingRtoRefund.update(rtoRefundFields, { transaction });
+              } else {
+                await OrderRefund.create({ order_id: order.id, refund_type: REFUND_TYPE.RTO, ...rtoRefundFields }, { transaction });
               }
             }
           }
@@ -955,6 +971,16 @@ class ShipRocketController {
       const payable = toMoney(F + R);
 
       if (action === 'redispatch') {
+        // A repeat RTO is refund-only — the order was already re-dispatched once and
+        // came back again, so a second re-dispatch is not offered.
+        const priorRedispatch = await RtoEvent.count({
+          where: { order_id: order.id, resolution: RTO_RESOLUTION.REDISPATCHED },
+          transaction,
+        });
+        if (priorRedispatch > 0) {
+          await transaction.rollback();
+          return res.status(400).json({ message: 'This order was already re-dispatched once and can now only be refunded.' });
+        }
         // Customer paid the redispatch fee (forward + RTO). Record charges + payment.
         if (F > 0) await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.SHIPPING_CHARGE, amount: F, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'Redispatch: forward shipping' }, transaction);
         if (R > 0) await appendEntry(order.id, { type: LEDGER_ENTRY_TYPE.RTO_CHARGE, amount: R, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RTO_EVENT, referenceId: rto.id, note: 'Redispatch: RTO charge' }, transaction);
