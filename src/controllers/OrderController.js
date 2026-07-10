@@ -86,6 +86,28 @@ const ORDER_V2_INCLUDES = [
 // made every "latest row" sort below a no-op (it silently returned the OLDEST row).
 const rowTime = (row) => new Date(row?.created_at || row?.createdAt || 0).getTime();
 
+// Money a cancellation keeps back rather than refunding. A cancel after a PAID
+// re-dispatch retains the re-dispatch logistics (forward + RTO — already spent either
+// way) plus, only in that case, the platform fee and gift charge. A first-time cancel
+// (never RTO'd) keeps back nothing and still refunds everything paid. COD has nothing
+// to refund at all.
+//
+// Shared by hydrateV2Fields (the estimate the cancel modal shows) and cancelOrder
+// (what is actually refunded), so the displayed figure can never drift from reality.
+const computeCancellationNonRefundable = ({ isCod, redispatchedEvents = [], platformFee = 0, giftCharge = 0 }) => {
+  const wasRedispatched = redispatchedEvents.length > 0;
+  if (isCod || !wasRedispatched) {
+    return { wasRedispatched, redispatchFee: 0, platformFee: 0, giftCharge: 0, total: 0 };
+  }
+  const redispatchFee = redispatchedEvents.reduce(
+    (sum, e) => sum + Number(e.forward_charge_to_recover || 0) + Number(e.rto_charge || 0),
+    0,
+  );
+  const pf = Number(platformFee || 0);
+  const gc = Number(giftCharge || 0);
+  return { wasRedispatched, redispatchFee, platformFee: pf, giftCharge: gc, total: redispatchFee + pf + gc };
+};
+
 // Rebuild the legacy order shape (address fields, money breakdown, AWB, status
 // timeline) from the V2 associations so the frontend contract is unchanged.
 const hydrateV2Fields = (json) => {
@@ -154,6 +176,28 @@ const hydrateV2Fields = (json) => {
       awaiting: latestRto.resolution === 'AWAITING_PAYMENT',
     };
   }
+
+  // Mirror of cancelOrder()'s refund math, so the cancel modal shows exactly what the
+  // backend will actually refund instead of re-deriving it (and drifting). A cancel
+  // after a paid re-dispatch keeps back the re-dispatch logistics plus — only in that
+  // case — the platform fee and gift charge. A first-time cancel refunds everything.
+  const isCodOrder = String(json.payment_method || '').toUpperCase() === 'COD';
+  const deductions = computeCancellationNonRefundable({
+    isCod: isCodOrder,
+    redispatchedEvents: rtoEvents.filter((e) => e.resolution === 'REDISPATCHED'),
+    platformFee: json.platform_fee,
+    giftCharge: json.gift_charge,
+  });
+  json.cancellation_refund = {
+    was_redispatched: deductions.wasRedispatched,
+    amount_paid: roundMoney(json.amount_paid),
+    redispatch_fee: roundMoney(deductions.redispatchFee),
+    platform_fee: roundMoney(deductions.platformFee),
+    gift_charge: roundMoney(deductions.giftCharge),
+    non_refundable: roundMoney(deductions.total),
+    refund_estimate: isCodOrder ? 0 : roundMoney(Math.max(0, Number(json.amount_paid || 0) - deductions.total)),
+    wallet_refund: roundMoney(json.wallet_amount),
+  };
 
   // Status timeline → order_status_history (legacy {status,timestamp,actor,note} shape)
   const history = Array.isArray(json.StatusHistory) ? json.StatusHistory : [];
@@ -1265,17 +1309,18 @@ class OrderController {
         await t.rollback();
         return res.status(400).json({ message: `Order status has changed to "${order.status}" and it can no longer be cancelled.` });
       }
-      // Physical safety net: even within the allowed statuses, block once the
-      // parcel has actually left (courier picked up / in transit).
-      const dispatchedShipment = await Shipment.findOne({
-        where: {
-          order_id: order.id,
-          type: SHIPMENT_TYPE.FORWARD,
-          status: { [Op.in]: [SHIPMENT_STATUS.IN_TRANSIT, SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.RTO] },
-        },
+      // Physical safety net: even within the allowed statuses, block once the parcel
+      // has actually left (courier picked up / in transit). Only the CURRENT forward
+      // shipment counts — after a paid re-dispatch the superseded shipment is still
+      // parked at RTO, and matching it here would permanently block cancellation of
+      // the freshly created dispatch.
+      const latestForward = await Shipment.findOne({
+        where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD },
+        order: [['created_at', 'DESC']],
         transaction: t,
       });
-      if (dispatchedShipment) {
+      const DISPATCHED_SHIPMENT_STATUSES = [SHIPMENT_STATUS.IN_TRANSIT, SHIPMENT_STATUS.DELIVERED, SHIPMENT_STATUS.RTO];
+      if (latestForward && DISPATCHED_SHIPMENT_STATUSES.includes(latestForward.status)) {
         await t.rollback();
         return res.status(400).json({ message: 'Order has already been dispatched and can no longer be cancelled.' });
       }
@@ -1342,18 +1387,16 @@ class OrderController {
         });
       }
 
-      // Cancel the forward shipment on ShipRocket and mirror it on our
-      // shipment row. Best-effort: an SR hiccup never blocks the cancellation.
-      const fwdShipment = await Shipment.findOne({
-        where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD, shiprocket_order_id: { [Op.ne]: null } },
-        order: [['created_at', 'DESC']],
-        transaction: t,
-      });
+      // Cancel the CURRENT forward shipment on ShipRocket and mirror it on our shipment
+      // row. Scoped to `latestForward` (not "newest row that happens to have an SR id"),
+      // so a re-dispatch whose SR push failed can never make us cancel — and overwrite
+      // the RTO status of — the superseded shipment.
+      // Best-effort: an SR hiccup never blocks the cancellation.
       let shiprocketCancel = null;
-      if (fwdShipment?.shiprocket_order_id) {
+      if (latestForward?.shiprocket_order_id) {
         try {
-          shiprocketCancel = await ShipRocketService.cancelOrders([fwdShipment.shiprocket_order_id]);
-          await fwdShipment.update({ status: SHIPMENT_STATUS.CANCELLED }, { transaction: t });
+          shiprocketCancel = await ShipRocketService.cancelOrders([latestForward.shiprocket_order_id]);
+          await latestForward.update({ status: SHIPMENT_STATUS.CANCELLED }, { transaction: t });
         } catch (error) {
           console.error(`[ShipRocket] Cancel failed for order #${order.id}:`, error?.response?.data || error.message);
           shiprocketCancel = { warning: 'ShipRocket cancellation could not be confirmed automatically.' };
@@ -1372,12 +1415,13 @@ class OrderController {
       // computed above for the cancellation window check.)
       let nonRefundable = 0;
       if (!isCod && wasRedispatched) {
-        const redispatchFeePaid = redispatchEvents.reduce(
-          (sum, e) => sum + Number(e.forward_charge_to_recover || 0) + Number(e.rto_charge || 0),
-          0,
-        );
         const orderTotals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction: t }));
-        nonRefundable = redispatchFeePaid + Number(orderTotals.platform_fee || 0) + Number(orderTotals.gift_charge || 0);
+        nonRefundable = computeCancellationNonRefundable({
+          isCod,
+          redispatchedEvents: redispatchEvents,
+          platformFee: orderTotals.platform_fee,
+          giftCharge: orderTotals.gift_charge,
+        }).total;
       }
 
       // Reverse the order on the ledger and (prepaid) record the refund.

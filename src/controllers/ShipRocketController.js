@@ -994,6 +994,12 @@ class ShipRocketController {
           }, { transaction });
         }
 
+        // The shipment that came back is superseded by this re-dispatch. Capture its
+        // ShipRocket order id so we can close it out there (best-effort, post-commit)
+        // instead of leaving a stale order open on the SR dashboard.
+        const rtoShipment = await Shipment.findByPk(rto.shipment_id, { transaction });
+        const supersededSrOrderId = rtoShipment?.shiprocket_order_id || null;
+
         // New forward shipment (same order) from the current address + active items.
         const addr = await OrderAddress.findOne({ where: { order_id: order.id, is_current: true }, transaction });
         const items = await OrderItem.findAll({ where: { order_id: order.id, status: { [Op.notIn]: ['Cancelled', 'REMOVED'] } }, transaction });
@@ -1021,15 +1027,29 @@ class ShipRocketController {
         await transaction.commit();
         committed = true;
 
-        // Best-effort: push the new forward shipment to ShipRocket.
+        // Best-effort: close the superseded SR order, then push the new forward shipment.
         (async () => {
+          if (supersededSrOrderId) {
+            try {
+              await ShipRocketService.cancelOrders([supersededSrOrderId]);
+            } catch (cancelErr) {
+              // ShipRocket refuses to cancel an order already in a terminal state
+              // (RTO Delivered), which is the normal case here — the re-dispatch is
+              // what matters. Warn, don't error.
+              console.warn(`[ShipRocket] Could not cancel superseded order ${supersededSrOrderId} for #${order.id}:`, cancelErr?.response?.data || cancelErr.message);
+            }
+          }
           try {
             const srItems = items.map((i, idx) => ({ product_id: i.product_id, quantity: i.quantity, price: i.price, name: i.product_name || `Product ${idx + 1}`, sku: i.sku }));
             const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id } }));
+            // The ledger now carries the forward + RTO charge the customer just paid to
+            // re-dispatch. ShipRocket's declared order value must stay the goods value —
+            // the same total the original shipment used — so strip that fee back out.
+            const srOrderValue = toMoney(Math.max(0, totals.total_amount - payable));
             const srResult = await ShipRocketService.createOrder({
               // order_number overridden so the re-dispatch is a NEW, unique
               // ShipRocket channel order id (else ShipRocket rejects the duplicate).
-              order: { ...order.toJSON(), order_number: redispatchChannelId, address: addr?.line, city: addr?.city, pincode: addr?.pincode, phone: addr?.phone, state: addr?.state, total_amount: totals.total_amount, discount_amount: totals.discount_amount },
+              order: { ...order.toJSON(), order_number: redispatchChannelId, address: addr?.line, city: addr?.city, pincode: addr?.pincode, phone: addr?.phone, state: addr?.state, total_amount: srOrderValue, discount_amount: totals.discount_amount },
               items: srItems,
             });
             await shipment.update({
