@@ -394,10 +394,22 @@ const verifyRazorpayPayment = ({ orderId, paymentId, signature }) => {
   return expectedSignature === signature;
 };
 
+// products.weight is stored in GRAMS (a saree is ~450–900g), but every courier API and
+// every *_weight_kg field downstream expects KILOGRAMS. Mirror the exact heuristic the
+// storefront quotes with (CheckoutFlow / ProductDetail): treat anything above 5 as grams
+// and convert, so a value already given in kg (e.g. 0.9) is left alone.
+// Without this, a 450g saree was snapshotted as 450 KG — which made the return pickup
+// rate lookup quote an absurd figure that swallowed the customer's whole refund.
+const GRAMS_THRESHOLD_KG = 5;
+const toWeightKg = (value) => {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return raw > GRAMS_THRESHOLD_KG ? raw / 1000 : raw;
+};
+
 const getProductWeightKg = (product) => {
-  const rawWeight = Number(product?.weight);
-  if (!Number.isFinite(rawWeight) || rawWeight <= 0) return 0.5;
-  return rawWeight;
+  const weightKg = toWeightKg(product?.weight);
+  return weightKg > 0 ? weightKg : 0.5;
 };
 
 const buildItemShippingMeta = ({

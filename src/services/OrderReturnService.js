@@ -61,9 +61,21 @@ const reverseChargeFromShipment = (shipment) => {
 // quoted on, so both the return pickup rate quote AND the real ShipRocket
 // return-order weight declaration match what the customer was shown, instead
 // of understating the parcel with a box-weight-only figure.
+// Defensive: orders placed before the grams→kg fix snapshotted product_weight_kg in
+// GRAMS (a 450g saree stored as "450"), which made the pickup-rate lookup quote against
+// a 450 KG parcel and swallow the entire refund. Anything above this threshold cannot be
+// a real per-unit product weight, so treat it as grams — same heuristic the storefront
+// and getProductWeightKg use.
+const GRAMS_THRESHOLD_KG = 5;
+const normalizeWeightKg = (value) => {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return raw > GRAMS_THRESHOLD_KG ? raw / 1000 : raw;
+};
+
 const itemWeightKg = (item) => {
-  const productWeightKg = Number(item?.shipping_meta?.product_weight_kg);
-  return (Number.isFinite(productWeightKg) && productWeightKg > 0 ? productWeightKg : 0.5)
+  const productWeightKg = normalizeWeightKg(item?.shipping_meta?.product_weight_kg);
+  return (productWeightKg > 0 ? productWeightKg : 0.5)
     + Math.max(0, Number(config.packageWeightKg) || 0);
 };
 
