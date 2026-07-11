@@ -479,7 +479,10 @@ class OrderItemActionController {
         };
       });
 
-      payload.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+      // Newest request first. Sequelize's `underscored` maps the COLUMN to
+      // created_at but keeps the ATTRIBUTE as createdAt — read both.
+      const rowTime = (row) => new Date(row?.created_at || row?.createdAt || 0).getTime();
+      payload.sort((a, b) => rowTime(b) - rowTime(a));
 
       return res.status(200).json(payload);
     } catch (error) {
@@ -589,10 +592,13 @@ class OrderItemActionController {
         }
       }
 
-      // Status-history entry on any terminal outcome.
+      // Status-history entry on any terminal outcome — one line for the whole
+      // request, covering every item in it.
       if (isTerminal) {
         const prevOrder = await Order.findByPk(action.order_id, { transaction });
-        const historyNote = `${action.action_type} ${nextStatus.toLowerCase()} — qty ${action.quantity}${req.body.note ? ': ' + req.body.note : ''}`;
+        const totalQty = groupActions.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+        const itemCount = groupActions.length;
+        const historyNote = `${action.action_type} ${nextStatus.toLowerCase()} — ${itemCount} item${itemCount === 1 ? '' : 's'}, qty ${totalQty}${req.body.note ? ': ' + req.body.note : ''}`;
         await OrderStatusHistory.create({
           order_id: action.order_id,
           from_status: prevOrder?.status || null,
@@ -644,7 +650,9 @@ class OrderItemActionController {
       const replacementRequired = nextStatus === ACTION_STATUS.COMPLETED && action.action_type === ACTION_TYPES.EXCHANGE;
       return res.status(200).json({
         message: 'Request updated.',
-        action: serializeAction(action),
+        // `action` is the stale pre-update instance — report the rows we actually wrote.
+        action: serializeAction(primaryAction),
+        actions: groupActions.map(serializeAction),
         ...(replacementRequired ? { replacement_required: true } : {}),
       });
     } catch (error) {
@@ -677,17 +685,26 @@ class OrderItemActionController {
         await transaction.rollback();
         return res.status(400).json({ message: 'Refunds can be initiated for return requests only.' });
       }
-      if (action.status !== ACTION_STATUS.COMPLETED) {
+
+      // Settle the whole REQUEST, once. Every item in it is reversed in the
+      // ledger, but the customer is paid a single amount — the OrderRefund row's
+      // total. (Settling item by item paid the full total on the first item and
+      // then double-wrote the ledger on the rest.)
+      const groupActions = await loadActionGroup(action, { transaction, lock: true });
+      const primaryAction = groupActions[0];
+
+      if (groupActions.some((row) => row.status !== ACTION_STATUS.COMPLETED)) {
         await transaction.rollback();
-        return res.status(400).json({ message: 'Complete the return first — initiate the refund once the item is received.' });
+        return res.status(400).json({ message: 'Complete the return first — initiate the refund once the items are received.' });
       }
 
       // Idempotency: the product-reversal ledger entry is the settlement marker.
+      // A hit on ANY item of the request means the request is already settled.
       const alreadySettled = await OrderLedger.findOne({
         where: {
           entry_type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE,
           reference_type: LEDGER_REFERENCE_TYPE.RETURN,
-          reference_id: action.id,
+          reference_id: { [Op.in]: groupActions.map((row) => row.id) },
         },
         transaction,
       });
@@ -702,22 +719,51 @@ class OrderItemActionController {
         return res.status(404).json({ message: 'Order not found.' });
       }
       const isCodOrder = String(order.payment_method || '').toUpperCase() === 'COD';
-      const itemValue = roundMoney(Number(action.item_amount || 0));
-      const deductions = roundMoney(Number(action.forward_shipping_deduction || 0) + Number(action.reverse_shipping_deduction || 0));
-      const couponAdjustment = roundMoney(Number(action.meta?.coupon_adjustment || 0));
-      const returnRefundAmount = roundMoney(Math.max(0, Number(action.estimated_refund_amount ?? (itemValue - deductions - couponAdjustment))));
 
-      if (itemValue > 0) {
-        await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: itemValue, direction: LEDGER_DIRECTION.CREDIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: action.id, note: 'Return — product value reversed' }, transaction);
+      // Per-item reversal entries — the product value, pickup charge and coupon
+      // clawback belong to the item they came from.
+      let estimateTotal = 0;
+      for (const groupAction of groupActions) {
+        const itemValue = roundMoney(Number(groupAction.item_amount || 0));
+        const deductions = roundMoney(Number(groupAction.forward_shipping_deduction || 0) + Number(groupAction.reverse_shipping_deduction || 0));
+        const couponAdjustment = roundMoney(Number(groupAction.meta?.coupon_adjustment || 0));
+        estimateTotal = roundMoney(estimateTotal + Number(groupAction.estimated_refund_amount ?? (itemValue - deductions - couponAdjustment)));
+
+        if (itemValue > 0) {
+          await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: itemValue, direction: LEDGER_DIRECTION.CREDIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: groupAction.id, note: 'Return — product value reversed' }, transaction);
+        }
+        if (deductions > 0) {
+          await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.SHIPPING_CHARGE, amount: deductions, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: groupAction.id, note: 'Return — return pickup charge retained' }, transaction);
+        }
+        if (couponAdjustment > 0) {
+          await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.COUPON_DISCOUNT, amount: couponAdjustment, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: groupAction.id, note: 'Return — coupon benefit no longer earned by remaining items' }, transaction);
+        }
       }
-      if (deductions > 0) {
-        await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.SHIPPING_CHARGE, amount: deductions, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: action.id, note: 'Return — return pickup charge retained' }, transaction);
+
+      // ONE refund debit + ONE payout for the request. The OrderRefund row is the
+      // authority on what the customer is owed (it carries the full-return fees,
+      // which no single item's estimate knows about); the per-item estimates are
+      // only its pro-rata slices and are the fallback if the row is missing.
+      const refundRow = await OrderRefund.findOne({
+        where: { order_item_action_id: primaryAction.id },
+        transaction,
+      });
+      const returnRefundAmount = roundMoney(Math.max(
+        0,
+        refundRow ? Number(refundRow.amount || 0) : estimateTotal,
+      ));
+
+      // The gateway keeps its fee on the ORIGINAL transaction, so it is retained
+      // out of the refund. Without this entry the ledger would show the order
+      // still owing the customer that amount, because the per-item reversals
+      // credit back more than the refund debits.
+      const gatewayCharge = roundMoney(Number(refundRow?.breakdown?.payment_gateway_charge || 0));
+      if (gatewayCharge > 0) {
+        await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PAYMENT_FEE, amount: gatewayCharge, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: primaryAction.id, note: 'Return — payment gateway charge retained on the original transaction' }, transaction);
       }
-      if (couponAdjustment > 0) {
-        await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.COUPON_DISCOUNT, amount: couponAdjustment, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: action.id, note: 'Return — coupon benefit no longer earned by remaining items' }, transaction);
-      }
+
       if (returnRefundAmount > 0) {
-        const refLedger = await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.REFUND, amount: returnRefundAmount, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: action.id, note: 'Return refund' }, transaction);
+        const refLedger = await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.REFUND, amount: returnRefundAmount, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: primaryAction.id, note: 'Return refund' }, transaction);
         await RefundTransaction.create({
           order_id: action.order_id, ledger_entry_id: refLedger?.id || null,
           gateway: isCodOrder ? 'bank_transfer' : 'original_gateway', amount: returnRefundAmount, status: 'Pending',
@@ -731,7 +777,8 @@ class OrderItemActionController {
         try {
           const fullOrder = await Order.findByPk(action.order_id);
           if (!fullOrder) return;
-          const refund = await OrderRefund.findOne({ where: { order_item_action_id: action.id } });
+          // Keyed to the request's primary action — the row that owns the refund.
+          const refund = await OrderRefund.findOne({ where: { order_item_action_id: primaryAction.id } });
 
           // Wallet refund — wallet/subtotal sourced from the ledger. The refund
           // splits between the wallet and the original gateway (never both in
@@ -753,7 +800,8 @@ class OrderItemActionController {
               ? Math.min(walletTotal, refundAmt)
               : Math.min(walletTotal, refundAmt, Math.round((refundAmt / subtotal) * walletTotal * 100) / 100);
             if (walletShare > 0) {
-              const dedupeKey = `return_wallet:${action.id}`;
+              // Per REQUEST, not per item — one wallet credit however many items.
+              const dedupeKey = `return_wallet:${primaryAction.id}`;
               const existing = await WalletTransaction.findOne({ where: { dedupe_key: dedupeKey } });
               if (!existing) {
                 await WalletTransaction.create({
@@ -762,7 +810,7 @@ class OrderItemActionController {
                   type: 'RETURN_REFUND',
                   status: 'completed',
                   dedupe_key: dedupeKey,
-                  meta: { order_id: fullOrder.id, action_id: action.id },
+                  meta: { order_id: fullOrder.id, action_id: primaryAction.id, action_ids: groupActions.map((row) => row.id) },
                 });
                 await Customer.increment({ wallet_balance: walletShare }, { where: { id: fullOrder.customer_id } });
               }

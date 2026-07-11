@@ -589,9 +589,14 @@ const createReverseActions = async ({
   entries.forEach(({ action }) => action.set('request_group_id', firstActionId));
 
   if (actionType === ACTION_TYPES.RETURN) {
-    const totalRefund = roundMoney(
-      entries.reduce((sum, entry) => sum + Number(entry.calculation.estimated_refund_amount || 0), 0),
-    );
+    // The payable total is the figure computeReturnRefund quoted and the customer
+    // confirmed — NOT the sum of the per-item slices. On a FULL return the two
+    // differ by the payment-gateway charge: the per-item estimates only ever
+    // subtract the coupon adjustment and pickup share, so summing them would pay
+    // back the gateway charge we are meant to retain. (On a partial return the
+    // two are equal by construction, since the slices are a pro-rata split of
+    // exactly this number.)
+    const totalRefund = roundMoney(refundInfo.refundAmount);
     // Structured breakage, persisted so it can always be replayed to the
     // customer (order page) and admin, even if coupons/rates change later.
     await ensureRefundBreakdownColumn();
