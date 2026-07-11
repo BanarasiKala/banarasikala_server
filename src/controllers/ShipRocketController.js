@@ -29,7 +29,7 @@ const {
   LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE,
   RTO_REDISPATCH_WINDOW_DAYS, isWithinRedispatchWindow,
 } = require('../utils/orderModelV2');
-const { appendEntry, getOrderBalance, deriveOrderTotals } = require('../services/orderLedgerService');
+const { appendEntry, getOrderBalance, deriveOrderTotals, computeRtoAbandonRefund } = require('../services/orderLedgerService');
 const OrderLedger = require('../models/OrderLedger');
 const PaymentTransaction = require('../models/PaymentTransaction');
 const RefundTransaction = require('../models/RefundTransaction');
@@ -42,6 +42,36 @@ const courierMoney = (data, keys) => {
     if (d[k] !== undefined && d[k] !== null && d[k] !== '') return toMoney(d[k]);
   }
   return 0;
+};
+
+// Money keys of the courier rate card captured at checkout. rtoChargeOf / the COD math
+// read from these; without them a charge silently computes to 0.
+const RATE_CARD_MONEY_KEYS = [
+  'rate', 'freight_charge', 'courier_charge',
+  'rto_charges', 'rto_charge', 'rto_freight_charge',
+  'cod_charges', 'cod_charge', 'cod_multiplier', 'whatsapp_charges', 'whatsapp_charge',
+];
+
+// True only when selected_courier_data actually carries the rate card. The AWB-assigned
+// webhook OVERLAYS {courier_name, courier_company_id, awb_code, etd, awb_assigned_date}
+// onto whatever is already there — so a shipment created WITHOUT a rate card ends up
+// holding just those five keys. That looks populated but has no money fields, which is
+// how an RTO charge quietly became 0.
+const hasCourierRateCard = (data) => {
+  const d = data || {};
+  return RATE_CARD_MONEY_KEYS.some((k) => d[k] !== undefined && d[k] !== null && d[k] !== '');
+};
+
+// The order's rate card, resolved from the EARLIEST forward shipment that actually has
+// one (the original dispatch captured it at checkout). Resilient to shipments created by
+// paths that don't persist it (e.g. the admin pushOrder route).
+const findOrderRateCard = async (orderId, transaction) => {
+  const shipments = await Shipment.findAll({
+    where: { order_id: orderId, type: SHIPMENT_TYPE.FORWARD },
+    order: [['created_at', 'ASC']],
+    ...(transaction ? { transaction } : {}),
+  });
+  return shipments.find((s) => hasCourierRateCard(s.selected_courier_data))?.selected_courier_data || null;
 };
 // The forward charge to recover on an RTO is the full delivery charge the buyer was
 // quoted — base rate + WhatsApp charge (and the COD charge for a COD order) — which is
@@ -162,12 +192,15 @@ class ShipRocketController {
       }
       const awbCode = awbData?.response?.data?.awb_code || null;
 
-      // Record the forward shipment (V2)
+      // Record the forward shipment (V2). Carry the courier rate card across if the order
+      // already has one — without it an RTO on this shipment computes rto_charge = 0.
+      const pushRateCard = await findOrderRateCard(order.id);
       const shipment = await Shipment.create({
         order_id: order.id, address_id: address?.id || null, type: SHIPMENT_TYPE.FORWARD,
         status: awbCode ? SHIPMENT_STATUS.DISPATCHED : SHIPMENT_STATUS.CREATED,
         awb_number: awbCode ? String(awbCode) : null,
         shiprocket_order_id: srOrderId ? String(srOrderId) : null,
+        selected_courier_data: pushRateCard,
         forward_charge: totals.shipping_charge, dispatched_at: awbCode ? new Date() : null,
       });
       await ShipmentItem.bulkCreate(activeItems.map((oi) => ({ shipment_id: shipment.id, order_item_id: oi.id, quantity: oi.quantity })));
@@ -1018,9 +1051,17 @@ class ShipRocketController {
         const priorForwardCount = await Shipment.count({ where: { order_id: order.id, type: SHIPMENT_TYPE.FORWARD }, transaction });
         const redispatchSeq = Math.max(1, priorForwardCount);
         const redispatchChannelId = `${order.order_number}-R${redispatchSeq}`;
+        // Carry the courier rate card onto the new shipment. Without it a later RTO on
+        // THIS shipment computes rto_charge = 0 (rtoChargeOf reads rto_charges off
+        // selected_courier_data), silently under-recovering the return leg. Resolved from
+        // the earliest forward shipment that actually HAS a rate card — not just the one
+        // that came back, which may itself only carry the AWB overlay. The AWB-assigned
+        // webhook spreads onto this object, so it survives assignment.
+        const orderRateCard = await findOrderRateCard(order.id, transaction);
         const shipment = await Shipment.create({
           order_id: order.id, address_id: addr?.id || null,
           type: SHIPMENT_TYPE.FORWARD, status: SHIPMENT_STATUS.CREATED, forward_charge: F,
+          selected_courier_data: orderRateCard || rtoShipment?.selected_courier_data || null,
           rto_event_id: rto.id,
         }, { transaction });
         await ShipmentItem.bulkCreate(items.map((i) => ({ shipment_id: shipment.id, order_item_id: i.id, quantity: i.quantity })), { transaction });
@@ -1087,11 +1128,27 @@ class ShipRocketController {
       // — the wallet portion folds into the gateway refund so it isn't dropped.)
       const totals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: order.id }, transaction }));
       const walletPaid = toMoney(totals.wallet_amount);
-      const platformFee = toMoney(totals.platform_fee);
-      const walletShare = (walletPaid > 0 && order.customer_id) ? walletPaid : 0;
-      const gatewayContribution = toMoney(totals.amount_paid + (walletPaid - walletShare));
-      const gatewayRefund = Math.max(0, toMoney(gatewayContribution - platformFee - F - R));
-      const refund = toMoney(gatewayRefund + walletShare);
+      // Re-dispatch fees already paid are spent on logistics and are NOT refundable —
+      // amount_paid accumulates them, so they come back out of the refundable base.
+      const redispatchedEvents = await RtoEvent.findAll({
+        where: { order_id: order.id, resolution: RTO_RESOLUTION.REDISPATCHED },
+        transaction,
+      });
+      const redispatchChargesPaid = redispatchedEvents.reduce(
+        (sum, e) => sum + Number(e.forward_charge_to_recover || 0) + Number(e.rto_charge || 0),
+        0,
+      );
+      const settlement = computeRtoAbandonRefund({
+        totals,
+        redispatchChargesPaid,
+        forwardCharge: F,
+        rtoCharge: R,
+        walletReturnable: Boolean(order.customer_id),
+      });
+      const platformFee = settlement.platformFee;
+      const walletShare = settlement.walletRefund;
+      const gatewayRefund = settlement.gatewayRefund;
+      const refund = settlement.refund;
 
       if (refund > 0) {
         // Reverse order value by the refund, then pay it back (balance-neutral, nets to 0).
@@ -1142,6 +1199,10 @@ class ShipRocketController {
         status: refundStatus,
         payment_method: REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY,
         processed_at: refundStatus === REFUND_STATUS.COMPLETED ? new Date() : null,
+        // Only the real deductions belong here. Re-dispatch fees already paid are NOT a
+        // deduction — they're spent shipping money that was never part of the refundable
+        // base (see computeRtoAbandonRefund), so naming them here would read as a third
+        // charge and double-count in the customer's head.
         note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${platformFee.toLocaleString('en-IN')} platform fee + Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics)${walletNote}.`,
       };
       const existingRtoRefund = await OrderRefund.findOne({

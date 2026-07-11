@@ -197,11 +197,62 @@ const settleCancellation = async ({ orderId, isCod, transaction, nonRefundable =
   return { refundAmount, walletRefund: totals.wallet_amount };
 };
 
+/**
+ * Money returned when a prepaid RTO is abandoned (the customer asks for a refund
+ * instead of paying to re-dispatch).
+ *
+ * NOT refundable:
+ *   · re-dispatch fees the customer already paid — that money was spent putting the
+ *     parcel back on the road, so it is gone regardless. `amount_paid` accumulates
+ *     them, so they must come back out of the refundable base.
+ *   · the platform fee
+ *   · THIS cycle's forward + RTO logistics (F + R)
+ * The wallet credit is returned to the wallet IN FULL and is never netted against any
+ * of those deductions. If there's no account to credit, it folds into the gateway leg
+ * rather than being dropped.
+ *
+ * Shared by resolveRto (what is actually paid out) and hydrateV2Fields (the estimate
+ * the customer is shown), so the two can never drift.
+ */
+const computeRtoAbandonRefund = ({
+  totals,
+  redispatchChargesPaid = 0,
+  forwardCharge = 0,
+  rtoCharge = 0,
+  walletReturnable = true,
+}) => {
+  const walletPaid = round(totals?.wallet_amount);
+  const platformFee = round(totals?.platform_fee);
+  const amountPaid = round(totals?.amount_paid);
+  const redispatchPaid = round(redispatchChargesPaid);
+  const forwardRtoCharges = round(Number(forwardCharge || 0) + Number(rtoCharge || 0));
+
+  const walletRefund = (walletPaid > 0 && walletReturnable) ? walletPaid : 0;
+  // Wallet credit with nowhere to go rides along on the gateway refund.
+  const gatewayContribution = round(amountPaid + (walletPaid - walletRefund));
+  // What the customer actually paid for the GOODS — the re-dispatch fees are spent.
+  const refundableBase = Math.max(0, round(gatewayContribution - redispatchPaid));
+  const gatewayRefund = Math.max(0, round(refundableBase - platformFee - forwardRtoCharges));
+
+  return {
+    amountPaid,
+    redispatchChargesPaid: redispatchPaid,
+    refundableBase,
+    platformFee,
+    forwardRtoCharges,
+    nonRefundable: round(redispatchPaid + platformFee + forwardRtoCharges),
+    gatewayRefund,
+    walletRefund,
+    refund: round(gatewayRefund + walletRefund),
+  };
+};
+
 module.exports = {
   seedPlacementLedger,
   getOrderBalance,
   deriveOrderTotals,
   appendEntry,
+  computeRtoAbandonRefund,
   settleCancellation,
   round,
 };

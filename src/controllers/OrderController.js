@@ -43,6 +43,7 @@ const {
 const RtoEvent = require('../models/RtoEvent');
 const {
   seedPlacementLedger, getOrderBalance, deriveOrderTotals, appendEntry, settleCancellation,
+  computeRtoAbandonRefund,
 } = require('../services/orderLedgerService');
 const RefundTransaction = require('../models/RefundTransaction');
 const { reconcileOrderRefunds } = require('../services/RefundSyncService');
@@ -187,6 +188,45 @@ const hydrateV2Fields = (json) => {
     };
   }
 
+  const redispatchedEvents = rtoEvents.filter((e) => e.resolution === RTO_RESOLUTION.REDISPATCHED);
+
+  // Total forward + RTO charge the customer has actually PAID to re-dispatch, summed
+  // over every re-dispatch this order has been through. Resolving a re-dispatch posts
+  // those charges to the ledger, so total_amount / payable_amount carry them — the
+  // price summary uses this to split them back out of the bill. Derived from the
+  // REDISPATCHED events (not the latest rto_action, whose resolution flips back to
+  // AWAITING_PAYMENT on a subsequent RTO and would silently drop the split).
+  json.redispatch_charges_paid = roundMoney(redispatchedEvents.reduce(
+    (sum, e) => sum + Number(e.forward_charge_to_recover || 0) + Number(e.rto_charge || 0),
+    0,
+  ));
+
+  // What "Refund me instead" on an open prepaid RTO will actually pay out. Computed by
+  // the SAME helper resolveRto uses, so the quoted estimate can't drift from the payout.
+  if (latestRto && latestRto.resolution === 'AWAITING_PAYMENT' && String(latestRto.payment_method || '').toUpperCase() !== 'COD') {
+    const s = computeRtoAbandonRefund({
+      totals: {
+        amount_paid: json.amount_paid,
+        wallet_amount: json.wallet_amount,
+        platform_fee: json.platform_fee,
+      },
+      redispatchChargesPaid: json.redispatch_charges_paid,
+      forwardCharge: latestRto.forward_charge_to_recover,
+      rtoCharge: latestRto.rto_charge,
+      walletReturnable: Boolean(json.customer_id),
+    });
+    json.rto_refund = {
+      amount_paid: s.amountPaid,
+      redispatch_charges_paid: s.redispatchChargesPaid,
+      refundable_base: s.refundableBase,
+      platform_fee: s.platformFee,
+      forward_rto_charges: s.forwardRtoCharges,
+      gateway_refund: s.gatewayRefund,
+      wallet_refund: s.walletRefund,
+      refund: s.refund,
+    };
+  }
+
   // Mirror of cancelOrder()'s refund math, so the cancel modal shows exactly what the
   // backend will actually refund instead of re-deriving it (and drifting). A cancel
   // after a paid re-dispatch keeps back the re-dispatch logistics plus — only in that
@@ -194,7 +234,7 @@ const hydrateV2Fields = (json) => {
   const isCodOrder = String(json.payment_method || '').toUpperCase() === 'COD';
   const deductions = computeCancellationNonRefundable({
     isCod: isCodOrder,
-    redispatchedEvents: rtoEvents.filter((e) => e.resolution === 'REDISPATCHED'),
+    redispatchedEvents,
     platformFee: json.platform_fee,
     giftCharge: json.gift_charge,
   });
