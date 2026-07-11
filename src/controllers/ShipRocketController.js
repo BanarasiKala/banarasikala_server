@@ -1203,7 +1203,7 @@ class ShipRocketController {
         // deduction — they're spent shipping money that was never part of the refundable
         // base (see computeRtoAbandonRefund), so naming them here would read as a third
         // charge and double-count in the customer's head.
-        note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${platformFee.toLocaleString('en-IN')} platform fee + Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics)${walletNote}.`,
+        note: `RTO refund of Rs. ${refund.toLocaleString('en-IN')} (after Rs. ${platformFee.toLocaleString('en-IN')} platform fee${settlement.giftCharge > 0 ? ` + Rs. ${settlement.giftCharge.toLocaleString('en-IN')} gift charge` : ''} + Rs. ${toMoney(F + R).toLocaleString('en-IN')} logistics)${walletNote}.`,
       };
       const existingRtoRefund = await OrderRefund.findOne({
         where: { order_id: order.id, refund_type: REFUND_TYPE.RTO }, transaction,

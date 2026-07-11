@@ -206,6 +206,8 @@ const settleCancellation = async ({ orderId, isCod, transaction, nonRefundable =
  *     parcel back on the road, so it is gone regardless. `amount_paid` accumulates
  *     them, so they must come back out of the refundable base.
  *   · the platform fee
+ *   · the gift charge (the gift wrap/message was produced) — matching the return-refund
+ *     and cancellation policies, which both retain it
  *   · THIS cycle's forward + RTO logistics (F + R)
  * The wallet credit is returned to the wallet IN FULL and is never netted against any
  * of those deductions. If there's no account to credit, it folds into the gateway leg
@@ -223,6 +225,7 @@ const computeRtoAbandonRefund = ({
 }) => {
   const walletPaid = round(totals?.wallet_amount);
   const platformFee = round(totals?.platform_fee);
+  const giftCharge = round(totals?.gift_charge);
   const amountPaid = round(totals?.amount_paid);
   const redispatchPaid = round(redispatchChargesPaid);
   const forwardRtoCharges = round(Number(forwardCharge || 0) + Number(rtoCharge || 0));
@@ -232,15 +235,16 @@ const computeRtoAbandonRefund = ({
   const gatewayContribution = round(amountPaid + (walletPaid - walletRefund));
   // What the customer actually paid for the GOODS — the re-dispatch fees are spent.
   const refundableBase = Math.max(0, round(gatewayContribution - redispatchPaid));
-  const gatewayRefund = Math.max(0, round(refundableBase - platformFee - forwardRtoCharges));
+  const gatewayRefund = Math.max(0, round(refundableBase - platformFee - giftCharge - forwardRtoCharges));
 
   return {
     amountPaid,
     redispatchChargesPaid: redispatchPaid,
     refundableBase,
     platformFee,
+    giftCharge,
     forwardRtoCharges,
-    nonRefundable: round(redispatchPaid + platformFee + forwardRtoCharges),
+    nonRefundable: round(redispatchPaid + platformFee + giftCharge + forwardRtoCharges),
     gatewayRefund,
     walletRefund,
     refund: round(gatewayRefund + walletRefund),
