@@ -29,6 +29,13 @@ const OrderItemAction = sequelize.define('OrderItemAction', {
     type: DataTypes.STRING,
     allowNull: false,
   },
+  // Ties together the per-item rows of ONE customer request. Holds the id of the
+  // request's first row. Null only on legacy rows the backfill could not place —
+  // treat those as a group of one.
+  request_group_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   quantity: {
     type: DataTypes.INTEGER,
     allowNull: false,

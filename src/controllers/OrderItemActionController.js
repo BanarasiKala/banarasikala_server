@@ -93,6 +93,29 @@ const serializeAction = (action) => {
   };
 };
 
+// A return/exchange REQUEST is the unit of work: one reverse pickup, one refund
+// row, one payout — even though it is stored as one action row per item. These
+// helpers resolve any single action to its whole request, so reviewing or
+// refunding always acts on the request and never item by item.
+const groupIdOf = (action) => Number(action?.request_group_id || action?.id);
+
+// All rows of the request that `action` belongs to, oldest first (the first row
+// is the request's primary — it owns the OrderRefund row).
+const loadActionGroup = async (action, { transaction, lock = false } = {}) => {
+  const groupId = groupIdOf(action);
+  const rows = await OrderItemAction.findAll({
+    where: {
+      order_id: action.order_id,
+      action_type: action.action_type,
+      [Op.or]: [{ request_group_id: groupId }, { id: groupId }],
+    },
+    order: [['id', 'ASC']],
+    transaction,
+    ...(lock ? { lock: Transaction.LOCK.UPDATE } : {}),
+  });
+  return rows.length ? rows : [action];
+};
+
 class OrderItemActionController {
   async estimate(req, res) {
     try {
@@ -332,6 +355,10 @@ class OrderItemActionController {
     }
   }
 
+  // One row per REQUEST, not per item. A two-item return is one line in the
+  // queue with both products on it, one Complete and one Initiate Refund for the
+  // whole amount — matching the single reverse pickup and single OrderRefund row
+  // that actually exist behind it.
   async listAdmin(req, res) {
     try {
       await ensureOrderItemActionSchema();
@@ -340,8 +367,24 @@ class OrderItemActionController {
       if (actionType) where.action_type = actionType;
       if (req.query.status) where.status = String(req.query.status);
 
-      const actions = await OrderItemAction.findAll({
+      // Two passes: find the requests that match the filter, then load every row
+      // of those requests — so a status filter can never show a request with
+      // some of its items missing.
+      const matches = await OrderItemAction.findAll({
         where,
+        attributes: ['id', 'request_group_id'],
+        raw: true,
+      });
+      const groupIds = [...new Set(matches.map(groupIdOf))];
+      if (!groupIds.length) return res.status(200).json([]);
+
+      const actions = await OrderItemAction.findAll({
+        where: {
+          [Op.or]: [
+            { request_group_id: { [Op.in]: groupIds } },
+            { id: { [Op.in]: groupIds } },
+          ],
+        },
         include: [
           { model: Order, attributes: ['id', 'order_number', 'customer_name', 'customer_email', 'payment_method', 'status', 'createdAt'] },
           {
@@ -352,12 +395,13 @@ class OrderItemActionController {
             ],
           },
         ],
-        order: [['createdAt', 'DESC']],
+        order: [['id', 'ASC']],
       });
 
-      // Which returns already had their refund initiated (money settled) —
-      // the product-reversal ledger entry is the marker.
-      const actionIds = actions.map((row) => row.id);
+      // Which requests already had their refund initiated (money settled) — the
+      // product-reversal ledger entry is the marker. It is written for every row
+      // of the request, so a hit on any row means the request is settled.
+      const actionIds = actions.map((row) => Number(row.id));
       const settledRows = actionIds.length ? await OrderLedger.findAll({
         where: {
           entry_type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE,
@@ -368,23 +412,76 @@ class OrderItemActionController {
       }) : [];
       const initiatedSet = new Set(settledRows.map((row) => Number(row.reference_id)));
 
-      // Attach the refund row (status + bank details) so the queue can show
-      // COD payout readiness and the account to transfer to.
+      // The refund row (status + bank details) hangs off the request's PRIMARY
+      // action, and its amount is the whole-request total.
       const refundRows = actionIds.length ? await OrderRefund.findAll({
         where: { order_item_action_id: { [Op.in]: actionIds } },
       }) : [];
       const refundByAction = new Map(refundRows.map((row) => [Number(row.order_item_action_id), row]));
 
-      return res.status(200).json(actions.map((row) => {
-        const refundRow = refundByAction.get(Number(row.id)) || null;
+      // Rows arrive id-ASC, so each group's first row is its primary (the one
+      // that owns the OrderRefund row). Newest request first in the queue.
+      const groups = new Map();
+      actions.forEach((row) => {
+        const key = groupIdOf(row);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      });
+
+      const payload = [...groups.values()].map((rows) => {
+        const members = rows.map(serializeAction);
+        const primary = members[0];
+        const refundRow = refundByAction.get(Number(primary.id)) || null;
+        const sum = (pick) => roundMoney(members.reduce((total, m) => total + Number(pick(m) || 0), 0));
+        const couponAdjustment = sum((m) => m.meta?.coupon_adjustment);
+        const estimateSum = sum((m) => m.estimated_refund_amount);
+
         return {
-          ...serializeAction(row),
-          refund_initiated: initiatedSet.has(Number(row.id)),
+          // The buttons act on the primary action; the server expands it back to
+          // the whole request.
+          id: primary.id,
+          group_id: groupIdOf(rows[0]),
+          action_ids: members.map((m) => m.id),
+          order_id: primary.order_id,
+          action_type: primary.action_type,
+          status: primary.status,
+          reason: primary.reason,
+          createdAt: primary.createdAt,
+          Order: primary.Order,
+          meta: { ...(primary.meta || {}), coupon_adjustment: couponAdjustment },
+
+          quantity: members.reduce((total, m) => total + Number(m.quantity || 0), 0),
+          item_amount: sum((m) => m.item_amount),
+          forward_shipping_deduction: sum((m) => m.forward_shipping_deduction),
+          reverse_shipping_deduction: sum((m) => m.reverse_shipping_deduction),
+          // Prefer the refund row: it is the figure that will actually be paid,
+          // so the button can never promise a different number than it pays.
+          estimated_refund_amount: refundRow && primary.action_type === ACTION_TYPES.RETURN
+            ? roundMoney(refundRow.amount)
+            : estimateSum,
+
+          items: members.map((m) => ({
+            action_id: m.id,
+            order_item_id: m.order_item_id,
+            quantity: m.quantity,
+            item_amount: m.item_amount,
+            reverse_shipping_deduction: m.reverse_shipping_deduction,
+            estimated_refund_amount: m.estimated_refund_amount,
+            coupon_adjustment: roundMoney(m.meta?.coupon_adjustment || 0),
+            meta: m.meta || {},
+            OrderItem: m.OrderItem || null,
+          })),
+
+          refund_initiated: members.some((m) => initiatedSet.has(Number(m.id))),
           refund_status: refundRow?.status || null,
           refund_amount: refundRow ? roundMoney(refundRow.amount) : null,
           refund_bank_details: refundRow?.bank_details || null,
         };
-      }));
+      });
+
+      payload.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+
+      return res.status(200).json(payload);
     } catch (error) {
       console.error('[OrderItemAction] admin list error:', error.message);
       return res.status(500).json({ message: 'Unable to load requests right now.' });
@@ -409,57 +506,70 @@ class OrderItemActionController {
         await transaction.rollback();
         return res.status(404).json({ message: 'Request not found.' });
       }
-      if ([ACTION_STATUS.COMPLETED, ACTION_STATUS.REJECTED, ACTION_STATUS.CANCELLED].includes(action.status)) {
+      // A request is reviewed as a whole: one Complete/Reject closes every item
+      // in it, exactly as the customer submitted it.
+      const groupActions = await loadActionGroup(action, { transaction, lock: true });
+      const closed = [ACTION_STATUS.COMPLETED, ACTION_STATUS.REJECTED, ACTION_STATUS.CANCELLED];
+      if (groupActions.every((row) => closed.includes(row.status))) {
         await transaction.rollback();
         return res.status(400).json({ message: 'This request has already been closed.' });
       }
 
-      const item = await OrderItem.findByPk(action.order_item_id, {
-        transaction,
-        lock: Transaction.LOCK.UPDATE,
-      });
-      if (!item) {
-        await transaction.rollback();
-        return res.status(404).json({ message: 'Order item not found.' });
-      }
+      const isTerminal = closed.includes(nextStatus);
 
-      const quantity = Number(action.quantity || 0);
-      const isTerminal = [ACTION_STATUS.COMPLETED, ACTION_STATUS.REJECTED, ACTION_STATUS.CANCELLED].includes(nextStatus);
+      for (const groupAction of groupActions) {
+        if (closed.includes(groupAction.status)) continue;
 
-      // Item status pointer — actioned quantity is derived from action rows now.
-      let itemStatus;
-      if (nextStatus === ACTION_STATUS.COMPLETED) {
-        const completed = await OrderItemAction.findAll({
-          where: { order_item_id: item.id, action_type: action.action_type, status: ACTION_STATUS.COMPLETED },
+        const item = await OrderItem.findByPk(groupAction.order_item_id, {
           transaction,
+          lock: Transaction.LOCK.UPDATE,
         });
-        const completedQty = completed.reduce((s, a) => s + Number(a.quantity || 0), quantity);
-        itemStatus = statusAfterCompletedAction(action.action_type, completedQty >= Number(item.quantity || 0));
-      } else if (nextStatus === ACTION_STATUS.REJECTED || nextStatus === ACTION_STATUS.CANCELLED) {
-        const otherOpen = await OrderItemAction.count({
-          where: {
-            order_item_id: item.id, id: { [Op.ne]: action.id },
-            status: { [Op.notIn]: [ACTION_STATUS.COMPLETED, ACTION_STATUS.REJECTED, ACTION_STATUS.CANCELLED] },
-          },
-          transaction,
-        });
-        itemStatus = otherOpen > 0 ? statusForRequestedAction(action.action_type) : 'Active';
-      } else {
-        itemStatus = statusForRequestedAction(action.action_type);
-      }
-      await item.update({ status: itemStatus }, { transaction });
+        if (!item) {
+          await transaction.rollback();
+          return res.status(404).json({ message: 'Order item not found.' });
+        }
 
-      await action.update({
-        status: nextStatus,
-        reviewed_by: req.user?.id || null,
-        reviewed_at: new Date(),
-        completed_at: isTerminal ? new Date() : null,
-        meta: { ...(action.meta || {}), admin_note: req.body.note || null },
-      }, { transaction });
+        const quantity = Number(groupAction.quantity || 0);
+
+        // Item status pointer — actioned quantity is derived from action rows now.
+        let itemStatus;
+        if (nextStatus === ACTION_STATUS.COMPLETED) {
+          const completed = await OrderItemAction.findAll({
+            where: { order_item_id: item.id, action_type: groupAction.action_type, status: ACTION_STATUS.COMPLETED },
+            transaction,
+          });
+          const completedQty = completed.reduce((s, a) => s + Number(a.quantity || 0), quantity);
+          itemStatus = statusAfterCompletedAction(groupAction.action_type, completedQty >= Number(item.quantity || 0));
+        } else if (nextStatus === ACTION_STATUS.REJECTED || nextStatus === ACTION_STATUS.CANCELLED) {
+          const otherOpen = await OrderItemAction.count({
+            where: {
+              order_item_id: item.id,
+              id: { [Op.notIn]: groupActions.map((row) => row.id) },
+              status: { [Op.notIn]: closed },
+            },
+            transaction,
+          });
+          itemStatus = otherOpen > 0 ? statusForRequestedAction(groupAction.action_type) : 'Active';
+        } else {
+          itemStatus = statusForRequestedAction(groupAction.action_type);
+        }
+        await item.update({ status: itemStatus }, { transaction });
+
+        await groupAction.update({
+          status: nextStatus,
+          reviewed_by: req.user?.id || null,
+          reviewed_at: new Date(),
+          completed_at: isTerminal ? new Date() : null,
+          meta: { ...(groupAction.meta || {}), admin_note: req.body.note || null },
+        }, { transaction });
+      }
 
       // NOTE: completing a return only records that the item is back with us.
       // No money moves here — the admin explicitly presses "Initiate refund"
       // (initiateRefund below) to settle the ledger and pay the customer.
+
+      // The OrderRefund row hangs off the request's PRIMARY action.
+      const primaryAction = groupActions[0];
 
       // COD returns are paid out by manual bank transfer — the moment the
       // return completes, flag the refund row so the customer's order page
@@ -467,7 +577,7 @@ class OrderItemActionController {
       if (nextStatus === ACTION_STATUS.COMPLETED && action.action_type === ACTION_TYPES.RETURN) {
         const orderRow = await Order.findByPk(action.order_id, { transaction });
         if (String(orderRow?.payment_method || '').toUpperCase() === 'COD') {
-          const refundRow = await OrderRefund.findOne({ where: { order_item_action_id: action.id }, transaction })
+          const refundRow = await OrderRefund.findOne({ where: { order_item_action_id: primaryAction.id }, transaction })
             || await OrderRefund.findOne({
               where: { order_id: action.order_id, refund_type: REFUND_TYPE.RETURN },
               order: [['created_at', 'DESC']],

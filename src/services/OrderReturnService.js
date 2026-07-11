@@ -579,6 +579,15 @@ const createReverseActions = async ({
   const firstActionId = entries[0].action.id;
   let refundRow;
 
+  // Stamp every row of this request with the first row's id. The admin queue,
+  // the status update and the refund all key off this so a multi-item request is
+  // reviewed and paid out ONCE, not once per item.
+  await OrderItemAction.update(
+    { request_group_id: firstActionId },
+    { where: { id: entries.map(({ action }) => action.id) }, transaction },
+  );
+  entries.forEach(({ action }) => action.set('request_group_id', firstActionId));
+
   if (actionType === ACTION_TYPES.RETURN) {
     const totalRefund = roundMoney(
       entries.reduce((sum, entry) => sum + Number(entry.calculation.estimated_refund_amount || 0), 0),

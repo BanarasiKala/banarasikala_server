@@ -36,6 +36,12 @@ const ORDER_ITEM_ACTION_COLUMNS = {
   order_item_id: { type: DataTypes.INTEGER, allowNull: false },
   product_id: { type: DataTypes.INTEGER, allowNull: true },
   action_type: { type: DataTypes.STRING, allowNull: false },
+  // One customer request (return/exchange) spans one action row PER ITEM, but is
+  // a single unit of work: one reverse pickup, one OrderRefund row, one payout.
+  // Every row of a request carries the id of the request's first row, so the
+  // admin queue, the status update and the refund settle the request as a whole
+  // instead of item by item (which double-settled the money).
+  request_group_id: { type: DataTypes.INTEGER, allowNull: true },
   quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 1 },
   status: { type: DataTypes.STRING, allowNull: false, defaultValue: ACTION_STATUS.REQUESTED },
   reason: { type: DataTypes.TEXT, allowNull: true },
@@ -89,7 +95,62 @@ const ensureOrderItemActionSchema = async () => {
     }
   }
 
+  await backfillRequestGroups();
+
   schemaReady = true;
+};
+
+// Legacy rows pre-date request_group_id. Rebuild the grouping the only way the
+// old data allows: rows of the same order + action type written within a minute
+// of each other came from one request (they were created in a single
+// transaction). Gap-and-island on created_at; the request's earliest row id
+// becomes the group id, matching what createReverseActions stamps going forward.
+// Idempotent and cheap — it only ever touches rows still NULL.
+const backfillRequestGroups = async () => {
+  const table = `"${config.dbSchema}"."order_item_actions"`;
+  try {
+    await sequelize.query(`
+      UPDATE ${table} AS a
+      SET request_group_id = g.group_id
+      FROM (
+        SELECT
+          id,
+          MIN(id) OVER (PARTITION BY order_id, action_type, island) AS group_id
+        FROM (
+          SELECT
+            id,
+            order_id,
+            action_type,
+            SUM(is_new_island) OVER (
+              PARTITION BY order_id, action_type
+              ORDER BY created_at, id
+              ROWS UNBOUNDED PRECEDING
+            ) AS island
+          FROM (
+            SELECT
+              id,
+              order_id,
+              action_type,
+              created_at,
+              CASE
+                WHEN LAG(created_at) OVER (
+                       PARTITION BY order_id, action_type ORDER BY created_at, id
+                     ) IS NULL
+                  OR created_at - LAG(created_at) OVER (
+                       PARTITION BY order_id, action_type ORDER BY created_at, id
+                     ) > INTERVAL '60 seconds'
+                THEN 1 ELSE 0
+              END AS is_new_island
+            FROM ${table}
+          ) marked
+        ) islanded
+      ) g
+      WHERE a.id = g.id AND a.request_group_id IS NULL
+    `);
+  } catch (error) {
+    // Never block boot on a backfill — grouping falls back to the row's own id.
+    console.error('[OrderItemAction] request_group_id backfill skipped:', error.message);
+  }
 };
 
 const normalizeActionType = (value) => {
