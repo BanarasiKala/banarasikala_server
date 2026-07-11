@@ -43,7 +43,7 @@ const {
 } = require('../utils/orderItemActions');
 const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 const {
-  SHIPMENT_TYPE, RETURN_TYPE, RETURN_STATUS, ACTOR,
+  SHIPMENT_TYPE, SHIPMENT_STATUS, RETURN_TYPE, RETURN_STATUS, ACTOR,
 } = require('../utils/orderModelV2');
 const { config } = require('../config/env');
 
@@ -626,31 +626,43 @@ const createReverseActions = async ({
  * @returns {{ shiprocketReturnId: string|null, shipmentId: string|null, detail: object|null }}
  */
 const finalizeReverseActions = async ({ order, entries, actionType, reason }) => {
-  const result = { shiprocketReturnId: null, shipmentId: null, detail: null };
+  // `booked` tells the caller whether the courier actually accepted the reverse pickup.
+  // It is false whenever the push threw OR came back without SR identifiers.
+  const result = {
+    shiprocketReturnId: null, shipmentId: null, reverseShipmentId: null,
+    detail: null, booked: false, error: null,
+  };
+  const anchorAction = entries[0]?.action || null;
 
-  // Declared values on the ShipRocket return must match what the website
-  // shows for this request: a return declares each item at its per-unit
-  // REFUND value (item value minus the coupon adjustment and pickup-charge
-  // shares), an exchange declares the item price (no refund applies). The
-  // return's sub_total is the sum of these lines — never the whole-order
-  // total, which made ShipRocket show a different amount than the site.
-  const items = entries.map(({ item, quantity, calculation }) => {
-    const qty = Math.max(1, Number(quantity || 1));
-    const unitValue = actionType === ACTION_TYPES.RETURN
-      ? Math.max(1, roundMoney(Number(calculation?.estimated_refund_amount || 0) / qty))
-      : Number(item.price);
-    return {
-      product_id: item.product_id,
-      quantity,
-      price: unitValue,
-      name: item.product_name || `Product #${item.product_id}`,
-      sku: item.sku,
-      // Real per-unit weight (product + box) — same basis the pickup rate
-      // quote used, so the actual ShipRocket return AWB isn't booked lighter
-      // than what the customer was quoted for the pickup charge.
-      weight: itemWeightKg(item),
-    };
-  });
+  // Declared value on the ShipRocket reverse order = the VALUE OF THE GOODS being
+  // carried (item price × qty), for BOTH returns and exchanges — the same basis the
+  // forward order was pushed with.
+  //
+  // ShipRocket returns are sent payment_method: 'Prepaid' with no COD amount, so
+  // sub_total / selling_price are NOT a payment instruction — they are the declared
+  // value used for insurance/liability if the courier loses or damages the parcel, and
+  // for the invoice / e-way bill.
+  //
+  // This used to declare a RETURN at its per-unit refund value (net of the coupon
+  // clawback, pickup charge and platform/gift fees) so the SR dashboard mirrored the
+  // site. That under-declares the parcel — and because the value was floored with
+  // Math.max(1, …), a refund that netted to zero shipped a ₹3,999 saree declared at ₹1,
+  // capping any loss claim there. It also meant the same physical parcel was declared
+  // differently depending on whether it came back as a return or an exchange.
+  //
+  // The refund is an accounting figure and lives in the order/refund ledger, which is
+  // where the customer sees it; the shipment carries what the goods are worth.
+  const items = entries.map(({ item, quantity }) => ({
+    product_id: item.product_id,
+    quantity,
+    price: Number(item.price),
+    name: item.product_name || `Product #${item.product_id}`,
+    sku: item.sku,
+    // Real per-unit weight (product + box) — same basis the pickup rate
+    // quote used, so the actual ShipRocket return AWB isn't booked lighter
+    // than what the customer was quoted for the pickup charge.
+    weight: itemWeightKg(item),
+  }));
   const declaredTotal = roundMoney(items.reduce(
     (sum, line) => sum + Number(line.price) * Math.max(1, Number(line.quantity || 1)),
     0,
@@ -676,21 +688,93 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason }) =>
     result.shipmentId = data?.shipment_id || null;
     const srId = data?.order_id ? String(data.order_id) : null;
     result.shiprocketReturnId = srId;
+
+    // A 200 with no identifiers is still a failure. Reverse webhooks match ONLY by
+    // shiprocket_return_order_id / shiprocket_return_awb, and the tracking endpoint only
+    // surfaces actions that have one — so a request with neither can never progress past
+    // "Return Initiated" and is invisible to the customer, ops and the courier. Treat it
+    // exactly like a thrown error rather than letting it pass silently.
+    if (!srId && !result.shipmentId) {
+      throw new Error('ShipRocket accepted the reverse order but returned no order_id/shipment_id.');
+    }
+
     // Persist both ShipRocket identifiers on the request's first action row:
     // the return ORDER id (webhooks match reverse scans by it) and the return
     // SHIPMENT id (needed for label/pickup/cancel calls on ShipRocket's side).
-    if ((srId || result.shipmentId) && entries[0]?.action) {
-      const firstAction = entries[0].action;
-      await firstAction.update({
+    if (anchorAction) {
+      const meta = { ...(anchorAction.meta || {}) };
+      if (result.shipmentId) meta.shiprocket_return_shipment_id = String(result.shipmentId);
+      // Clear any marker left by a previous failed attempt (this is also the re-book path).
+      delete meta.reverse_pickup_failed;
+      delete meta.reverse_pickup_error;
+      delete meta.reverse_pickup_failed_at;
+      await anchorAction.update({
         ...(srId ? { shiprocket_return_order_id: srId } : {}),
-        meta: {
-          ...(firstAction.meta || {}),
-          ...(result.shipmentId ? { shiprocket_return_shipment_id: String(result.shipmentId) } : {}),
-        },
+        meta,
       });
     }
+
+    // Give the reverse leg a real home, mirroring the forward flow: the order is pushed
+    // to ShipRocket, an admin presses "Ship Now" in the SR dashboard, and the webhook
+    // fills in the AWB + courier details. Forward writes those onto its Shipment row;
+    // without a REVERSE row a return had nowhere to put them, so courier name, ETD,
+    // pickup/received timestamps and the reverse rate card were all simply discarded.
+    // Status stays CREATED until the dashboard assigns a courier — exactly like forward.
+    try {
+      const existingReverse = srId
+        ? await Shipment.findOne({
+          where: { order_id: order.id, type: SHIPMENT_TYPE.REVERSE, shiprocket_order_id: String(srId) },
+        })
+        : null;
+      if (!existingReverse) {
+        result.reverseShipmentId = (await Shipment.create({
+          order_id: order.id,
+          address_id: address?.id || null,
+          type: SHIPMENT_TYPE.REVERSE,
+          status: SHIPMENT_STATUS.CREATED,
+          shiprocket_order_id: srId,
+          // forward_charge is the FORWARD leg's cost; a reverse pickup has none.
+          forward_charge: 0,
+        })).id;
+      } else {
+        result.reverseShipmentId = existingReverse.id;
+      }
+    } catch (shipmentError) {
+      // Non-fatal: the return itself is booked. Losing the row only costs us the
+      // courier/timestamp detail, so never fail the customer's return over it.
+      console.error('[OrderReturnService] could not create REVERSE shipment row:', shipmentError.message);
+    }
+
+    result.booked = true;
   } catch (error) {
+    const message = String(
+      error?.response?.data?.message
+      || (error?.response?.data ? JSON.stringify(error.response.data) : null)
+      || error.message
+      || 'Unknown error',
+    );
     console.error('[OrderReturnService] reverse pickup booking failed:', error?.response?.data || error.message);
+    result.error = message;
+    // The request is already COMMITTED (this runs post-commit by design, so a courier
+    // outage can't undo the customer's return). But without SR identifiers it is orphaned:
+    // no webhook can match it, no tracking shows it, and nothing tells anyone. Stamp the
+    // failure onto the request so it is queryable and can be re-booked, instead of sitting
+    // silently on "Return Initiated" forever. Mirrors how a failed gateway refund is
+    // surfaced for manual retry (see OrderItemActionController).
+    if (anchorAction) {
+      try {
+        await anchorAction.update({
+          meta: {
+            ...(anchorAction.meta || {}),
+            reverse_pickup_failed: true,
+            reverse_pickup_error: message.slice(0, 500),
+            reverse_pickup_failed_at: new Date().toISOString(),
+          },
+        });
+      } catch (metaError) {
+        console.error('[OrderReturnService] could not persist reverse-pickup failure marker:', metaError.message);
+      }
+    }
   }
 
   if (actionType === ACTION_TYPES.RETURN) {

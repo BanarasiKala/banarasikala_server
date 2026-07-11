@@ -489,6 +489,8 @@ class ShipRocketController {
           exchange_message: 'Exchange initiated. No delivery deduction applies for one approved exchange.',
           shiprocket_exchange_order_id: finalize.shiprocketReturnId,
           shipment_id: finalize.shipmentId,
+          pickup_booked: finalize.booked,
+          ...(finalize.booked ? {} : { pickup_error: finalize.error }),
           detail: finalize.detail,
         });
       }
@@ -503,6 +505,11 @@ class ShipRocketController {
         refund_message: refundMessage,
         shiprocket_return_order_id: finalize.shiprocketReturnId,
         shipment_id: finalize.shipmentId,
+        // The request is committed either way (the courier push is post-commit), but say
+        // so when the pickup itself wasn't booked — it needs a re-book, and until then no
+        // reverse webhook can move it forward.
+        pickup_booked: finalize.booked,
+        ...(finalize.booked ? {} : { pickup_error: finalize.error }),
         detail: finalize.detail,
       });
     } catch (error) {
@@ -673,6 +680,62 @@ class ShipRocketController {
 
         if (awb && !reverseAction.shiprocket_return_awb) {
           await reverseAction.update({ shiprocket_return_awb: String(awb) }, { transaction });
+        }
+
+        // Mirror the FORWARD branch onto the REVERSE shipment row: when the admin presses
+        // "Ship Now" in the ShipRocket dashboard, the AWB-assigned scan is what carries the
+        // courier name, courier id, AWB and ETD. Previously the reverse branch only mapped a
+        // status string and saved the AWB onto the action, so every one of those details was
+        // thrown away and the reverse leg had no courier/timestamp record at all.
+        const reverseShipment = await Shipment.findOne({
+          where: {
+            order_id: order.id,
+            type: SHIPMENT_TYPE.REVERSE,
+            ...(reverseAction.shiprocket_return_order_id
+              ? { shiprocket_order_id: String(reverseAction.shiprocket_return_order_id) }
+              : {}),
+          },
+          order: [['created_at', 'DESC']],
+          transaction,
+        });
+        if (reverseShipment) {
+          const revUpdate = {};
+          // Reverse lifecycle: CREATED -> PICKUP_SCHEDULED -> PICKED_UP -> RECEIVED.
+          const reverseStatusMap = {
+            'Pickup Scheduled': SHIPMENT_STATUS.PICKUP_SCHEDULED,
+            'Out For Pickup': SHIPMENT_STATUS.PICKUP_SCHEDULED,
+            'AWB Assigned': SHIPMENT_STATUS.PICKUP_SCHEDULED,
+            'Return Picked Up': SHIPMENT_STATUS.PICKED_UP,
+            'Shipped': SHIPMENT_STATUS.IN_TRANSIT,
+            'Returned': SHIPMENT_STATUS.RECEIVED,
+            'RTO Delivered': SHIPMENT_STATUS.RECEIVED,
+            'Delivered': SHIPMENT_STATUS.RECEIVED,
+            'Cancelled': SHIPMENT_STATUS.CANCELLED,
+          };
+          if (reverseStatusMap[nextStatus]) revUpdate.status = reverseStatusMap[nextStatus];
+          if (awb && !reverseShipment.awb_number) revUpdate.awb_number = String(awb);
+          if (srInternalId && !reverseShipment.shiprocket_order_id) revUpdate.shiprocket_order_id = String(srInternalId);
+          if (payload.courier_name && reverseShipment.courier !== String(payload.courier_name)) {
+            revUpdate.courier = String(payload.courier_name);
+          }
+          // Courier details land on the AWB-assigned scan (the "Ship Now" moment).
+          if (nextStatus === 'AWB Assigned' || (awb && !reverseShipment.awb_number)) {
+            revUpdate.selected_courier_data = {
+              ...(reverseShipment.selected_courier_data || {}),
+              courier_name: payload.courier_name || reverseShipment.selected_courier_data?.courier_name || null,
+              courier_company_id: payload.courier_id ?? reverseShipment.selected_courier_data?.courier_company_id ?? null,
+              awb_code: awb ? String(awb) : reverseShipment.awb_number || null,
+              etd: payload.etd || reverseShipment.selected_courier_data?.etd || null,
+              awb_assigned_date: payload.awb_assigned_date || payload.current_timestamp || null,
+            };
+          }
+          // dispatched_at = courier collected it from the customer.
+          if (nextStatus === 'Return Picked Up' && !reverseShipment.dispatched_at) revUpdate.dispatched_at = new Date();
+          // delivered_at = the parcel is back with us.
+          if (['Returned', 'RTO Delivered', 'Delivered'].includes(nextStatus) && !reverseShipment.delivered_at) {
+            revUpdate.delivered_at = new Date();
+          }
+          if (Object.keys(revUpdate).length) await reverseShipment.update(revUpdate, { transaction });
         }
 
         // Terminal reverse scan — the parcel is back with us. Close the open
