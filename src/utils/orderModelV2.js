@@ -165,12 +165,17 @@ const ensureOrderModelV2Tables = async () => {
   await sequelize.query(`DROP TABLE IF EXISTS "${config.dbSchema}"."order_modifications"`);
 
   // 3b. Additive: shipments.rto_event_id — links a redispatch's new forward
-  // shipment back to the RTO it resolved. Idempotent.
+  // shipment back to the RTO it resolved. And shipments.exchange_action_id —
+  // links an exchange REPLACEMENT's new forward shipment back to the exchange
+  // request it fulfils (and makes a double-ship detectable). Both idempotent.
   const shipmentsTable = { tableName: 'shipments', schema: config.dbSchema };
   try {
     const shipmentsColumns = await qi.describeTable(shipmentsTable);
     if (!shipmentsColumns.rto_event_id) {
       await qi.addColumn(shipmentsTable, 'rto_event_id', { type: DataTypes.INTEGER, allowNull: true });
+    }
+    if (!shipmentsColumns.exchange_action_id) {
+      await qi.addColumn(shipmentsTable, 'exchange_action_id', { type: DataTypes.INTEGER, allowNull: true });
     }
   } catch {
     // Table missing entirely (fresh DB) — the model.sync above already created

@@ -68,6 +68,14 @@ const Shipment = sequelize.define('Shipment', {
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  // Set on a FORWARD shipment raised to send the REPLACEMENT goods for an exchange.
+  // Points at the exchange request's primary order_item_actions row, giving the same
+  // explicit trail rto_event_id gives a re-dispatch — and making a double-ship detectable.
+  // Plain INTEGER (no model-level FK) to avoid a circular require with OrderItemAction.
+  exchange_action_id: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
   selected_courier_data: {
     type: DataTypes.JSONB,
     allowNull: true,

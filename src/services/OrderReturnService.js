@@ -446,26 +446,16 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
     const grossRefundable = roundMoney(Math.max(0, amountPaid + walletAmount - platformFee - codFee - giftCharge));
     const returnShippingCharge = roundMoney(Math.min(rawPickupCharge, grossRefundable));
 
-    // Payment-gateway cost on a full return. The gateway keeps its fee on the ORIGINAL
-    // transaction even when we refund it, so that cost is retained rather than refunded:
-    //   fee = refund × feePercent, gst = fee × gstPercent
-    // Charged on the refund actually going back to the card (i.e. AFTER the other
-    // deductions), never on the wallet credit — that is the customer's own money and is
-    // returned in full. Both rates default to 0, so this stays inert until configured.
-    const feeBase = roundMoney(Math.max(
-      0,
-      amountPaid - platformFee - codFee - giftCharge - returnShippingCharge,
-    ));
-    const gatewayFeePercent = Math.max(0, Number(config.returnGatewayFeePercent) || 0);
-    const gatewayGstPercent = Math.max(0, Number(config.returnGatewayFeeGstPercent) || 0);
-    const paymentGatewayFee = roundMoney((feeBase * gatewayFeePercent) / 100);
-    const paymentGatewayFeeGst = roundMoney((paymentGatewayFee * gatewayGstPercent) / 100);
-    const paymentGatewayCharge = roundMoney(paymentGatewayFee + paymentGatewayFeeGst);
-
-    // Fees + pickup + gateway charge come out of the paid (gateway/COD) money first;
-    // wallet is returned in full unless the paid money can't cover the charges.
+    // No payment-gateway charge is retained on a full return. The gateway's fee on the
+    // original transaction is a cost of doing business and is absorbed by us, not passed
+    // back to the customer. (A 2% + GST retention was briefly deducted here; it was
+    // reverted deliberately.) The only deductions are the fees already paid on the order
+    // and the return pickup charge.
+    //
+    // Fees + pickup come out of the paid (gateway/COD) money first; the wallet is returned
+    // in full unless the paid money can't cover the charges.
     const totalDeductions = roundMoney(
-      platformFee + codFee + giftCharge + returnShippingCharge + paymentGatewayCharge,
+      platformFee + codFee + giftCharge + returnShippingCharge,
     );
     const gatewayRefund = roundMoney(Math.max(0, amountPaid - totalDeductions));
     const deductionShortfall = roundMoney(Math.max(0, totalDeductions - amountPaid));
@@ -478,8 +468,6 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
       pickupRateCard: pickupRateCardFor(returnShippingCharge),
       originalCouponCode: code, originalCouponEligible: false, appliedCouponCode: null,
       isFullReturn: true, amountPaid, walletAmount, platformFee, codFee, giftCharge,
-      paymentGatewayFee, paymentGatewayFeeGst, paymentGatewayCharge,
-      gatewayFeePercent, gatewayGstPercent,
       gatewayRefund, walletReturn,
     };
   }
@@ -682,13 +670,6 @@ const createReverseActions = async ({
         platform_fee: refundInfo.platformFee,
         cod_fee: refundInfo.codFee,
         gift_charge: refundInfo.giftCharge,
-        // Payment-gateway cost retained (fee + GST on the fee). Rates persisted too, so
-        // an old refund still replays with the rates that were in force when it was made.
-        payment_gateway_fee: refundInfo.paymentGatewayFee,
-        payment_gateway_fee_gst: refundInfo.paymentGatewayFeeGst,
-        payment_gateway_charge: refundInfo.paymentGatewayCharge,
-        payment_gateway_fee_percent: refundInfo.gatewayFeePercent,
-        payment_gateway_gst_percent: refundInfo.gatewayGstPercent,
       } : {}),
       coupon: (refundInfo.originalCouponCode && refundInfo.currentDiscount > 0) || refundInfo.couponAdjustment > 0 ? {
         original_code: refundInfo.originalCouponCode,
@@ -729,9 +710,6 @@ const createReverseActions = async ({
           : 'Refund will be processed back to the original prepaid payment method.',
         refundInfo && refundInfo.returnShippingCharge > 0
           ? `Return pickup charge of Rs. ${refundInfo.returnShippingCharge.toLocaleString('en-IN')} deducted.`
-          : null,
-        refundInfo && refundInfo.isFullReturn && refundInfo.paymentGatewayCharge > 0
-          ? `Payment gateway charge of Rs. ${refundInfo.paymentGatewayCharge.toLocaleString('en-IN')} (${refundInfo.gatewayFeePercent}% fee + ${refundInfo.gatewayGstPercent}% GST on the fee) deducted — the gateway retains this on the original transaction.`
           : null,
         refundInfo && refundInfo.isFullReturn && (refundInfo.platformFee > 0 || refundInfo.codFee > 0 || refundInfo.giftCharge > 0)
           ? `Platform fee${refundInfo.codFee > 0 ? ', COD charge' : ''}${refundInfo.giftCharge > 0 ? ' and gift charge' : ''} already paid on this order are not refunded.`

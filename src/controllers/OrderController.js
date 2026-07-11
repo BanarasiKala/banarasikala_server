@@ -25,6 +25,7 @@ const { config } = require('../config/env');
 const { Op } = require("sequelize");
 const { AppError } = require('../utils/http');
 const { formatOrderNumber, formatProductCode } = require('../utils/codes');
+const { colorStockOf, consumeStock, releaseStock } = require('../utils/inventory');
 const {
   ORDER_LIFECYCLE_COLUMNS,
   COD_BLOCK_MESSAGE,
@@ -481,29 +482,19 @@ const allocateItemShipping = ({ items, productMap, shippingCharge, shippingDisco
   });
 };
 
-const getColorStockValue = (product, colorId) => {
-  const stocks = product?.color_stocks || {};
-  return Number(stocks?.[colorId] ?? stocks?.[String(colorId)] ?? product?.stock_quantity ?? 0);
-};
+// Stock movement lives in utils/inventory — every flow that moves goods (checkout,
+// cancellation, completed return, exchange) goes through the same two functions, so
+// stock_quantity and color_stocks can never drift apart again.
+const getColorStockValue = colorStockOf;
 
 const decrementProductInventory = async ({ product, colorId, quantity, transaction }) => {
-  const qty = Math.max(1, Number(quantity || 1));
-  const stocks = { ...(product.color_stocks || {}) };
-  const hasColor = colorId !== null && colorId !== undefined && colorId !== "";
-  const currentColorStock = getColorStockValue(product, colorId);
-  const currentTotalStock = Number(product.stock_quantity || 0);
-
-  if (currentTotalStock < qty || currentColorStock < qty) {
-    throw new AppError(`Only ${Math.max(0, Math.min(currentColorStock, currentTotalStock))} item(s) are available for ${product.name}.`, 400);
-  }
-
-  const updatePayload = { stock_quantity: currentTotalStock - qty };
-  if (hasColor) {
-    stocks[String(colorId)] = currentColorStock - qty;
-    updatePayload.color_stocks = stocks;
-  }
-
-  await product.update(updatePayload, { transaction });
+  await consumeStock({
+    productId: product.id,
+    colorId,
+    quantity,
+    transaction,
+    label: product.name,
+  });
 };
 
 // Cancellation is whole-order only and allowed only while the order is still being
@@ -1418,23 +1409,12 @@ class OrderController {
         lock: t.LOCK.UPDATE,
       });
       for (const oi of activeOrderItems) {
-        const prod = await Product.findByPk(oi.product_id, {
-          attributes: ['id', 'stock_quantity', 'color_stocks'],
+        await releaseStock({
+          productId: oi.product_id,
+          colorId: oi.colorId || oi.color_id,
+          quantity: oi.quantity,
           transaction: t,
-          lock: t.LOCK.UPDATE,
         });
-        if (prod) {
-          const qty = Number(oi.quantity || 1);
-          const colorId = oi.colorId || oi.color_id;
-          const stocks = { ...(prod.color_stocks || {}) };
-          const hasColor = colorId !== null && colorId !== undefined && colorId !== '';
-          const restockPayload = { stock_quantity: Number(prod.stock_quantity || 0) + qty };
-          if (hasColor) {
-            stocks[String(colorId)] = Number(stocks[String(colorId)] ?? prod.stock_quantity ?? 0) + qty;
-            restockPayload.color_stocks = stocks;
-          }
-          await prod.update(restockPayload, { transaction: t });
-        }
       }
       await OrderItem.update(
         { status: 'Cancelled' },

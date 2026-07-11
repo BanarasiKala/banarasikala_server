@@ -31,6 +31,8 @@ const {
   ACTOR, LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE,
 } = require('../utils/orderModelV2');
 const { appendEntry, deriveOrderTotals } = require('../services/orderLedgerService');
+const { consumeStock, releaseStock } = require('../utils/inventory');
+const ExchangeReplacementService = require('../services/ExchangeReplacementService');
 
 const customerOwnsOrder = (order, user) => {
   const isOwnedByCustomerId = Number(order.customer_id) === Number(user?.id);
@@ -197,13 +199,6 @@ class OrderItemActionController {
           totals.platform_fee = roundMoney(refundInfo.platformFee);
           totals.cod_fee = roundMoney(refundInfo.codFee);
           totals.gift_charge = roundMoney(refundInfo.giftCharge);
-          // Payment-gateway cost retained on the refund (fee + GST on the fee), so the
-          // estimate the customer confirms matches what is actually paid out.
-          totals.payment_gateway_fee = roundMoney(refundInfo.paymentGatewayFee);
-          totals.payment_gateway_fee_gst = roundMoney(refundInfo.paymentGatewayFeeGst);
-          totals.payment_gateway_charge = roundMoney(refundInfo.paymentGatewayCharge);
-          totals.payment_gateway_fee_percent = refundInfo.gatewayFeePercent;
-          totals.payment_gateway_gst_percent = refundInfo.gatewayGstPercent;
         }
         if ((refundInfo.originalCouponCode && refundInfo.currentDiscount > 0) || refundInfo.couponAdjustment > 0) {
           couponBreakdown = {
@@ -561,6 +556,68 @@ class OrderItemActionController {
         }
         await item.update({ status: itemStatus }, { transaction });
 
+        // ── Inventory ────────────────────────────────────────────────────────────────
+        // Completing a reverse action is the moment the goods physically move, so it is
+        // the moment stock must move. Neither return nor exchange did this before: a
+        // returned saree was never sellable again, and an exchanged colour was validated
+        // at request time but never actually consumed — so two customers could each be
+        // promised the last piece of a colour, and stock drifted by a unit per request.
+        if (nextStatus === ACTION_STATUS.COMPLETED) {
+          const returnedColorId = item.colorId ?? item.color_id ?? null;
+
+          if (groupAction.action_type === ACTION_TYPES.RETURN) {
+            // The item is back on the shelf.
+            await releaseStock({
+              productId: groupAction.product_id || item.product_id,
+              colorId: returnedColorId,
+              quantity,
+              transaction,
+            });
+          }
+
+          if (groupAction.action_type === ACTION_TYPES.EXCHANGE) {
+            const exchangeColorId = groupAction.meta?.exchange_color_id ?? null;
+            const sameColor = exchangeColorId === null
+              || String(exchangeColorId) === String(returnedColorId);
+
+            // A colour swap is a release of the old and a consume of the new. When the
+            // customer kept the same colour (a straight replacement) the two cancel out,
+            // so touch nothing rather than churn the row.
+            if (!sameColor) {
+              await releaseStock({
+                productId: groupAction.product_id || item.product_id,
+                colorId: returnedColorId,
+                quantity,
+                transaction,
+              });
+              // Stock was checked when the exchange was REQUESTED, which may have been days
+              // ago — it can be gone by now. consumeStock throws rather than going negative,
+              // rolling the whole completion back, so we never promise a saree we don't have.
+              // The admin's way out is to restock the colour or reject the exchange.
+              await consumeStock({
+                productId: groupAction.product_id || item.product_id,
+                colorId: exchangeColorId,
+                quantity,
+                transaction,
+                label: `${item.product_name || 'this product'} (${groupAction.meta?.exchange_color_name || `colour #${exchangeColorId}`})`,
+              });
+
+              // The customer now owns the NEW colour — point the order item at it (and at
+              // the matching variant SKU, which is colour-specific) so the order, the
+              // replacement shipment and any future return of this item all describe the
+              // saree they actually have. The swap itself stays on the action row.
+              const product = await Product.findByPk(groupAction.product_id || item.product_id, {
+                attributes: ['id', 'sku', 'variant_skus'],
+                transaction,
+              });
+              await item.update({
+                colorId: exchangeColorId,
+                sku: product?.variant_skus?.[String(exchangeColorId)] || item.sku,
+              }, { transaction });
+            }
+          }
+        }
+
         await groupAction.update({
           status: nextStatus,
           reviewed_by: req.user?.id || null,
@@ -635,14 +692,30 @@ class OrderItemActionController {
               console.error('[Email] Completion email failed:', err.message);
             });
 
-            // Bug #5: Exchange replacement admin alert
+            // Ship the replacement. This used to be a console.warn telling you to do it by
+            // hand — so the order read "Exchange Completed" while the customer waited for a
+            // saree no system had been told to send. Now it raises a real FORWARD shipment
+            // and pushes it to ShipRocket, and the customer gets tracking like any dispatch.
+            // Post-commit and best-effort: the goods are already back with us, so a courier
+            // outage must not roll the completion back.
             if (action.action_type === ACTION_TYPES.EXCHANGE) {
-              const adminEmail = process.env.ADMIN_EMAIL;
-              if (adminEmail && EmailService.sendOrderStatusUpdate) {
-                const alertOrder = { ...fullOrder.toJSON(), exchange_alert: true };
-                EmailService.sendOrderStatusUpdate(alertOrder, 'Exchange Completed - Replacement Required').catch(() => {});
+              const replacement = await ExchangeReplacementService.createReplacement({
+                orderId: action.order_id,
+                actionIds: groupActions.map((row) => row.id),
+              });
+
+              if (!replacement.booked) {
+                // Still owed to the customer. Alert loudly — this is the one case that needs
+                // a human, instead of the old behaviour where EVERY exchange did.
+                const adminEmail = process.env.ADMIN_EMAIL;
+                if (adminEmail && EmailService.sendOrderStatusUpdate) {
+                  const alertOrder = { ...fullOrder.toJSON(), exchange_alert: true };
+                  EmailService.sendOrderStatusUpdate(alertOrder, 'Exchange Completed - Replacement Required').catch(() => {});
+                }
+                console.error(`[Exchange] Order #${fullOrder.order_number || fullOrder.id}: replacement NOT booked (${replacement.error || 'unknown'}) — shipment #${replacement.shipmentId} needs a manual re-book.`);
+              } else {
+                console.log(`[Exchange] Order #${fullOrder.order_number || fullOrder.id}: replacement shipment #${replacement.shipmentId} pushed to ShipRocket (SR #${replacement.shiprocketOrderId}).`);
               }
-              console.warn(`[Exchange] Action #${action.id} for Order #${fullOrder.order_number || fullOrder.id} completed — replacement shipment must be created manually.`);
             }
           } catch (err) {
             console.error('[OrderItemAction] post-complete async error:', err.message);
@@ -660,6 +733,11 @@ class OrderItemActionController {
       });
     } catch (error) {
       await transaction.rollback();
+      // Out-of-stock on an exchange completion is an actionable business outcome, not a
+      // server fault — the admin needs to read it, not a generic 500.
+      if (error?.statusCode || error?.status) {
+        return res.status(error.statusCode || error.status).json({ message: error.message });
+      }
       console.error('[OrderItemAction] admin update error:', error);
       return res.status(500).json({ message: 'Unable to update this request right now.' });
     }
@@ -756,13 +834,15 @@ class OrderItemActionController {
         refundRow ? Number(refundRow.amount || 0) : estimateTotal,
       ));
 
-      // The gateway keeps its fee on the ORIGINAL transaction, so it is retained
-      // out of the refund. Without this entry the ledger would show the order
-      // still owing the customer that amount, because the per-item reversals
-      // credit back more than the refund debits.
+      // LEGACY ONLY. Retaining a payment-gateway charge on a full return was reverted —
+      // computeReturnRefund no longer computes one, so `payment_gateway_charge` is absent
+      // from every new breakdown and this is a no-op. It stays for refund rows created
+      // while that policy was live: their stored amount already has the charge deducted, so
+      // without this debit the ledger would settle short and show the order still owing the
+      // customer money we never actually paid them.
       const gatewayCharge = roundMoney(Number(refundRow?.breakdown?.payment_gateway_charge || 0));
       if (gatewayCharge > 0) {
-        await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PAYMENT_FEE, amount: gatewayCharge, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: primaryAction.id, note: 'Return — payment gateway charge retained on the original transaction' }, transaction);
+        await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PAYMENT_FEE, amount: gatewayCharge, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: primaryAction.id, note: 'Return — payment gateway charge retained (legacy policy)' }, transaction);
       }
 
       if (returnRefundAmount > 0) {

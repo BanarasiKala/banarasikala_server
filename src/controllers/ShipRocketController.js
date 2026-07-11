@@ -46,33 +46,10 @@ const courierMoney = (data, keys) => {
 
 // Money keys of the courier rate card captured at checkout. rtoChargeOf / the COD math
 // read from these; without them a charge silently computes to 0.
-const RATE_CARD_MONEY_KEYS = [
-  'rate', 'freight_charge', 'courier_charge',
-  'rto_charges', 'rto_charge', 'rto_freight_charge',
-  'cod_charges', 'cod_charge', 'cod_multiplier', 'whatsapp_charges', 'whatsapp_charge',
-];
+// Rate-card helpers live in utils/rateCard — the exchange-replacement flow needs the same
+// "carry the order's rate card onto the new forward shipment" logic that RTO re-dispatch does.
+const { hasCourierRateCard, findOrderRateCard } = require('../utils/rateCard');
 
-// True only when selected_courier_data actually carries the rate card. The AWB-assigned
-// webhook OVERLAYS {courier_name, courier_company_id, awb_code, etd, awb_assigned_date}
-// onto whatever is already there — so a shipment created WITHOUT a rate card ends up
-// holding just those five keys. That looks populated but has no money fields, which is
-// how an RTO charge quietly became 0.
-const hasCourierRateCard = (data) => {
-  const d = data || {};
-  return RATE_CARD_MONEY_KEYS.some((k) => d[k] !== undefined && d[k] !== null && d[k] !== '');
-};
-
-// The order's rate card, resolved from the EARLIEST forward shipment that actually has
-// one (the original dispatch captured it at checkout). Resilient to shipments created by
-// paths that don't persist it (e.g. the admin pushOrder route).
-const findOrderRateCard = async (orderId, transaction) => {
-  const shipments = await Shipment.findAll({
-    where: { order_id: orderId, type: SHIPMENT_TYPE.FORWARD },
-    order: [['created_at', 'ASC']],
-    ...(transaction ? { transaction } : {}),
-  });
-  return shipments.find((s) => hasCourierRateCard(s.selected_courier_data))?.selected_courier_data || null;
-};
 // The forward charge to recover on an RTO is the full delivery charge the buyer was
 // quoted — base rate + WhatsApp charge (and the COD charge for a COD order) — which is
 // stored on the shipment's forward_charge at checkout. Prefer it so the re-dispatch
