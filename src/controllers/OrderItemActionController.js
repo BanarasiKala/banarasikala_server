@@ -334,6 +334,9 @@ class OrderItemActionController {
         entries: result.entries,
         actionType,
         reason: req.body.reason,
+        // The courier whose reverse rate was quoted and deducted — stamped onto the
+        // REVERSE shipment so its rate card is never blank.
+        pickupRateCard: result.pickupRateCard,
       });
 
       const EmailService = require('../services/EmailService');

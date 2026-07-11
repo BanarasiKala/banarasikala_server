@@ -88,31 +88,81 @@ const itemWeightKg = (item) => {
 const PICKUP_RATE_TTL_MS = 6 * 60 * 60 * 1000;
 const PICKUP_RATE_CACHE_MAX = 500;
 const pickupRateCache = new Map();
-const getWeightBasedPickupRate = async (pincode, weightKg) => {
+
+/**
+ * The reverse pickup QUOTE: the cheapest serviceable courier and its rate.
+ *
+ * Returns the whole courier, not just the number. The rate we charge the customer belongs
+ * to a specific courier, and that courier is what gets written onto the REVERSE shipment's
+ * rate card — otherwise the shipment has a charge nobody can attribute and a blank
+ * selected_courier_data.
+ *
+ * Cached per pincode+weight so the submit path (inside a DB transaction) and the shipment
+ * row both reuse the estimate's lookup instead of firing fresh HTTP round-trips — and so
+ * all three agree on the SAME courier.
+ *
+ * @returns {Promise<{rate: number, courier: object|null}>}
+ */
+const getWeightBasedPickupQuote = async (pincode, weightKg) => {
   const key = `${pincode}|${weightKg}`;
   const hit = pickupRateCache.get(key);
-  if (hit && Date.now() - hit.at < PICKUP_RATE_TTL_MS) return hit.rate;
+  if (hit && Date.now() - hit.at < PICKUP_RATE_TTL_MS) return { rate: hit.rate, courier: hit.courier };
 
   // REVERSE rate: customer -> warehouse, priced off ShipRocket's return rate card.
   // This used to call getServiceableCouries(), which hardcodes the warehouse as the
   // pickup postcode — i.e. it quoted an OUTBOUND delivery rate, the wrong direction and
   // the wrong rate card, and charged it to the customer as a "return pickup charge".
   const data = await ShipRocketService.getReverseServiceableCouriers(pincode, weightKg);
-  const rate = pickCheapestCourierRate(data);
+  const courier = pickCheapestCourier(data);
+  const rate = courier ? roundMoney(Number(courier.rate || courier.freight_charge || 0)) : 0;
 
-  pickupRateCache.set(key, { rate, at: Date.now() });
+  pickupRateCache.set(key, { rate, courier, at: Date.now() });
   if (pickupRateCache.size > PICKUP_RATE_CACHE_MAX) {
     pickupRateCache.delete(pickupRateCache.keys().next().value);
   }
-  return rate;
+  return { rate, courier };
+};
+
+/** Cheapest serviceable courier (null when none are serviceable / none quote a rate). */
+const pickCheapestCourier = (data) => {
+  const priced = (data?.data?.available_courier_companies || [])
+    .map((courier) => ({ courier, rate: Number(courier.rate || courier.freight_charge || 0) }))
+    .filter(({ rate }) => rate > 0);
+  if (!priced.length) return null;
+  return priced.reduce((best, row) => (row.rate < best.rate ? row : best)).courier;
 };
 
 /** Cheapest quoted rate across serviceable couriers (0 when none are serviceable). */
 const pickCheapestCourierRate = (data) => {
-  const rates = (data?.data?.available_courier_companies || [])
-    .map((courier) => Number(courier.rate || courier.freight_charge || 0))
-    .filter((rate) => rate > 0);
-  return rates.length ? roundMoney(Math.min(...rates)) : 0;
+  const courier = pickCheapestCourier(data);
+  return courier ? roundMoney(Number(courier.rate || courier.freight_charge || 0)) : 0;
+};
+
+/**
+ * The rate card we store on the REVERSE shipment at request time — the courier whose rate
+ * the customer was actually charged. Mirrors the forward shipment's selected_courier_data
+ * shape (reverseChargeFromShipment reads .rate / .freight_charge off it), so the reverse
+ * leg is introspectable exactly like the forward one.
+ *
+ * `quoted_to_customer` is the figure locked into the refund. The webhook later overlays the
+ * courier ShipRocket actually assigned + what it really cost (recordActualReversePickupCharge)
+ * without touching this, so a mismatch between the two is always visible.
+ */
+const reverseRateCardOf = (courier, rate) => {
+  if (!courier) return null;
+  return {
+    courier_company_id: courier.courier_company_id ?? null,
+    courier_name: courier.courier_name || null,
+    rate: roundMoney(Number(rate || courier.rate || courier.freight_charge || 0)),
+    freight_charge: roundMoney(Number(courier.freight_charge || courier.rate || 0)),
+    etd: courier.etd ?? null,
+    estimated_delivery_days: courier.estimated_delivery_days ?? null,
+    rating: courier.rating ?? null,
+    direction: 'reverse',
+    rate_source: 'cheapest_serviceable',
+    quoted_to_customer: roundMoney(Number(rate || 0)),
+    quoted_at: new Date().toISOString(),
+  };
 };
 
 /**
@@ -349,9 +399,12 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
   // time and never revised. What the courier ultimately bills us is recorded separately
   // on the REVERSE shipment (see recordActualReversePickupCharge) for reconciliation only.
   let rawPickupCharge = 0;
+  let pickupCourier = null;
   try {
     if (/^\d{6}$/.test(pincode)) {
-      rawPickupCharge = await getWeightBasedPickupRate(pincode, pickupWeightKg);
+      const quote = await getWeightBasedPickupQuote(pincode, pickupWeightKg);
+      rawPickupCharge = quote.rate;
+      pickupCourier = quote.courier;
     }
   } catch (error) {
     console.error('[OrderReturnService] pickup rate lookup failed:', error?.response?.data || error.message);
@@ -363,7 +416,15 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
       transaction,
     });
     rawPickupCharge = reverseChargeFromShipment(forwardShipment);
+    pickupCourier = null; // Fell back to the forward rate card — no reverse courier was quoted.
   }
+  // The rate card for whichever courier the charge came from (null on the fallback path).
+  // `quoted_to_customer` is stamped per branch, because the charge actually deducted can be
+  // capped below the courier's quote when the refund can't absorb it.
+  const baseRateCard = reverseRateCardOf(pickupCourier, rawPickupCharge);
+  const pickupRateCardFor = (deducted) => (baseRateCard
+    ? { ...baseRateCard, quoted_to_customer: roundMoney(deducted) }
+    : null);
 
   // Full-order return — nothing is kept, so there's no "remaining subtotal"
   // to re-rate a coupon against. Skip that machinery entirely.
@@ -414,6 +475,7 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
     return {
       returnedValue, remainingSubtotal, currentDiscount, newDiscount: 0, couponAdjustment,
       returnShippingCharge, pickupWeightKg, refundAmount,
+      pickupRateCard: pickupRateCardFor(returnShippingCharge),
       originalCouponCode: code, originalCouponEligible: false, appliedCouponCode: null,
       isFullReturn: true, amountPaid, walletAmount, platformFee, codFee, giftCharge,
       paymentGatewayFee, paymentGatewayFeeGst, paymentGatewayCharge,
@@ -428,6 +490,7 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
       returnedValue, remainingSubtotal, currentDiscount,
       newDiscount: currentDiscount, couponAdjustment: 0, returnShippingCharge, pickupWeightKg,
       refundAmount: roundMoney(Math.max(0, returnedValue - returnShippingCharge)),
+      pickupRateCard: pickupRateCardFor(returnShippingCharge),
       originalCouponCode: code, originalCouponEligible: true, appliedCouponCode: code,
       isFullReturn: false,
     };
@@ -475,6 +538,7 @@ const computeReturnRefund = async ({ order, orderItems, itemActions, targets, tr
   return {
     returnedValue, remainingSubtotal, currentDiscount, newDiscount, couponAdjustment,
     returnShippingCharge, pickupWeightKg, refundAmount,
+    pickupRateCard: pickupRateCardFor(returnShippingCharge),
     originalCouponCode: code, originalCouponEligible, appliedCouponCode,
     isFullReturn: false,
   };
@@ -636,6 +700,10 @@ const createReverseActions = async ({
       } : null,
       return_shipping_charge: refundInfo.returnShippingCharge,
       return_shipping_weight_kg: refundInfo.pickupWeightKg,
+      // WHOSE rate the customer was charged — the cheapest serviceable reverse courier at
+      // request time. Persisted so the charge is always attributable, and so it can be
+      // compared against the courier ShipRocket actually assigns.
+      return_shipping_courier: refundInfo.pickupRateCard || null,
       refund_amount: totalRefund,
       items: entries.map(({ action, item, quantity, calculation }) => ({
         order_item_id: item.id,
@@ -718,7 +786,15 @@ const createReverseActions = async ({
     reason: cleanReason,
   }, { transaction });
 
-  return { entries, actions: entries.map((entry) => entry.action), refundRow };
+  // pickupRateCard travels out so finalizeReverseActions can stamp it onto the REVERSE
+  // shipment without a second serviceability lookup — guaranteeing the shipment's rate card
+  // names the very courier whose rate was deducted from the refund.
+  return {
+    entries,
+    actions: entries.map((entry) => entry.action),
+    refundRow,
+    pickupRateCard: refundInfo?.pickupRateCard || null,
+  };
 };
 
 /**
@@ -764,13 +840,27 @@ const recordActualReversePickupCharge = async ({
     //  on the Shipment model is 'the courier cost of THIS shipment' — for a
     // REVERSE row that is the pickup cost. This is purely our record of what the leg really
     // cost; the customer's refund is left exactly as quoted.
+    // The row already carries the QUOTED rate card (the cheapest serviceable reverse courier,
+    // written when the return was placed). Overlay the courier ShipRocket actually assigned
+    // WITHOUT destroying the quote — the whole point of recording the actual is to be able to
+    // compare the two, which is impossible if one overwrites the other.
+    const quotedCard = reverseShipment.selected_courier_data || {};
     await reverseShipment.update({
       forward_charge: actual.rate,
       selected_courier_data: {
-        ...(reverseShipment.selected_courier_data || {}),
-        rate: actual.rate,
-        rate_source: actual.matched ? 'assigned_courier' : 'cheapest_serviceable',
+        ...quotedCard,
+        // What we quoted and locked into the customer's refund — never revised.
+        quoted_courier_name: quotedCard.quoted_courier_name ?? quotedCard.courier_name ?? null,
+        quoted_courier_company_id: quotedCard.quoted_courier_company_id ?? quotedCard.courier_company_id ?? null,
+        quoted_rate: quotedCard.quoted_rate ?? quotedCard.rate ?? quoted,
         quoted_to_customer: quoted,
+        // What ShipRocket actually assigned and what it really costs us.
+        courier_name: actual.courierName || quotedCard.courier_name || null,
+        courier_company_id: courierCompanyId ?? quotedCard.courier_company_id ?? null,
+        rate: actual.rate,
+        actual_rate: actual.rate,
+        rate_source: actual.matched ? 'assigned_courier' : 'cheapest_serviceable',
+        recorded_at: new Date().toISOString(),
       },
     });
 
@@ -780,12 +870,12 @@ const recordActualReversePickupCharge = async ({
     return null;
   }
 };
-const finalizeReverseActions = async ({ order, entries, actionType, reason }) => {
+const finalizeReverseActions = async ({ order, entries, actionType, reason, pickupRateCard = null }) => {
   // `booked` tells the caller whether the courier actually accepted the reverse pickup.
   // It is false whenever the push threw OR came back without SR identifiers.
   const result = {
     shiprocketReturnId: null, shipmentId: null, reverseShipmentId: null,
-    detail: null, booked: false, error: null,
+    detail: null, booked: false, error: null, pickupRateCard: null,
   };
   const anchorAction = entries[0]?.action || null;
 
@@ -844,6 +934,23 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason }) =>
   // dashboard assigns a courier, same as forward.
   let reverseShipment = null;
   try {
+    // The rate card for the courier whose reverse rate was quoted and deducted. Returns
+    // carry it through from computeReturnRefund (no second lookup — same courier, by
+    // construction). Exchanges never price a pickup, so quote one here purely to give the
+    // shipment a courier; a cache hit makes this free for returns anyway.
+    let rateCard = pickupRateCard || null;
+    if (!rateCard && address?.pincode) {
+      try {
+        const weightKg = Math.max(0.1, roundMoney(
+          entries.reduce((sum, { item, quantity }) => sum + itemWeightKg(item) * Number(quantity || 0), 0),
+        ));
+        const quote = await getWeightBasedPickupQuote(String(address.pincode).trim(), weightKg);
+        rateCard = reverseRateCardOf(quote.courier, quote.rate);
+      } catch (quoteError) {
+        console.error('[OrderReturnService] reverse courier lookup for shipment failed:', quoteError.message);
+      }
+    }
+
     reverseShipment = await Shipment.findOne({
       where: { order_id: order.id, type: SHIPMENT_TYPE.REVERSE },
       order: [['created_at', 'DESC']],
@@ -856,9 +963,15 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason }) =>
         status: SHIPMENT_STATUS.CREATED,
         // forward_charge is the FORWARD leg's cost; a reverse pickup has none.
         forward_charge: 0,
+        // No longer blank: the courier + rate we quoted, available from the moment the
+        // return is placed rather than only after the webhook fires.
+        selected_courier_data: rateCard,
       });
+    } else if (rateCard && !reverseShipment.selected_courier_data) {
+      await reverseShipment.update({ selected_courier_data: rateCard });
     }
     result.reverseShipmentId = reverseShipment.id;
+    result.pickupRateCard = rateCard;
   } catch (shipmentError) {
     // Non-fatal: never fail a customer's return over our own bookkeeping row.
     console.error('[OrderReturnService] could not create REVERSE shipment row:', shipmentError.message);

@@ -726,12 +726,23 @@ class ShipRocketController {
           }
           // Courier details land on the AWB-assigned scan (the "Ship Now" moment).
           if (nextStatus === 'AWB Assigned' || (awb && !reverseShipment.awb_number)) {
+            const quotedCard = reverseShipment.selected_courier_data || {};
             revUpdate.selected_courier_data = {
-              ...(reverseShipment.selected_courier_data || {}),
-              courier_name: payload.courier_name || reverseShipment.selected_courier_data?.courier_name || null,
-              courier_company_id: payload.courier_id ?? reverseShipment.selected_courier_data?.courier_company_id ?? null,
+              ...quotedCard,
+              // The row already carries the courier we QUOTED at request time (the cheapest
+              // serviceable reverse rate, which is what the customer's refund was charged).
+              // Snapshot that identity before overwriting courier_name/id with whoever
+              // ShipRocket actually assigned — otherwise the quote is lost and the post-commit
+              // reconciliation records the assigned courier as its own baseline.
+              // `??` so a re-scan can never overwrite the snapshot with the assigned courier.
+              quoted_courier_name: quotedCard.quoted_courier_name ?? quotedCard.courier_name ?? null,
+              quoted_courier_company_id: quotedCard.quoted_courier_company_id ?? quotedCard.courier_company_id ?? null,
+              quoted_rate: quotedCard.quoted_rate ?? quotedCard.rate ?? null,
+
+              courier_name: payload.courier_name || quotedCard.courier_name || null,
+              courier_company_id: payload.courier_id ?? quotedCard.courier_company_id ?? null,
               awb_code: awb ? String(awb) : reverseShipment.awb_number || null,
-              etd: payload.etd || reverseShipment.selected_courier_data?.etd || null,
+              etd: payload.etd || quotedCard.etd || null,
               awb_assigned_date: payload.awb_assigned_date || payload.current_timestamp || null,
             };
           }
