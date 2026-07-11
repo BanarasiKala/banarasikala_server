@@ -310,6 +310,10 @@ const resolveTargets = ({ orderItems, itemActions, selections }) => {
         quantity,
         exchangeColorId: selection.exchangeColorId ?? null,
         exchangeColorName: selection.exchangeColorName ?? null,
+        // A DIFFERENT product at exactly the same price (null = same product).
+        // Already validated in OrderItemActionController.create.
+        exchangeProductId: selection.exchangeProductId ?? null,
+        exchangeProductName: selection.exchangeProductName ?? null,
       };
     });
   }
@@ -574,7 +578,9 @@ const createReverseActions = async ({
   let pickupLeft = refundInfo ? refundInfo.returnShippingCharge : 0;
 
   for (let index = 0; index < targets.length; index += 1) {
-    const { item, quantity, exchangeColorId, exchangeColorName } = targets[index];
+    const {
+      item, quantity, exchangeColorId, exchangeColorName, exchangeProductId, exchangeProductName,
+    } = targets[index];
     const calculation = calculateItemAction({ item, actionType, quantity });
     let couponShare = 0;
     let pickupShare = 0;
@@ -611,9 +617,23 @@ const createReverseActions = async ({
         customer_message: comments || null,
         sku: item.sku || null,
         color_id: item.colorId || item.color_id || null,
-        // Exchange: the colour variant of the same product the customer wants.
+        // Exchange: what the customer wants INSTEAD. The colour variant, and — when they
+        // picked a DIFFERENT product at exactly the same price — that product. Absent
+        // exchange_product_id means the swap stays within the same product.
         ...(actionType === ACTION_TYPES.EXCHANGE && exchangeColorId
           ? { exchange_color_id: exchangeColorId, exchange_color_name: exchangeColorName || null }
+          : {}),
+        ...(actionType === ACTION_TYPES.EXCHANGE && exchangeProductId
+          && Number(exchangeProductId) !== Number(item.product_id)
+          ? {
+            exchange_product_id: exchangeProductId,
+            exchange_product_name: exchangeProductName || null,
+            // The line as it was before the swap — the order row itself is repointed at the
+            // new product on completion, so this is the only record of what they ordered.
+            original_product_id: item.product_id,
+            original_product_name: item.product_name || null,
+            original_sku: item.sku || null,
+          }
           : {}),
         ...(couponShare > 0 ? { coupon_adjustment: couponShare, coupon_code: order.coupon_code || null } : {}),
       },

@@ -26,6 +26,8 @@ router.post('/admin/item-actions/:actionId/initiate-refund', authMiddleware, adm
 // Customer return and exchange requests (post-delivery). Item-level
 // cancellation was removed — cancellation is whole-order only via /:id/cancel.
 router.post('/:orderId/item-actions/estimate', authMiddleware, OrderItemActionController.estimate);
+// What an order line can be swapped for: any active product at EXACTLY the price paid.
+router.get('/:orderId/item-actions/exchange-options', authMiddleware, OrderItemActionController.exchangeOptions);
 router.post('/:orderId/item-actions', authMiddleware, OrderItemActionController.create);
 
 // Customer COD refund bank details and admin refund status.
