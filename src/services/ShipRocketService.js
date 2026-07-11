@@ -266,6 +266,47 @@ class ShipRocketService {
   // ─── AWB / COURIER ───────────────────────────────────────────────────────────
 
   /**
+   * Serviceable couriers for a REVERSE (return/exchange) pickup.
+   *
+   * A return travels the OPPOSITE way to a delivery: it starts at the customer and ends
+   * at our warehouse. getServiceableCouries() hardcodes the warehouse as pickup_postcode,
+   * so it can only ever price the FORWARD leg — using it for a return quotes an outbound
+   * delivery rate in the wrong direction. `is_return=1` also tells ShipRocket to price
+   * off the reverse rate card, which differs from the forward one.
+   *
+   * @param {string} pincode - the CUSTOMER's pincode (where the parcel is collected)
+   * @param {number} weight  - billable weight in kg
+   */
+  async getReverseServiceableCouriers(pincode, weight = 0.5) {
+    const headers = await this._headers();
+    const pickupLocation = await this.getActivePickupLocation();
+    const params = new URLSearchParams({
+      pickup_postcode: String(pincode),            // collected FROM the customer
+      delivery_postcode: pickupLocation.postcode,  // delivered TO our warehouse
+      weight: String(weight),
+      cod: '0',                                    // a reverse pickup never collects cash
+      is_return: '1',
+    });
+
+    const response = await axios.get(
+      `${BASE_URL}/courier/serviceability/?${params.toString()}`,
+      { headers }
+    );
+    return {
+      ...response.data,
+      meta: {
+        ...(response.data?.meta || {}),
+        direction: 'reverse',
+        pickup_postcode: String(pincode),
+        delivery_postcode: pickupLocation.postcode,
+        pickup_location: pickupLocation.name,
+        weight: String(weight),
+        is_return: 1,
+      },
+    };
+  }
+
+  /**
    * @param {string|number} shipmentId
    * @param {string} pincode
    * @param {number} weight  - kg

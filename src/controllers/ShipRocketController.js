@@ -665,10 +665,16 @@ class ShipRocketController {
       const prevStatus = order.status;
       let orderStatus = nextStatus;
       const orderUpdate = {};
+      // Set when the reverse courier becomes known; the refund is re-settled against the
+      // real rate AFTER commit so a pricing lookup can never fail the webhook.
+      let reversePickupResettle = null;
 
       if (isReverse) {
         const isExchange = reverseAction.action_type === ACTION_TYPES.EXCHANGE;
         const prefix = isExchange ? 'Exchange' : 'Return';
+        // Capture BEFORE we write the AWB below — this is how we detect the "Ship Now"
+        // moment (the first scan that carries an AWB) rather than re-pricing on every scan.
+        const awbAlreadyKnown = Boolean(reverseAction.shiprocket_return_awb);
         if (nextStatus === 'Shipped') orderStatus = `${prefix} Shipped`;
         else if (nextStatus === 'Returned') orderStatus = `${prefix} Completed`;
         else if (nextStatus === 'RTO Delivered') orderStatus = `${prefix} Completed`;
@@ -736,6 +742,20 @@ class ShipRocketController {
             revUpdate.delivered_at = new Date();
           }
           if (Object.keys(revUpdate).length) await reverseShipment.update(revUpdate, { transaction });
+        }
+
+        // The courier is now known ("Ship Now" was pressed). Re-settle the still-PENDING
+        // refund against the rate ShipRocket will ACTUALLY bill for this courier, instead
+        // of the cheapest-serviceable estimate quoted when the return was requested.
+        // Runs post-commit (never throws) so a pricing lookup can't fail the webhook.
+        if (!isExchange && awb && !awbAlreadyKnown) {
+          reversePickupResettle = {
+            order,
+            reverseAction,
+            reverseShipment,
+            courierCompanyId: payload.courier_id ?? null,
+            courierName: payload.courier_name || null,
+          };
         }
 
         // Terminal reverse scan — the parcel is back with us. Close the open
@@ -946,6 +966,23 @@ class ShipRocketController {
       }
       await transaction.commit();
       committed = true;
+
+      // A courier was just assigned to a reverse pickup. Record what that courier will
+      // ACTUALLY bill us on the REVERSE shipment — purely for reconciliation. The customer's
+      // refund keeps the (cheapest-serviceable) rate they were quoted and agreed to; it is
+      // never re-priced after the fact. Post-commit and non-throwing, so a ShipRocket
+      // pricing hiccup can never fail the webhook.
+      if (reversePickupResettle) {
+        OrderReturnService.recordActualReversePickupCharge(reversePickupResettle)
+          .then((rec) => {
+            if (rec) {
+              console.log(`[Return] Order #${order.id}: reverse pickup quoted Rs. ${rec.quoted}, actual Rs. ${rec.actual}${rec.courierName ? ` (${rec.courierName})` : ''}.`);
+            }
+          })
+          .catch((error) => {
+            console.error(`[Return] actual pickup record failed for order #${order.id}:`, error.message);
+          });
+      }
 
       if (statusChanged) {
         EmailService.sendOrderStatusUpdate({ ...order.toJSON(), ...orderUpdate }, orderStatus).catch((emailError) => {

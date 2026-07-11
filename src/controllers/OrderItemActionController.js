@@ -174,6 +174,13 @@ class OrderItemActionController {
           totals.platform_fee = roundMoney(refundInfo.platformFee);
           totals.cod_fee = roundMoney(refundInfo.codFee);
           totals.gift_charge = roundMoney(refundInfo.giftCharge);
+          // Payment-gateway cost retained on the refund (fee + GST on the fee), so the
+          // estimate the customer confirms matches what is actually paid out.
+          totals.payment_gateway_fee = roundMoney(refundInfo.paymentGatewayFee);
+          totals.payment_gateway_fee_gst = roundMoney(refundInfo.paymentGatewayFeeGst);
+          totals.payment_gateway_charge = roundMoney(refundInfo.paymentGatewayCharge);
+          totals.payment_gateway_fee_percent = refundInfo.gatewayFeePercent;
+          totals.payment_gateway_gst_percent = refundInfo.gatewayGstPercent;
         }
         if ((refundInfo.originalCouponCode && refundInfo.currentDiscount > 0) || refundInfo.couponAdjustment > 0) {
           couponBreakdown = {

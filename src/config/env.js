@@ -92,6 +92,14 @@ const config = {
   packageLengthCm: readNumberEnv("PACKAGE_LENGTH_CM"),
   packageBreadthCm: readNumberEnv("PACKAGE_BREADTH_CM"),
   packageHeightCm: readNumberEnv("PACKAGE_HEIGHT_CM"),
+  // Payment-gateway cost retained on a FULL return. The gateway keeps its fee on the
+  // original transaction even when we refund, so it is not refunded to the customer:
+  //   fee = refund × RETURN_GATEWAY_FEE_PERCENT
+  //   gst = fee    × RETURN_GATEWAY_FEE_GST_PERCENT
+  // Both are percentages (e.g. 2 = 2%). Defaults keep existing behaviour (0 = disabled)
+  // so this can never start deducting money just because an env var is missing.
+  returnGatewayFeePercent: Number(process.env.RETURN_GATEWAY_FEE_PERCENT) || 0,
+  returnGatewayFeeGstPercent: Number(process.env.RETURN_GATEWAY_FEE_GST_PERCENT) || 0,
 };
 
 module.exports = { config };
