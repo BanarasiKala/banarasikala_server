@@ -22,7 +22,9 @@ const {
   blockCustomerCodForOrder,
   toMoney,
 } = require('../utils/orderLifecycle');
-const { ACTION_TYPES, ACTION_STATUS, statusAfterCompletedAction } = require('../utils/orderItemActions');
+const {
+  ACTION_TYPES, ACTION_STATUS, ITEM_STATUS, statusAfterCompletedAction,
+} = require('../utils/orderItemActions');
 const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 const {
   SHIPMENT_TYPE, SHIPMENT_STATUS, RTO_RESOLUTION, ACTOR,
@@ -49,6 +51,21 @@ const courierMoney = (data, keys) => {
 // Rate-card helpers live in utils/rateCard — the exchange-replacement flow needs the same
 // "carry the order's rate card onto the new forward shipment" logic that RTO re-dispatch does.
 const { hasCourierRateCard, findOrderRateCard } = require('../utils/rateCard');
+
+// The order status when the reverse parcel lands back with US.
+//
+// For a RETURN that is the end of the road — the goods are ours again and only the refund
+// remains, which an admin triggers by hand.
+//
+// For an EXCHANGE it is the HALFWAY point: we have the old saree, but the replacement has
+// not been shipped. Labelling that "Exchange Completed" told the customer their exchange was
+// finished while they were still waiting for a saree that hadn't left the building. It stays
+// "Exchange Received" until the replacement is dispatched, at which point the order re-enters
+// the normal forward lifecycle (Processing → AWB Assigned → Shipped → Delivered).
+const RECEIVED_STATUS = {
+  Return: 'Return Completed',
+  Exchange: 'Exchange Received',
+};
 
 // The forward charge to recover on an RTO is the full delivery charge the buyer was
 // quoted — base rate + WhatsApp charge (and the COD charge for a COD order) — which is
@@ -652,11 +669,16 @@ class ShipRocketController {
         // Capture BEFORE we write the AWB below — this is how we detect the "Ship Now"
         // moment (the first scan that carries an AWB) rather than re-pricing on every scan.
         const awbAlreadyKnown = Boolean(reverseAction.shiprocket_return_awb);
+        // The parcel reaching US is the END of a return (money is all that's left, and the
+        // admin does that) but only the HALFWAY point of an exchange — the replacement saree
+        // still has to go out. Calling that "Exchange Completed" told the customer their
+        // exchange was finished while they were still waiting for goods that hadn't shipped.
+        const received = RECEIVED_STATUS[prefix];
         if (nextStatus === 'Shipped') orderStatus = `${prefix} Shipped`;
-        else if (nextStatus === 'Returned') orderStatus = `${prefix} Completed`;
-        else if (nextStatus === 'RTO Delivered') orderStatus = `${prefix} Completed`;
+        else if (nextStatus === 'Returned') orderStatus = received;
+        else if (nextStatus === 'RTO Delivered') orderStatus = received;
         else if (nextStatus === 'Cancelled') orderStatus = `${prefix} Cancelled`;
-        else if (nextStatus === 'Delivered') orderStatus = `${prefix} Delivered`;
+        else if (nextStatus === 'Delivered') orderStatus = received;
         else if (nextStatus === 'Return Picked Up') orderStatus = `${prefix} Picked Up`;
         else if (nextStatus === 'Out For Pickup') orderStatus = `Out For ${prefix} Pickup`;
         else if (nextStatus === 'Pickup Scheduled') orderStatus = `${prefix} Pickup Scheduled`;
@@ -751,7 +773,7 @@ class ShipRocketController {
         // the order status (previously only the order flipped, leaving items
         // stuck on "Return Initiated"). No money moves here — the admin still
         // presses "Initiate refund" explicitly.
-        if (orderStatus === `${prefix} Completed`) {
+        if (orderStatus === RECEIVED_STATUS[prefix]) {
           const reverseType = reverseAction.action_type;
           const allTypeActions = await OrderItemAction.findAll({
             where: { order_id: order.id, action_type: reverseType },
@@ -764,6 +786,17 @@ class ShipRocketController {
             await act.update({ status: ACTION_STATUS.COMPLETED, completed_at: new Date() }, { transaction });
             const itemRow = await OrderItem.findByPk(act.order_item_id, { transaction });
             if (itemRow) {
+              // Stock moves HERE. This scan — not the admin's "Complete" button — is what
+              // normally closes a reverse request, and it used to update statuses and
+              // nothing else: a returned saree was never put back on the shelf and an
+              // exchanged saree was never taken off it. Only ever runs for actions that
+              // were still open, so a duplicate courier scan cannot double-move stock.
+              await OrderReturnService.applyCompletionStock({
+                action: act,
+                orderItem: itemRow,
+                transaction,
+              });
+
               const completedQty = allTypeActions
                 .filter((a) => Number(a.order_item_id) === Number(itemRow.id))
                 .filter((a) => a.id === act.id || a.status === ACTION_STATUS.COMPLETED)
@@ -860,6 +893,39 @@ class ShipRocketController {
               }, transaction);
             }
             orderUpdate.payment_status = 'Paid';
+          }
+        }
+
+        // THIS is where an exchange actually finishes: the REPLACEMENT has reached the
+        // customer. Until now the item was parked on "Exchange Received" (old saree back with
+        // us) — promote it, and the order, to Completed.
+        //
+        // The replacement shipment carries exchange_action_id, so there is no guessing about
+        // which exchange it closes. Guarded on the shipment, not the order, because an order
+        // can hold several forward shipments (original dispatch, RTO re-dispatch, this).
+        if (nextStatus === 'Delivered' && forwardShipment?.exchange_action_id) {
+          const exchangeAction = await OrderItemAction.findByPk(
+            forwardShipment.exchange_action_id,
+            { transaction },
+          );
+          if (exchangeAction) {
+            const groupId = Number(exchangeAction.request_group_id || exchangeAction.id);
+            const groupActions = await OrderItemAction.findAll({
+              where: {
+                order_id: order.id,
+                action_type: ACTION_TYPES.EXCHANGE,
+                [Op.or]: [{ request_group_id: groupId }, { id: groupId }],
+              },
+              transaction,
+            });
+            await OrderItem.update(
+              { status: ITEM_STATUS.EXCHANGE_COMPLETED },
+              {
+                where: { id: groupActions.map((a) => a.order_item_id) },
+                transaction,
+              },
+            );
+            orderStatus = 'Exchange Completed';
           }
         }
 
@@ -1159,6 +1225,11 @@ class ShipRocketController {
           type: SHIPMENT_TYPE.FORWARD, status: SHIPMENT_STATUS.CREATED, forward_charge: F,
           selected_courier_data: orderRateCard || rtoShipment?.selected_courier_data || null,
           rto_event_id: rto.id,
+          // If the shipment that RTO'd was an exchange REPLACEMENT, this re-dispatch is still
+          // that replacement — carry the link. Without it the delivery scan can't tell which
+          // exchange it closes, and the item would sit on "Exchange Received" forever even
+          // after the customer has the saree in their hands.
+          exchange_action_id: rtoShipment?.exchange_action_id || null,
         }, { transaction });
         await ShipmentItem.bulkCreate(items.map((i) => ({ shipment_id: shipment.id, order_item_id: i.id, quantity: i.quantity })), { transaction });
 

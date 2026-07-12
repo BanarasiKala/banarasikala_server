@@ -32,10 +32,10 @@ const {
   ACTOR, LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE, SHIPMENT_TYPE,
 } = require('../utils/orderModelV2');
 const { appendEntry, deriveOrderTotals } = require('../services/orderLedgerService');
-const { consumeStock, releaseStock } = require('../utils/inventory');
-const {
-  normalizeTarget, exchangeTargetsOf, totalTargetQuantity,
-} = require('../utils/exchangeTargets');
+// Stock movement for a completed reverse action lives in OrderReturnService
+// (applyCompletionStock) — shared with the courier webhook, which is the path that normally
+// completes a request.
+const { normalizeTarget, totalTargetQuantity } = require('../utils/exchangeTargets');
 const ExchangeReplacementService = require('../services/ExchangeReplacementService');
 
 const customerOwnsOrder = (order, user) => {
@@ -756,73 +756,21 @@ class OrderItemActionController {
         await item.update({ status: itemStatus }, { transaction });
 
         // ── Inventory ────────────────────────────────────────────────────────────────
-        // Completing a reverse action is the moment the goods physically move, so it is
-        // the moment stock must move. Neither return nor exchange did this before: a
-        // returned saree was never sellable again, and an exchanged colour was validated
-        // at request time but never actually consumed — so two customers could each be
-        // promised the last piece of a colour, and stock drifted by a unit per request.
+        // Completing a reverse action is the moment the goods change hands, so it is the
+        // moment stock moves. Shared with the courier webhook (which completes requests
+        // automatically on RETURN DELIVERED and is the path that normally fires) so both
+        // routes settle inventory identically — see OrderReturnService.applyCompletionStock.
+        //
+        // NOTE: the order line is deliberately NOT repointed at the new saree. The quantity
+        // can be split across SEVERAL products (2 × A + 1 × B) and one order_items row
+        // cannot represent two products; and the line is the record of what was PURCHASED
+        // and paid for, which an exchange does not change. The swap lives on the action row.
         if (nextStatus === ACTION_STATUS.COMPLETED) {
-          const returnedColorId = item.colorId ?? item.color_id ?? null;
-
-          if (groupAction.action_type === ACTION_TYPES.RETURN) {
-            // The item is back on the shelf.
-            await releaseStock({
-              productId: groupAction.product_id || item.product_id,
-              colorId: returnedColorId,
-              quantity,
-              transaction,
-            });
-          }
-
-          if (groupAction.action_type === ACTION_TYPES.EXCHANGE) {
-            const returnedProductId = Number(groupAction.product_id || item.product_id);
-            const targets = exchangeTargetsOf(groupAction, item);
-
-            // A like-for-like swap (same saree, same colour, whole quantity) nets to zero —
-            // don't churn the stock rows for it.
-            const isLikeForLike = targets.length === 1
-              && Number(targets[0].product_id) === returnedProductId
-              && String(targets[0].color_id ?? '') === String(returnedColorId ?? '');
-
-            if (!isLikeForLike) {
-              // Everything handed back goes on the shelf...
-              await releaseStock({
-                productId: returnedProductId,
-                colorId: returnedColorId,
-                quantity,
-                transaction,
-              });
-
-              // ...and every unit going out comes off it. Stock was checked when the
-              // exchange was REQUESTED, possibly days ago, and can be gone by now.
-              // consumeStock throws rather than going negative, rolling the whole completion
-              // back, so we never promise a saree we don't have. The admin's way out is to
-              // restock it or reject the exchange.
-              for (const target of targets) {
-                const label = target.color_name
-                  ? `${target.product_name || 'this product'} (${target.color_name})`
-                  : (target.product_name || 'this product');
-                await consumeStock({
-                  productId: target.product_id,
-                  colorId: target.color_id,
-                  quantity: target.quantity,
-                  transaction,
-                  label,
-                });
-              }
-            }
-
-            // NOTE: the order line is deliberately NOT repointed at the new saree.
-            //   • The quantity can now be split across SEVERAL products (2 × A + 1 × B), and
-            //     one order_items row cannot represent two products — there is nothing
-            //     coherent to repoint it to.
-            //   • The line is the record of what was PURCHASED and paid for, which an
-            //     exchange does not change. Its price still backs the PRODUCT_CHARGE in the
-            //     ledger, and no money moved.
-            // What was actually swapped lives on the action row (exchange_targets +
-            // original_*), which is where the order page, the admin queue and the
-            // replacement shipment all read it from.
-          }
+          await OrderReturnService.applyCompletionStock({
+            action: groupAction,
+            orderItem: item,
+            transaction,
+          });
         }
 
         await groupAction.update({
@@ -875,11 +823,18 @@ class OrderItemActionController {
         }, { transaction });
       }
 
-      // Completing a return/exchange also moves the ORDER status (the courier
-      // webhook normally does this, but an admin can complete first) so the
-      // order and its items never disagree.
+      // Completing a return/exchange also moves the ORDER status (the courier webhook
+      // normally does this, but an admin can complete first) so the order and its items
+      // never disagree.
+      //
+      // An exchange goes to "Exchange Received", NOT "Exchange Completed": the old saree is
+      // back, but the replacement has not shipped. Must match RECEIVED_STATUS in
+      // ShipRocketController or the two completion paths would label the same event
+      // differently.
       if (nextStatus === ACTION_STATUS.COMPLETED && [ACTION_TYPES.RETURN, ACTION_TYPES.EXCHANGE].includes(action.action_type)) {
-        const completedLabel = action.action_type === ACTION_TYPES.EXCHANGE ? 'Exchange Completed' : 'Return Completed';
+        const completedLabel = action.action_type === ACTION_TYPES.EXCHANGE
+          ? 'Exchange Received'
+          : 'Return Completed';
         await Order.update({ status: completedLabel }, { where: { id: action.order_id }, transaction });
       }
 
@@ -894,7 +849,11 @@ class OrderItemActionController {
             if (!fullOrder) return;
 
             // Send customer status email
-            const emailStatus = action.action_type === ACTION_TYPES.RETURN ? 'Return Completed' : 'Exchange Completed';
+            // "Exchange Received", not "Exchange Completed" — the replacement has not shipped
+            // yet, and the Completed copy promises the customer it has.
+            const emailStatus = action.action_type === ACTION_TYPES.RETURN
+              ? 'Return Completed'
+              : 'Exchange Received';
             EmailService.sendOrderStatusUpdate(fullOrder, emailStatus).catch((err) => {
               console.error('[Email] Completion email failed:', err.message);
             });

@@ -27,6 +27,11 @@ const ITEM_STATUS = Object.freeze({
   RETURN_COMPLETED: 'Return Completed',
   EXCHANGE_REQUESTED: 'Exchange Initiated',
   PARTIALLY_EXCHANGED: 'Partially Exchanged',
+  // The old saree is back with us — the REPLACEMENT has not been delivered (often not even
+  // shipped). This is where an exchanged item sits for most of its life.
+  EXCHANGE_RECEIVED: 'Exchange Received',
+  // Reached only when the replacement shipment is DELIVERED (ShipRocketController.webhook,
+  // forward branch, on a shipment carrying exchange_action_id).
   EXCHANGE_COMPLETED: 'Exchange Completed',
 });
 
@@ -199,6 +204,13 @@ const statusForRequestedAction = (actionType) => {
 
 // fullyActioned: whether the completed quantity now covers the whole line
 // (derived by the caller from the item's action rows).
+//
+// NOTE the asymmetry: completing a CANCEL or a RETURN really is the end of that item's
+// journey. Completing an EXCHANGE only means the old saree is back with US — the replacement
+// still has to be shipped and delivered. Marking the item "Exchange Completed" here told the
+// customer their exchange was finished while the replacement was still in transit (or not
+// yet dispatched at all), so it lands on EXCHANGE_RECEIVED and is promoted to
+// EXCHANGE_COMPLETED when the replacement shipment is delivered.
 const statusAfterCompletedAction = (actionType, fullyActioned) => {
   if (actionType === ACTION_TYPES.CANCEL) {
     return fullyActioned ? ITEM_STATUS.CANCELLED : ITEM_STATUS.PARTIALLY_CANCELLED;
@@ -206,7 +218,7 @@ const statusAfterCompletedAction = (actionType, fullyActioned) => {
   if (actionType === ACTION_TYPES.RETURN) {
     return fullyActioned ? ITEM_STATUS.RETURN_COMPLETED : ITEM_STATUS.PARTIALLY_RETURNED;
   }
-  return fullyActioned ? ITEM_STATUS.EXCHANGE_COMPLETED : ITEM_STATUS.PARTIALLY_EXCHANGED;
+  return fullyActioned ? ITEM_STATUS.EXCHANGE_RECEIVED : ITEM_STATUS.PARTIALLY_EXCHANGED;
 };
 
 const isDeliveredEnoughForPostDeliveryAction = (order) => {

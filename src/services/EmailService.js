@@ -139,7 +139,11 @@ class EmailService {
         "Return Completed": "Your return has been successfully received and inspected. We have approved the return request and initiated your refund process. The refund will be credited shortly.",
         "Return Picked Up": "Your return parcel has been successfully picked up by our courier partner and is on its way to our facility.",
         "Return Initiated": "Your return request has been successfully registered. Our courier partner will schedule the return pickup soon.",
-        "Exchange Completed": "Your exchange request is complete. Your new exchange order has been created and will be dispatched shortly.",
+        // "Received" is the halfway point of an exchange — we have the old saree, the
+        // replacement has NOT shipped yet. Do not promise it has.
+        "Exchange Received": "We have received and inspected the product you sent back. Your replacement will be dispatched shortly and you will get tracking details as soon as it ships.",
+        // Reached only once the replacement has actually been delivered.
+        "Exchange Completed": "Your exchange is complete — your replacement has been delivered. We hope you love it!",
         "Exchange Picked Up": "Your exchange product has been successfully picked up and is on its way back to us for verification.",
         "Exchange Initiated": "Your exchange request has been successfully registered. We will schedule the pickup for the exchange product soon.",
       };
@@ -160,7 +164,7 @@ class EmailService {
       const GREEN = { accent: "#1a7f4b", chipBg: "#e9f7ef", chipText: "#12673a" };
       const RED = { accent: "#b0324b", chipBg: "#fdecef", chipText: "#93233c" };
       const BRAND = { accent: "#800020", chipBg: "#f6ead2", chipText: "#8a6a2a" };
-      const tone = ["Delivered", "Return Completed", "Exchange Completed", "Exchange Delivered", "Return Delivered"].includes(normalizedStatus)
+      const tone = ["Delivered", "Return Completed", "Exchange Received", "Exchange Completed", "Exchange Delivered", "Return Delivered"].includes(normalizedStatus)
         ? GREEN
         : ["Cancelled", "Partially Cancelled", "Seller Cancelled", "Undelivered", "RTO Initiated", "RTO In Transit", "RTO Delivered", "Return Cancelled", "Exchange Cancelled"].includes(normalizedStatus)
           ? RED

@@ -45,6 +45,8 @@ const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/
 const {
   SHIPMENT_TYPE, SHIPMENT_STATUS, RETURN_TYPE, RETURN_STATUS, ACTOR,
 } = require('../utils/orderModelV2');
+const { consumeStock, releaseStock } = require('../utils/inventory');
+const { exchangeTargetsOf } = require('../utils/exchangeTargets');
 const { config } = require('../config/env');
 
 // Fallback pickup cost when the live courier lookup fails: the latest forward
@@ -1064,6 +1066,83 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason, pick
   return result;
 };
 
+/**
+ * Move the stock for ONE reverse action that has just been completed.
+ *
+ * Completing a reverse action is the moment the goods physically change hands, so it is the
+ * moment stock must move. This lives here — not inline in a controller — because there are
+ * TWO paths that complete a request and they must behave identically:
+ *
+ *   • the admin pressing "Complete" (OrderItemActionController.updateAdminStatus), and
+ *   • the courier webhook's RETURN DELIVERED scan (ShipRocketController.webhook), which is
+ *     the NORMAL path — it closes the request the instant the parcel is back, usually before
+ *     any admin clicks anything.
+ *
+ * The webhook path did none of this, so in practice stock almost never moved: a returned
+ * saree was never sellable again, and an exchanged colour was validated at request time but
+ * never actually consumed.
+ *
+ * Idempotency is the CALLER's job: both paths only ever act on actions that are not already
+ * closed, so a duplicate courier scan finds nothing open and this never runs twice.
+ *
+ * Throws (400) rather than overselling — see consumeStock. The caller's transaction rolls back.
+ */
+const applyCompletionStock = async ({ action, orderItem, transaction }) => {
+  if (!action || !orderItem) return;
+  const type = String(action.action_type || '').toLowerCase();
+  const quantity = Math.max(1, Number(action.quantity || 1));
+  const returnedProductId = Number(action.product_id || orderItem.product_id);
+  const returnedColorId = orderItem.colorId ?? orderItem.color_id ?? null;
+
+  if (type === ACTION_TYPES.RETURN) {
+    // Back on the shelf.
+    await releaseStock({
+      productId: returnedProductId,
+      colorId: returnedColorId,
+      quantity,
+      transaction,
+    });
+    return;
+  }
+
+  if (type !== ACTION_TYPES.EXCHANGE) return;
+
+  const targets = exchangeTargetsOf(action, orderItem);
+  if (!targets.length) return;
+
+  // A like-for-like swap (same saree, same colour, whole quantity) nets to zero — don't
+  // churn the stock rows for it.
+  const isLikeForLike = targets.length === 1
+    && Number(targets[0].product_id) === returnedProductId
+    && String(targets[0].color_id ?? '') === String(returnedColorId ?? '')
+    && Number(targets[0].quantity) === quantity;
+  if (isLikeForLike) return;
+
+  // Everything handed back goes on the shelf...
+  await releaseStock({
+    productId: returnedProductId,
+    colorId: returnedColorId,
+    quantity,
+    transaction,
+  });
+
+  // ...and every unit going out comes off it. Stock was confirmed when the exchange was
+  // REQUESTED, possibly days ago, and can be gone by now. consumeStock throws rather than
+  // going negative, so we never promise a saree we don't have.
+  for (const target of targets) {
+    const label = target.color_name
+      ? `${target.product_name || 'this product'} (${target.color_name})`
+      : (target.product_name || 'this product');
+    await consumeStock({
+      productId: target.product_id,
+      colorId: target.color_id,
+      quantity: target.quantity,
+      transaction,
+      label,
+    });
+  }
+};
+
 module.exports = {
   ReverseActionError,
   RETURN_WINDOW_DAYS,
@@ -1072,4 +1151,5 @@ module.exports = {
   createReverseActions,
   finalizeReverseActions,
   recordActualReversePickupCharge,
+  applyCompletionStock,
 };
