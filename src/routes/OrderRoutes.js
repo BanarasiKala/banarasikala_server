@@ -22,6 +22,11 @@ router.patch('/admin/item-actions/:actionId/status', authMiddleware, adminMiddle
 // Completing a return does NOT move money — this button does (ledger + wallet
 // share + automatic gateway refund for prepaid).
 router.post('/admin/item-actions/:actionId/initiate-refund', authMiddleware, adminMiddleware, OrderItemActionController.initiateRefund);
+// Completing an exchange does NOT ship the replacement — this button does. Kept
+// separate from PATCH .../status because that route 400s once the request is
+// already Completed, which it always is by the time an admin gets here (the
+// courier webhook auto-completes exchanges on RETURN DELIVERED).
+router.post('/admin/item-actions/:actionId/ship-replacement', authMiddleware, adminMiddleware, OrderItemActionController.shipReplacement);
 
 // Customer return and exchange requests (post-delivery). Item-level
 // cancellation was removed — cancellation is whole-order only via /:id/cancel.

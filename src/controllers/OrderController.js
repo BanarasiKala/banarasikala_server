@@ -1195,11 +1195,31 @@ class OrderController {
           order: [['created_at', 'DESC']],
         });
 
+        // The REVERSE Shipment rows carry the pickup's real lifecycle
+        // (CREATED -> PICKUP_SCHEDULED -> PICKED_UP -> IN_TRANSIT -> RECEIVED), maintained by
+        // the courier webhook. That is the only durable record of how far a pickup actually
+        // got: the action's status is coarse (just Completed at the end) and order.status is
+        // worse still — it moves on entirely once an exchange replacement ships, so the
+        // frontend could no longer tell a finished pickup from one that never started.
+        // Joined on shiprocket_order_id, which OrderReturnService stamps onto both rows.
+        const reverseShipmentRows = await Shipment.findAll({
+          where: { order_id: order.id, type: SHIPMENT_TYPE.REVERSE },
+          order: [['created_at', 'DESC']],
+        });
+        const reverseShipmentBySrId = new Map(
+          reverseShipmentRows
+            .filter((row) => row.shiprocket_order_id)
+            .map((row) => [String(row.shiprocket_order_id), row]),
+        );
+
         const seen = new Set();
         for (const action of reverseActions) {
           const key = action.shiprocket_return_awb || action.shiprocket_return_order_id;
           if (!key || seen.has(key)) continue; // one entry per distinct reverse shipment
           seen.add(key);
+          const reverseRow = action.shiprocket_return_order_id
+            ? reverseShipmentBySrId.get(String(action.shiprocket_return_order_id))
+            : null;
           try {
             const tracking = action.shiprocket_return_awb
               ? await ShipRocketService.trackByAWB(action.shiprocket_return_awb)
@@ -1208,6 +1228,13 @@ class OrderController {
               type: action.action_type,
               source: action.shiprocket_return_awb ? 'awb' : 'order_id',
               awb: action.shiprocket_return_awb || null,
+              // Both are the pickup's OWN state, independent of order.status:
+              //   status          — the request outcome (…/Completed)
+              //   shipment_status — how far the parcel physically got (…/RECEIVED)
+              status: action.status,
+              shipment_status: reverseRow?.status || null,
+              picked_up_at: reverseRow?.dispatched_at || null,
+              received_at: reverseRow?.delivered_at || null,
               tracking,
             });
           } catch (reverseError) {
@@ -1216,6 +1243,10 @@ class OrderController {
               type: action.action_type,
               source: 'unavailable',
               awb: action.shiprocket_return_awb || null,
+              status: action.status,
+              shipment_status: reverseRow?.status || null,
+              picked_up_at: reverseRow?.dispatched_at || null,
+              received_at: reverseRow?.delivered_at || null,
               tracking: EMPTY_TRACKING,
             });
           }

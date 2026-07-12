@@ -797,7 +797,15 @@ class ShipRocketController {
 
         // ── Forward shipment: update the shipment row, not the order ──
         // Late or out-of-order pre-delivery scans must not regress a delivered order.
-        if (order.delivered_at && ['AWB Assigned', 'Pickup Scheduled', 'Out For Pickup', 'Return Picked Up', 'Shipped', 'Out For Delivery', 'Undelivered'].includes(nextStatus)) {
+        // Scoped to THIS shipment's own delivered_at, not the order's: an exchange
+        // replacement (or RTO redispatch) is a brand-new forward Shipment created
+        // AFTER the order already has a delivered_at from its first leg. If this
+        // guard read order.delivered_at, every pre-delivery scan for that new
+        // shipment — AWB Assigned, Shipped, Out For Delivery — would be dropped as
+        // "stale" forever, and the replacement would never get tracking. Falls back
+        // to the order-level flag only when no shipment matched at all (ambiguous
+        // webhook), preserving the original protection for that edge case.
+        if (order.delivered_at && (!forwardShipment || forwardShipment.delivered_at) && ['AWB Assigned', 'Pickup Scheduled', 'Out For Pickup', 'Return Picked Up', 'Shipped', 'Out For Delivery', 'Undelivered'].includes(nextStatus)) {
           await transaction.rollback();
           return res.status(200).json({ message: 'Stale webhook after delivery — ignored' });
         }

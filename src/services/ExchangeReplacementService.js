@@ -1,3 +1,4 @@
+const { Op } = require('sequelize');
 const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const OrderAddress = require('../models/OrderAddress');
@@ -66,56 +67,67 @@ const createReplacement = async ({ orderId, actionIds = [] }) => {
     });
     const itemById = new Map(orderItems.map((item) => [Number(item.id), item]));
 
-    // Guard against a double-ship: if a replacement shipment already exists for these
-    // actions, stop. The admin can only complete once, but a retry/re-book must be safe.
-    const existing = await Shipment.findOne({
+    // Reuse an existing shipment row for these actions instead of creating a second one
+    // (double-ship guard). If it's already booked with the courier, we're done — report it
+    // and stop. If it exists but was NEVER booked (a prior ShipRocket outage left it in
+    // CREATED with no awb/order id), fall through and retry the courier push on this SAME
+    // row rather than creating a duplicate — that's the "retry/re-book must be safe" this
+    // comment always promised but, until now, never actually did (it just gave up and
+    // reported "already exists" forever).
+    let shipment = await Shipment.findOne({
       where: { order_id: orderId, type: SHIPMENT_TYPE.FORWARD, exchange_action_id: actions[0].id },
     });
-    if (existing) {
-      result.shipmentId = existing.id;
-      result.booked = Boolean(existing.shiprocket_order_id);
+    if (shipment && (shipment.shiprocket_order_id || shipment.awb_number)) {
+      result.shipmentId = shipment.id;
+      result.shiprocketOrderId = shipment.shiprocket_order_id;
+      result.awb = shipment.awb_number;
+      result.booked = true;
       return result;
     }
 
     const address = await OrderAddress.findOne({ where: { order_id: orderId, is_current: true } });
 
-    // Unique ShipRocket channel id. Counting ALL prior forward shipments (original dispatch,
-    // any RTO re-dispatches, any earlier replacement) guarantees it can't collide.
-    const priorForwardCount = await Shipment.count({
-      where: { order_id: orderId, type: SHIPMENT_TYPE.FORWARD },
-    });
-    const channelOrderId = `${order.order_number}-X${Math.max(1, priorForwardCount)}`;
+    if (!shipment) {
+      const rateCard = await findOrderRateCard(orderId);
+      shipment = await Shipment.create({
+        order_id: orderId,
+        address_id: address?.id || null,
+        type: SHIPMENT_TYPE.FORWARD,
+        status: SHIPMENT_STATUS.CREATED,
+        forward_charge: 0, // One approved exchange ships free — see header.
+        selected_courier_data: rateCard,
+        exchange_action_id: actions[0].id,
+      });
 
-    const rateCard = await findOrderRateCard(orderId);
-    const shipment = await Shipment.create({
-      order_id: orderId,
-      address_id: address?.id || null,
-      type: SHIPMENT_TYPE.FORWARD,
-      status: SHIPMENT_STATUS.CREATED,
-      forward_charge: 0, // One approved exchange ships free — see header.
-      selected_courier_data: rateCard,
-      exchange_action_id: actions[0].id,
-    });
+      await ShipmentItem.bulkCreate(actions.map((action) => ({
+        shipment_id: shipment.id,
+        order_item_id: action.order_item_id,
+        quantity: action.quantity,
+      })));
+
+      // Back into the forward lifecycle. The webhook drives it from here exactly as it does
+      // a re-dispatch: Processing -> AWB Assigned -> Shipped -> Delivered, and the customer
+      // gets a real tracking button again. Only on first creation — a retry after a failed
+      // push doesn't need a second "back to Processing" transition.
+      const previousStatus = order.status;
+      await order.update({ status: 'Processing' });
+      await OrderStatusHistory.create({
+        order_id: orderId,
+        from_status: previousStatus,
+        to_status: 'Processing',
+        actor: ACTOR.SYSTEM,
+        reason: `Exchange replacement dispatched — ${actions.length} item(s)`,
+      });
+    }
     result.shipmentId = shipment.id;
 
-    await ShipmentItem.bulkCreate(actions.map((action) => ({
-      shipment_id: shipment.id,
-      order_item_id: action.order_item_id,
-      quantity: action.quantity,
-    })));
-
-    // Back into the forward lifecycle. The webhook drives it from here exactly as it does a
-    // re-dispatch: Processing -> AWB Assigned -> Shipped -> Delivered, and the customer gets
-    // a real tracking button again.
-    const previousStatus = order.status;
-    await order.update({ status: 'Processing' });
-    await OrderStatusHistory.create({
-      order_id: orderId,
-      from_status: previousStatus,
-      to_status: 'Processing',
-      actor: ACTOR.SYSTEM,
-      reason: `Exchange replacement dispatched — ${actions.length} item(s)`,
+    // Unique ShipRocket channel id. Counting prior forward shipments EXCLUDING this one
+    // (original dispatch, any RTO re-dispatches, any earlier replacement) guarantees it
+    // can't collide, and stays stable across a retry since it never counts itself twice.
+    const priorForwardCount = await Shipment.count({
+      where: { order_id: orderId, type: SHIPMENT_TYPE.FORWARD, id: { [Op.ne]: shipment.id } },
     });
+    const channelOrderId = `${order.order_number}-X${Math.max(1, priorForwardCount)}`;
 
     // Declared value = the goods being carried (price × qty), same basis as the forward and
     // reverse legs. It is an insurance/liability figure, not a payment instruction — the

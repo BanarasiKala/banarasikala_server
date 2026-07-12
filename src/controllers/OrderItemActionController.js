@@ -13,6 +13,7 @@ const OrderReturnService = require('../services/OrderReturnService');
 const OrderStatusHistory = require('../models/OrderStatusHistory');
 const RefundTransaction = require('../models/RefundTransaction');
 const OrderLedger = require('../models/OrderLedger');
+const Shipment = require('../models/Shipment');
 const { Transaction, Op } = require('sequelize');
 const { sequelize } = require('../config/db');
 const {
@@ -28,7 +29,7 @@ const {
   roundMoney,
 } = require('../utils/orderItemActions');
 const {
-  ACTOR, LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE,
+  ACTOR, LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE, SHIPMENT_TYPE,
 } = require('../utils/orderModelV2');
 const { appendEntry, deriveOrderTotals } = require('../services/orderLedgerService');
 const { consumeStock, releaseStock } = require('../utils/inventory');
@@ -546,6 +547,16 @@ class OrderItemActionController {
       }) : [];
       const refundByAction = new Map(refundRows.map((row) => [Number(row.order_item_action_id), row]));
 
+      // Which EXCHANGE requests already have a replacement Shipment — the marker
+      // the "Ship Replacement" button/badge in the admin panel needs. No ledger
+      // entry exists for this (the replacement ships free), so a Shipment row is
+      // the only signal.
+      const replacementShipments = actionIds.length ? await Shipment.findAll({
+        where: { type: SHIPMENT_TYPE.FORWARD, exchange_action_id: { [Op.in]: actionIds } },
+        attributes: ['exchange_action_id', 'id', 'awb_number', 'shiprocket_order_id'],
+      }) : [];
+      const replacementByAction = new Map(replacementShipments.map((row) => [Number(row.exchange_action_id), row]));
+
       // Rows arrive id-ASC, so each group's first row is its primary (the one
       // that owns the OrderRefund row). Newest request first in the queue.
       const groups = new Map();
@@ -559,6 +570,11 @@ class OrderItemActionController {
         const members = rows.map(serializeAction);
         const primary = members[0];
         const refundRow = refundByAction.get(Number(primary.id)) || null;
+        // exchange_action_id can land on any member of the group (ExchangeReplacementService
+        // doesn't guarantee it's the primary), so check them all.
+        const replacementShipment = members
+          .map((m) => replacementByAction.get(Number(m.id)))
+          .find(Boolean) || null;
         const sum = (pick) => roundMoney(members.reduce((total, m) => total + Number(pick(m) || 0), 0));
         const couponAdjustment = sum((m) => m.meta?.coupon_adjustment);
         const estimateSum = sum((m) => m.estimated_refund_amount);
@@ -603,6 +619,10 @@ class OrderItemActionController {
           refund_status: refundRow?.status || null,
           refund_amount: refundRow ? roundMoney(refundRow.amount) : null,
           refund_bank_details: refundRow?.bank_details || null,
+
+          replacement_shipment_id: replacementShipment?.id || null,
+          replacement_booked: Boolean(replacementShipment?.shiprocket_order_id || replacementShipment?.awb_number),
+          replacement_awb: replacementShipment?.awb_number || null,
         };
       });
 
@@ -836,31 +856,14 @@ class OrderItemActionController {
               console.error('[Email] Completion email failed:', err.message);
             });
 
-            // Ship the replacement. This used to be a console.warn telling you to do it by
-            // hand — so the order read "Exchange Completed" while the customer waited for a
-            // saree no system had been told to send. Now it raises a real FORWARD shipment
-            // and pushes it to ShipRocket, and the customer gets tracking like any dispatch.
-            // Post-commit and best-effort: the goods are already back with us, so a courier
-            // outage must not roll the completion back.
-            if (action.action_type === ACTION_TYPES.EXCHANGE) {
-              const replacement = await ExchangeReplacementService.createReplacement({
-                orderId: action.order_id,
-                actionIds: groupActions.map((row) => row.id),
-              });
-
-              if (!replacement.booked) {
-                // Still owed to the customer. Alert loudly — this is the one case that needs
-                // a human, instead of the old behaviour where EVERY exchange did.
-                const adminEmail = process.env.ADMIN_EMAIL;
-                if (adminEmail && EmailService.sendOrderStatusUpdate) {
-                  const alertOrder = { ...fullOrder.toJSON(), exchange_alert: true };
-                  EmailService.sendOrderStatusUpdate(alertOrder, 'Exchange Completed - Replacement Required').catch(() => {});
-                }
-                console.error(`[Exchange] Order #${fullOrder.order_number || fullOrder.id}: replacement NOT booked (${replacement.error || 'unknown'}) — shipment #${replacement.shipmentId} needs a manual re-book.`);
-              } else {
-                console.log(`[Exchange] Order #${fullOrder.order_number || fullOrder.id}: replacement shipment #${replacement.shipmentId} pushed to ShipRocket (SR #${replacement.shiprocketOrderId}).`);
-              }
-            }
+            // Deliberately NOT shipping the replacement here. Completing an exchange request
+            // also happens automatically from the courier webhook (RETURN DELIVERED — see
+            // ShipRocketController.webhook), which this endpoint has no way to distinguish
+            // from an admin's own click. Booking the replacement is a goods-movement decision,
+            // same as a return's refund: it needs its own explicit trigger — see
+            // shipReplacement() below / the admin panel's "Ship Replacement" button — so it
+            // fires exactly once, from a place an admin actually pressed, regardless of
+            // whether THIS completion came from the webhook or from here.
           } catch (err) {
             console.error('[OrderItemAction] post-complete async error:', err.message);
           }
@@ -1084,6 +1087,74 @@ class OrderItemActionController {
       await transaction.rollback();
       console.error('[OrderItemAction] initiate refund error:', error);
       return res.status(500).json({ message: 'Unable to initiate this refund right now.' });
+    }
+  }
+
+  // ── Explicitly trigger the outbound leg of a COMPLETED exchange ───────────────
+  // POST /admin/item-actions/:actionId/ship-replacement
+  // Mirrors initiateRefund's role for returns: completing an exchange only records
+  // that the old item is back — no goods move until an admin presses this. It is
+  // its own endpoint, deliberately NOT part of updateAdminStatus, because that one
+  // 400s the moment the request is already Completed/Rejected/Cancelled — and the
+  // courier webhook (ShipRocketController.webhook, on RETURN DELIVERED) completes
+  // exchange requests automatically the instant the parcel is back, before any
+  // admin ever gets a chance to click through updateAdminStatus. This endpoint only
+  // requires COMPLETED (same precondition as initiateRefund), so it stays reachable
+  // no matter which path closed the request.
+  async shipReplacement(req, res) {
+    try {
+      await ensureOrderItemActionSchema();
+      const action = await OrderItemAction.findByPk(req.params.actionId);
+      if (!action) return res.status(404).json({ message: 'Request not found.' });
+      if (String(action.action_type || '').toLowerCase() !== ACTION_TYPES.EXCHANGE) {
+        return res.status(400).json({ message: 'Replacements can be shipped for exchange requests only.' });
+      }
+
+      const groupActions = await loadActionGroup(action);
+      if (groupActions.some((row) => row.status !== ACTION_STATUS.COMPLETED)) {
+        return res.status(400).json({ message: 'Complete the exchange first — ship the replacement once the old item is received.' });
+      }
+
+      const actionIds = groupActions.map((row) => row.id);
+      const existing = await Shipment.findOne({
+        where: { order_id: action.order_id, type: SHIPMENT_TYPE.FORWARD, exchange_action_id: { [Op.in]: actionIds } },
+      });
+      if (existing?.shiprocket_order_id || existing?.awb_number) {
+        return res.status(400).json({
+          message: 'A replacement has already been shipped for this exchange.',
+          shipment_id: existing.id,
+          awb: existing.awb_number,
+        });
+      }
+
+      const replacement = await ExchangeReplacementService.createReplacement({
+        orderId: action.order_id,
+        actionIds,
+      });
+
+      if (!replacement.booked) {
+        console.error(`[Exchange] Order #${action.order_id}: replacement NOT booked via admin trigger (${replacement.error || 'unknown'}) — shipment #${replacement.shipmentId} needs a manual re-book.`);
+        return res.status(502).json({
+          message: 'Could not book the replacement with the courier. The shipment is recorded and can be retried.',
+          shipment_id: replacement.shipmentId,
+          detail: replacement.error,
+        });
+      }
+
+      console.log(`[Exchange] Order #${action.order_id}: replacement shipment #${replacement.shipmentId} pushed to ShipRocket (SR #${replacement.shiprocketOrderId}) via admin trigger.`);
+
+      // createReplacement only calls ShipRocket's order-create endpoint, not the separate
+      // assign-AWB one (same as the RTO redispatch path it mirrors) — so awb is normally
+      // null here and gets filled in by the courier assignment webhook shortly after.
+      return res.status(200).json({
+        message: replacement.awb ? 'Replacement shipped.' : 'Replacement booked with the courier — AWB assignment pending.',
+        shipment_id: replacement.shipmentId,
+        shiprocket_order_id: replacement.shiprocketOrderId,
+        awb: replacement.awb,
+      });
+    } catch (error) {
+      console.error('[OrderItemAction] ship replacement error:', error);
+      return res.status(500).json({ message: 'Unable to ship the replacement right now.' });
     }
   }
 }
