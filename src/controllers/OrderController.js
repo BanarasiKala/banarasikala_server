@@ -369,6 +369,9 @@ const serializeOrder = (order, feedbackRows = [], actionRows = []) => {
     product_name: item.product_name || item.Product?.name || `Product #${item.product_id}`,
     quantity: item.quantity,
     price: item.price,
+    // Current product MRP, not a historical snapshot (OrderItem never stored one) —
+    // same live-lookup approach the cart/checkout "MRP savings" line already uses.
+    mrp_price: item.Product?.mrp_price || null,
     colorId: item.colorId || item.color_id || null,
     color_name: item.Color?.name || null,
     color_hex: item.Color?.hex_code || null,
@@ -1069,7 +1072,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
               { model: OrderItemAction, separate: true },
             ],
@@ -1204,7 +1207,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
               { model: OrderItemAction, separate: true },
             ],
@@ -1371,7 +1374,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
               { model: OrderItemAction, separate: true },
             ],
@@ -1425,7 +1428,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
               { model: OrderItemAction, separate: true },
             ],
@@ -1471,7 +1474,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
             ],
           },
@@ -1738,7 +1741,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
             ],
           },
