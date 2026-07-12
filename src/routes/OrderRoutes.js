@@ -39,6 +39,9 @@ router.post('/:orderId/item-actions', authMiddleware, OrderItemActionController.
 router.post('/:id/refund-bank-details', authMiddleware, OrderController.saveRefundBankDetails);
 router.patch('/:id/refund-status', authMiddleware, adminMiddleware, OrderController.updateRefundStatus);
 
+// Print-ready tax invoice (HTML) for a delivered order. Owner-only.
+router.get('/:id/invoice', authMiddleware, OrderController.getOrderInvoice);
+
 // Single customer order detail. Uses logged-in customer id.
 router.get('/:id', authMiddleware, OrderController.getCustomerOrderById);
 

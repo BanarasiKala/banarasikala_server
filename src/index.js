@@ -27,6 +27,7 @@ const ReferralRoutes = require("./routes/ReferralRoutes");
 const CustomerRoutes = require("./routes/CustomerRoutes");
 const CustomerAddressRoutes = require("./routes/CustomerAddressRoutes");
 const ContactRoutes = require("./routes/ContactRoutes");
+const SupportRoutes = require("./routes/SupportRoutes");
 const NewsletterRoutes = require("./routes/NewsletterRoutes");
 const ChatBotRoutes = require("./routes/ChatBotRoutes");
 const ReelRoutes = require("./routes/ReelRoutes");
@@ -227,6 +228,9 @@ app.use("/api/addresses", CustomerAddressRoutes);
 
 // Contact form — public, no auth required
 app.use("/api/contact", ContactRoutes);
+
+// Order support tickets — customer raises against their own order; admin queue.
+app.use("/api/support", SupportRoutes);
 
 // Newsletter subscription — public subscribe, admin list
 app.use("/api/newsletter", NewsletterRoutes);

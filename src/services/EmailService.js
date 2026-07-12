@@ -362,6 +362,96 @@ class EmailService {
     }
   }
 
+  /**
+   * A customer raised a support ticket on an order: alert the support inbox (with
+   * reply-to set to the customer, so a reply goes straight back to them) and send
+   * the customer their ticket number.
+   */
+  async sendSupportTicketRaised(ticket, order) {
+    const orderNumber = order?.order_number || `#${ticket.order_id}`;
+
+    const teamMail = {
+      from: `"Banarasi Kala" <${config.emailUser}>`,
+      to: config.supportEmail,
+      replyTo: ticket.email,
+      subject: `[${ticket.ticket_number}] ${ticket.category} — Order ${orderNumber}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; color: #3D2817; max-width: 620px; margin: auto; padding: 24px;">
+          <h2 style="color: #800020; margin: 0 0 16px;">New support ticket ${ticket.ticket_number}</h2>
+          <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+            <tr><td style="padding: 6px 0; width: 130px; color: #888;">Order</td><td style="padding: 6px 0; font-weight: bold;">${orderNumber}</td></tr>
+            <tr><td style="padding: 6px 0; color: #888;">Order status</td><td style="padding: 6px 0;">${order?.status || '—'}</td></tr>
+            <tr><td style="padding: 6px 0; color: #888;">Category</td><td style="padding: 6px 0;">${ticket.category}</td></tr>
+            <tr><td style="padding: 6px 0; color: #888;">Customer</td><td style="padding: 6px 0;">${ticket.name} · ${ticket.email}${ticket.phone ? ` · ${ticket.phone}` : ''}</td></tr>
+          </table>
+          <div style="margin-top: 20px; padding: 16px; background-color: #FAF8F6; border-left: 3px solid #D4AF37;">
+            <p style="margin: 0; white-space: pre-wrap; font-size: 14px;">${ticket.message}</p>
+          </div>
+        </div>
+      `,
+    };
+
+    const customerMail = {
+      from: `"Banarasi Kala" <${config.emailUser}>`,
+      to: ticket.email,
+      subject: `We received your request (${ticket.ticket_number}) | Banarasi Kala`,
+      html: `
+        <div style="font-family: 'Playfair Display', serif; color: #3D2817; max-width: 600px; margin: auto; border: 1px solid #D4AF37; padding: 40px; background-color: #FDFCFB;">
+          <h1 style="color: #800020; text-align: center; border-bottom: 2px solid #D4AF37; padding-bottom: 20px;">Banarasi Kala</h1>
+          <p>Dear ${ticket.name || 'Customer'},</p>
+          <p>Thank you for reaching out. We have received your request about order <strong>${orderNumber}</strong> and our support team is looking into it.</p>
+          <div style="margin: 30px 0; padding: 20px; background-color: #FAF8F6; border-radius: 8px;">
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Ticket number:</strong> ${ticket.ticket_number}</p>
+            <p style="margin: 0 0 8px; font-size: 14px;"><strong>Regarding:</strong> ${ticket.category}</p>
+            <p style="margin: 0; font-size: 14px; white-space: pre-wrap;">${ticket.message}</p>
+          </div>
+          <p style="font-size: 14px;">We usually respond within 24–48 hours. Please quote your ticket number in any follow-up.</p>
+          <p style="margin-top: 40px; font-style: italic; text-align: center; color: #D4AF37;">A new heritage begins with you.</p>
+        </div>
+      `,
+    };
+
+    try {
+      await Promise.all([transporter.sendMail(teamMail), transporter.sendMail(customerMail)]);
+    } catch (error) {
+      console.error('Error sending support ticket email:', error);
+    }
+  }
+
+  /** Admin replied to, resolved or closed a ticket. */
+  async sendSupportTicketUpdate(ticket, order) {
+    if (!ticket?.email) return;
+    const orderNumber = order?.order_number || `#${ticket.order_id}`;
+
+    const mailOptions = {
+      from: `"Banarasi Kala" <${config.emailUser}>`,
+      to: ticket.email,
+      replyTo: config.supportEmail,
+      subject: `Update on your request ${ticket.ticket_number} | Banarasi Kala`,
+      html: `
+        <div style="font-family: 'Playfair Display', serif; color: #3D2817; max-width: 600px; margin: auto; border: 1px solid #D4AF37; padding: 40px; background-color: #FDFCFB;">
+          <h1 style="color: #800020; text-align: center; border-bottom: 2px solid #D4AF37; padding-bottom: 20px;">Banarasi Kala</h1>
+          <p>Dear ${ticket.name || 'Customer'},</p>
+          <p>Here is an update on your request <strong>${ticket.ticket_number}</strong> for order <strong>${orderNumber}</strong>.</p>
+          <p style="font-size: 14px;"><strong>Status:</strong> ${ticket.status}</p>
+          ${ticket.admin_response ? `
+            <div style="margin: 24px 0; padding: 20px; background-color: #FAF8F6; border-left: 3px solid #D4AF37;">
+              <p style="margin: 0; font-size: 14px; white-space: pre-wrap;">${ticket.admin_response}</p>
+            </div>
+          ` : ''}
+          <p style="font-size: 14px;">Simply reply to this email if you need anything else.</p>
+          <p style="margin-top: 40px; font-style: italic; text-align: center; color: #D4AF37;">A new heritage begins with you.</p>
+        </div>
+      `,
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+    } catch (error) {
+      console.error('Error sending support ticket update email:', error);
+    }
+  }
+
   async sendEmailVerification(email, name, verificationUrl) {
     const mailOptions = {
       from: `"Banarasi Kala" <${config.emailUser}>`,

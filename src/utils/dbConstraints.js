@@ -105,6 +105,21 @@ const ensureIndexes = async () => {
     `CREATE INDEX IF NOT EXISTS idx_products_exclusive_order ON ${schema}.products (exclusive_order) WHERE exclusive_order IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_products_new_arrival_order ON ${schema}.products (new_arrival_order) WHERE new_arrival_order IS NOT NULL`,
     `CREATE INDEX IF NOT EXISTS idx_products_collection_order ON ${schema}.products (collection_order) WHERE collection_order IS NOT NULL`,
+    // Order child tables. Postgres does NOT index a foreign key column automatically, so
+    // without these every read of an order (the My Orders page fetches seven of these
+    // collections per order) sequentially scans each table.
+    `CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON ${schema}.order_items (order_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_order_item_actions_order_id ON ${schema}.order_item_actions (order_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_order_item_actions_order_item_id ON ${schema}.order_item_actions (order_item_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_order_ledger_order_id ON ${schema}.order_ledger (order_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_order_status_history_order_id ON ${schema}.order_status_history (order_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_shipments_order_id ON ${schema}.shipments (order_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_order_addresses_order_id ON ${schema}.order_addresses (order_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_rto_events_order_id ON ${schema}.rto_events (order_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_order_refunds_order_id ON ${schema}.order_refunds (order_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_payments_order_id ON ${schema}.payments (order_id)`,
+    // The page's feedback lookup filters on exactly this pair.
+    `CREATE INDEX IF NOT EXISTS idx_feedbacks_customer_order ON ${schema}.feedbacks (customer_id, order_id)`,
   ];
 
   for (const sql of indexes) {

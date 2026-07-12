@@ -35,7 +35,9 @@ const {
   blockCustomerCodForOrder,
   toMoney,
 } = require('../utils/orderLifecycle');
-const { ensureOrderItemActionSchema, getActionableQuantity } = require('../utils/orderItemActions');
+const {
+  ensureOrderItemActionSchema, getActionableQuantity, isDeliveredEnoughForPostDeliveryAction,
+} = require('../utils/orderItemActions');
 const { ensureOrderTransactionTables, REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 const {
   ensureOrderModelV2Tables, SHIPMENT_TYPE, SHIPMENT_STATUS, ACTOR,
@@ -49,6 +51,7 @@ const {
 } = require('../services/orderLedgerService');
 const RefundTransaction = require('../models/RefundTransaction');
 const { reconcileOrderRefunds } = require('../services/RefundSyncService');
+const { renderInvoiceHtml } = require('../services/InvoiceService');
 
 const sortProductImages = (images = []) => [...images].sort((a, b) => {
   const left = Number.isFinite(Number(a.display_order)) ? Number(a.display_order) : 999;
@@ -76,12 +79,20 @@ const sumActionQty = (actions = [], type = null, statuses = null) => (Array.isAr
   .reduce((sum, a) => sum + Number(a.quantity || 0), 0);
 
 // V2 associations needed to rebuild the legacy order shape on read.
+//
+// `separate: true` on every one of these matters a lot. They are all sibling hasMany
+// collections on Order, so joining them in one statement makes Postgres materialise their
+// CARTESIAN PRODUCT: an order with 9 ledger rows, 12 status-history rows and 3 shipments
+// yields 9*12*3 = 324 rows before order_items even multiplies it further. Measured on real
+// data, three orders produced 1,872 joined rows to carry ~92 rows of actual content, and the
+// blow-up is multiplicative — it compounds with every order and every status change.
+// Fetching each collection in its own keyed query keeps the row count additive instead.
 const ORDER_V2_INCLUDES = [
-  { model: OrderAddress, as: 'Addresses' },
-  { model: OrderLedger, as: 'Ledger' },
-  { model: Shipment, as: 'Shipments' },
-  { model: OrderStatusHistory, as: 'StatusHistory' },
-  { model: RtoEvent, as: 'RtoEvents' },
+  { model: OrderAddress, as: 'Addresses', separate: true },
+  { model: OrderLedger, as: 'Ledger', separate: true },
+  { model: Shipment, as: 'Shipments', separate: true },
+  { model: OrderStatusHistory, as: 'StatusHistory', separate: true },
+  { model: RtoEvent, as: 'RtoEvents', separate: true },
 ];
 
 // Row timestamp from a toJSON()'d association. The models are `underscored`, which
@@ -1060,10 +1071,10 @@ class OrderController {
             include: [
               { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
-              { model: OrderItemAction },
+              { model: OrderItemAction, separate: true },
             ],
           },
-          { model: OrderRefund, as: 'Refunds' },
+          { model: OrderRefund, as: 'Refunds', separate: true },
           ...ORDER_V2_INCLUDES,
         ],
         order: [['createdAt', 'DESC']],
@@ -1173,7 +1184,7 @@ class OrderController {
       });
 
       const updatedOrder = await Order.findByPk(order.id, {
-        include: [{ model: OrderRefund, as: 'Refunds' }, ...ORDER_V2_INCLUDES],
+        include: [{ model: OrderRefund, as: 'Refunds', separate: true }, ...ORDER_V2_INCLUDES],
       });
       return res.status(200).json({ message: 'Refund status updated.', order: serializeOrder(updatedOrder) });
     } catch (error) {
@@ -1195,10 +1206,10 @@ class OrderController {
             include: [
               { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
-              { model: OrderItemAction },
+              { model: OrderItemAction, separate: true },
             ],
           },
-          { model: OrderRefund, as: 'Refunds' },
+          { model: OrderRefund, as: 'Refunds', separate: true },
           ...ORDER_V2_INCLUDES,
         ],
         order: [['createdAt', 'DESC']],
@@ -1347,7 +1358,9 @@ class OrderController {
       const pageSize = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
       const offset = (pageNum - 1) * pageSize;
 
-      const { count, rows: orders } = await Order.findAndCountAll({
+      // findAll, not findAndCountAll: the response is a bare array, so the COUNT half was
+      // a second aggregate over the whole include graph whose result was never read.
+      const orders = await Order.findAll({
         where: {
           [Op.or]: [
             { customer_id: req.user.id },
@@ -1360,16 +1373,15 @@ class OrderController {
             include: [
               { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
-              { model: OrderItemAction },
+              { model: OrderItemAction, separate: true },
             ],
           },
-          { model: OrderRefund, as: 'Refunds' },
+          { model: OrderRefund, as: 'Refunds', separate: true },
           ...ORDER_V2_INCLUDES,
         ],
         order: [['createdAt', 'DESC']],
         limit: pageSize,
         offset,
-        distinct: true,
       });
       const orderIds = orders.map((order) => order.id);
       const feedbacks = orderIds.length
@@ -1415,10 +1427,10 @@ class OrderController {
             include: [
               { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
-              { model: OrderItemAction },
+              { model: OrderItemAction, separate: true },
             ],
           },
-          { model: OrderRefund, as: 'Refunds' },
+          { model: OrderRefund, as: 'Refunds', separate: true },
           ...ORDER_V2_INCLUDES,
         ],
       });
@@ -1431,6 +1443,50 @@ class OrderController {
       const serialized = serializeOrder(order, feedbacks.map((item) => item.toJSON()));
       await attachExchangeSwaps([serialized]);
       return res.status(200).json(serialized);
+    } catch (error) {
+      return res.status(500).json({ message: error.message });
+    }
+  }
+
+  // Print-ready tax invoice for a delivered order, as HTML the browser turns into
+  // a PDF via its own print dialog. Only the owning customer can pull it, and only
+  // once the goods have actually been delivered — nothing is invoiced before that.
+  async getOrderInvoice(req, res) {
+    try {
+      await ensureOrderAccountingColumns();
+      await ensureOrderItemActionSchema();
+      if (!req.user?.id || req.userRole === 'admin') {
+        return res.status(401).json({ message: 'Customer authentication required' });
+      }
+
+      const order = await Order.findOne({
+        where: {
+          id: req.params.id,
+          [Op.or]: [
+            { customer_id: req.user.id },
+            { customer_id: null, customer_email: req.user.email },
+          ],
+        },
+        include: [
+          {
+            model: OrderItem,
+            include: [
+              { model: Product, attributes: ['id', 'name', 'slug', 'images'] },
+              { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
+            ],
+          },
+          ...ORDER_V2_INCLUDES,
+        ],
+      });
+
+      if (!order) return res.status(404).json({ message: 'Order not found' });
+
+      const serialized = serializeOrder(order);
+      if (!isDeliveredEnoughForPostDeliveryAction(serialized)) {
+        return res.status(409).json({ message: 'The invoice is available once your order is delivered.' });
+      }
+
+      return res.type('html').send(renderInvoiceHtml(serialized));
     } catch (error) {
       return res.status(500).json({ message: error.message });
     }
@@ -1686,7 +1742,7 @@ class OrderController {
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
             ],
           },
-          { model: OrderRefund, as: 'Refunds' },
+          { model: OrderRefund, as: 'Refunds', separate: true },
           ...ORDER_V2_INCLUDES,
         ],
       });
