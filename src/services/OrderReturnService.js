@@ -308,12 +308,10 @@ const resolveTargets = ({ orderItems, itemActions, selections }) => {
       return {
         item,
         quantity,
-        exchangeColorId: selection.exchangeColorId ?? null,
-        exchangeColorName: selection.exchangeColorName ?? null,
-        // A DIFFERENT product at exactly the same price (null = same product).
-        // Already validated in OrderItemActionController.create.
-        exchangeProductId: selection.exchangeProductId ?? null,
-        exchangeProductName: selection.exchangeProductName ?? null,
+        // What goes OUT: a list of {product_id, color_id, quantity} summing to `quantity`.
+        // Every product is priced at exactly what was paid, and stock is confirmed — all
+        // already validated in OrderItemActionController.create.
+        exchangeTargets: selection.exchangeTargets ?? [],
       };
     });
   }
@@ -578,9 +576,7 @@ const createReverseActions = async ({
   let pickupLeft = refundInfo ? refundInfo.returnShippingCharge : 0;
 
   for (let index = 0; index < targets.length; index += 1) {
-    const {
-      item, quantity, exchangeColorId, exchangeColorName, exchangeProductId, exchangeProductName,
-    } = targets[index];
+    const { item, quantity, exchangeTargets } = targets[index];
     const calculation = calculateItemAction({ item, actionType, quantity });
     let couponShare = 0;
     let pickupShare = 0;
@@ -617,22 +613,22 @@ const createReverseActions = async ({
         customer_message: comments || null,
         sku: item.sku || null,
         color_id: item.colorId || item.color_id || null,
-        // Exchange: what the customer wants INSTEAD. The colour variant, and — when they
-        // picked a DIFFERENT product at exactly the same price — that product. Absent
-        // exchange_product_id means the swap stays within the same product.
-        ...(actionType === ACTION_TYPES.EXCHANGE && exchangeColorId
-          ? { exchange_color_id: exchangeColorId, exchange_color_name: exchangeColorName || null }
-          : {}),
-        ...(actionType === ACTION_TYPES.EXCHANGE && exchangeProductId
-          && Number(exchangeProductId) !== Number(item.product_id)
+        // Exchange: the sarees going OUT (a list — the customer can split the quantity
+        // across several products, each priced at exactly what they paid), and a snapshot
+        // of the saree coming BACK.
+        //
+        // The order line is NOT rewritten on completion: it is the record of what was
+        // purchased and paid for, and one line cannot represent two different products
+        // anyway. So this meta is the ONLY record of what was actually swapped — both
+        // halves of it must be stored here or the trail is lost.
+        ...(actionType === ACTION_TYPES.EXCHANGE && exchangeTargets?.length
           ? {
-            exchange_product_id: exchangeProductId,
-            exchange_product_name: exchangeProductName || null,
-            // The line as it was before the swap — the order row itself is repointed at the
-            // new product on completion, so this is the only record of what they ordered.
+            exchange_targets: exchangeTargets,
             original_product_id: item.product_id,
             original_product_name: item.product_name || null,
             original_sku: item.sku || null,
+            original_color_id: item.colorId ?? item.color_id ?? null,
+            original_quantity: quantity,
           }
           : {}),
         ...(couponShare > 0 ? { coupon_adjustment: couponShare, coupon_code: order.coupon_code || null } : {}),

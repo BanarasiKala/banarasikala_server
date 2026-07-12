@@ -26,6 +26,7 @@ const { Op } = require("sequelize");
 const { AppError } = require('../utils/http');
 const { formatOrderNumber, formatProductCode } = require('../utils/codes');
 const { colorStockOf, consumeStock, releaseStock } = require('../utils/inventory');
+const { exchangeTargetsOf } = require('../utils/exchangeTargets');
 const {
   ORDER_LIFECYCLE_COLUMNS,
   COD_BLOCK_MESSAGE,
@@ -265,6 +266,70 @@ const hydrateV2Fields = (json) => {
     }));
 
   return json;
+};
+
+/**
+ * Attach `exchange_swap` to every order item that has been (or is being) exchanged.
+ *
+ * The order line is deliberately NOT rewritten when an exchange completes — it records what
+ * was purchased and paid for, and one line cannot represent two products anyway now that a
+ * quantity can be split across several sarees. That means the line alone would show the
+ * customer the saree they SENT BACK, with no sign of what is coming instead. This resolves
+ * the swap off the action row and enriches it with the target products' images and slugs so
+ * the order page can show what they will actually receive.
+ *
+ * Mutates and returns the serialized orders. One product query for the whole page.
+ */
+const attachExchangeSwaps = async (serializedOrders = []) => {
+  const orders = Array.isArray(serializedOrders) ? serializedOrders : [serializedOrders];
+
+  const swapsByItem = [];
+  orders.forEach((order) => {
+    (order.OrderItems || []).forEach((item) => {
+      const exchange = (item.actions || [])
+        .filter((a) => String(a.action_type || '').toLowerCase() === 'exchange'
+          && !['rejected', 'cancelled'].includes(String(a.status || '').toLowerCase()))
+        .sort((a, b) => new Date(b.created_at || b.createdAt || 0) - new Date(a.created_at || a.createdAt || 0))[0];
+      if (!exchange) return;
+      const targets = exchangeTargetsOf(exchange, item);
+      if (!targets.length) return;
+      swapsByItem.push({ item, exchange, targets });
+    });
+  });
+  if (!swapsByItem.length) return serializedOrders;
+
+  const productIds = [...new Set(swapsByItem.flatMap(({ targets }) => targets.map((t) => t.product_id)))];
+  const products = await Product.findAll({
+    where: { id: productIds },
+    attributes: ['id', 'name', 'slug', 'images'],
+  });
+  const productById = new Map(products.map((p) => [Number(p.id), p]));
+
+  swapsByItem.forEach(({ item, exchange, targets }) => {
+    item.exchange_swap = {
+      status: exchange.status,
+      // What they handed back — snapshotted on the action, since the line still shows it.
+      from: {
+        product_name: exchange.meta?.original_product_name || item.product_name,
+        color_name: item.color_name || null,
+        quantity: exchange.quantity,
+      },
+      // What they get instead.
+      to: targets.map((target) => {
+        const product = productById.get(Number(target.product_id));
+        return {
+          product_id: target.product_id,
+          product_name: product?.name || target.product_name || `Product #${target.product_id}`,
+          product_slug: product?.slug || null,
+          color_name: target.color_name || null,
+          quantity: target.quantity,
+          image_url: pickOrderItemImage(product, target.color_id),
+        };
+      }),
+    };
+  });
+
+  return serializedOrders;
 };
 
 const serializeOrder = (order, feedbackRows = [], actionRows = []) => {
@@ -1314,6 +1379,9 @@ class OrderController {
         })
         : [];
       const serialized = orders.map((order) => serializeOrder(order, feedbacks.map((item) => item.toJSON())));
+      // Show what an exchanged line is being swapped FOR — the line itself still names the
+      // saree that went back (it is the purchase record and is never rewritten).
+      await attachExchangeSwaps(serialized);
       res.status(200).json(serialized);
     } catch (error) {
       res.status(500).json({ message: error.message });
@@ -1360,7 +1428,9 @@ class OrderController {
         where: { customer_id: req.user.id, order_id: order.id },
         attributes: ['id', 'order_id', 'order_item_id', 'product_id', 'rating', 'comment', 'title', 'images', 'is_approved'],
       });
-      return res.status(200).json(serializeOrder(order, feedbacks.map((item) => item.toJSON())));
+      const serialized = serializeOrder(order, feedbacks.map((item) => item.toJSON()));
+      await attachExchangeSwaps([serialized]);
+      return res.status(200).json(serialized);
     } catch (error) {
       return res.status(500).json({ message: error.message });
     }
@@ -1394,6 +1464,27 @@ class OrderController {
       if (!CANCELLABLE_STATUSES.includes(currentStatus)) {
         await t.rollback();
         return res.status(400).json({ message: `Order status has changed to "${order.status}" and it can no longer be cancelled.` });
+      }
+
+      // Once a return or exchange has been raised on this order, cancellation is closed.
+      // Cancelling refunds the whole order and restocks every line — on top of a reverse
+      // flow that is separately settling money and moving those same goods, that double-
+      // counts both. It also matters because an exchange REPLACEMENT puts the order back
+      // into 'Processing' (a cancellable status) to ship the new saree: without this guard
+      // the customer could cancel that shipment and be refunded for goods they kept.
+      const openReverseActions = await OrderItemAction.count({
+        where: {
+          order_id: order.id,
+          action_type: { [Op.in]: ['return', 'exchange'] },
+          status: { [Op.notIn]: ['Rejected', 'Cancelled'] },
+        },
+        transaction: t,
+      });
+      if (openReverseActions > 0) {
+        await t.rollback();
+        return res.status(400).json({
+          message: 'This order has a return or exchange in progress and can no longer be cancelled.',
+        });
       }
       // Physical safety net: even within the allowed statuses, block once the parcel
       // has actually left (courier picked up / in transit). Only the CURRENT forward

@@ -6,8 +6,10 @@ const OrderItemAction = require('../models/OrderItemAction');
 const Shipment = require('../models/Shipment');
 const ShipmentItem = require('../models/ShipmentItem');
 const OrderStatusHistory = require('../models/OrderStatusHistory');
+const Product = require('../models/Product');
 const ShipRocketService = require('./ShipRocketService');
 const { findOrderRateCard } = require('../utils/rateCard');
+const { exchangeTargetsOf } = require('../utils/exchangeTargets');
 const { ACTION_TYPES, ACTION_STATUS, roundMoney } = require('../utils/orderItemActions');
 const {
   SHIPMENT_TYPE, SHIPMENT_STATUS, ACTOR,
@@ -129,18 +131,45 @@ const createReplacement = async ({ orderId, actionIds = [] }) => {
     });
     const channelOrderId = `${order.order_number}-X${Math.max(1, priorForwardCount)}`;
 
+    // What actually goes in the box: the exchange TARGETS, not the order line. The customer
+    // can split one exchanged line across several sarees (2 × A + 1 × B), and the order line
+    // is never rewritten (it records what was purchased), so reading the products off it
+    // would ship the very saree they just sent back.
+    const targetLines = actions.flatMap((action) => exchangeTargetsOf(
+      action,
+      itemById.get(Number(action.order_item_id)),
+    ));
+
+    // Live product data for name/SKU. Price comes from the ORDER LINE, not the product: an
+    // exchange is an even swap validated at exactly the price paid, and the paid price is
+    // what the goods are insured for.
+    const targetProducts = await Product.findAll({
+      where: { id: [...new Set(targetLines.map((t) => t.product_id))] },
+      attributes: ['id', 'name', 'sku', 'variant_skus'],
+    });
+    const productById = new Map(targetProducts.map((p) => [Number(p.id), p]));
+
+    const paidPriceByAction = new Map(actions.map((action) => [
+      Number(action.id),
+      Number(itemById.get(Number(action.order_item_id))?.price || 0),
+    ]));
+
     // Declared value = the goods being carried (price × qty), same basis as the forward and
     // reverse legs. It is an insurance/liability figure, not a payment instruction — the
     // replacement is free to the customer.
-    const srItems = actions.map((action) => {
+    const srItems = actions.flatMap((action) => {
       const item = itemById.get(Number(action.order_item_id));
-      return {
-        product_id: item?.product_id || action.product_id,
-        quantity: action.quantity,
-        price: Number(item?.price || 0),
-        name: item?.product_name || `Product #${action.product_id}`,
-        sku: item?.sku || null,
-      };
+      const price = paidPriceByAction.get(Number(action.id)) || 0;
+      return exchangeTargetsOf(action, item).map((target) => {
+        const product = productById.get(Number(target.product_id));
+        return {
+          product_id: target.product_id,
+          quantity: target.quantity,
+          price,
+          name: product?.name || target.product_name || `Product #${target.product_id}`,
+          sku: product?.variant_skus?.[String(target.color_id)] || product?.sku || item?.sku || null,
+        };
+      });
     });
     const declaredTotal = roundMoney(srItems.reduce(
       (sum, line) => sum + Number(line.price) * Math.max(1, Number(line.quantity || 1)),

@@ -33,6 +33,9 @@ const {
 } = require('../utils/orderModelV2');
 const { appendEntry, deriveOrderTotals } = require('../services/orderLedgerService');
 const { consumeStock, releaseStock } = require('../utils/inventory');
+const {
+  normalizeTarget, exchangeTargetsOf, totalTargetQuantity,
+} = require('../utils/exchangeTargets');
 const ExchangeReplacementService = require('../services/ExchangeReplacementService');
 
 const customerOwnsOrder = (order, user) => {
@@ -50,24 +53,36 @@ const normalizeItems = (items = []) => {
     const orderItemId = Number(item.orderItemId || item.order_item_id || item.id);
     if (Number.isInteger(orderItemId) && orderItemId > 0) {
       const qty = Number(item.quantity || item.qty || 0);
-      // Exchange only: what the customer wants INSTEAD.
-      //   exchangeProductId — a DIFFERENT product at exactly the same price.
-      //                       Null/absent means "same product" (a colour swap).
-      //   exchangeColorId   — the colour variant of whichever product that is.
-      //                       Null/absent means "same colour" (or a single-variant
-      //                       product with no choice to make).
-      const rawColor = item.exchangeColorId ?? item.exchange_color_id ?? null;
-      const exchangeColorId = Number(rawColor) > 0 ? Number(rawColor) : null;
-      const rawProduct = item.exchangeProductId ?? item.exchange_product_id ?? null;
-      const exchangeProductId = Number(rawProduct) > 0 ? Number(rawProduct) : null;
-      itemMap.set(orderItemId, { quantity: qty > 0 ? qty : null, exchangeColorId, exchangeProductId });
+
+      // Exchange only: what the customer wants INSTEAD, as a LIST — exchange 3 units and
+      // take 2 × product A + 1 × product B. Quantities must sum to the quantity being
+      // exchanged (enforced in create()). Every product must be priced at EXACTLY what was
+      // paid, so the split can never change the money.
+      const rawTargets = item.exchangeTargets ?? item.exchange_targets ?? null;
+      let exchangeTargets = Array.isArray(rawTargets)
+        ? rawTargets.map((t) => normalizeTarget(t)).filter(Boolean)
+        : [];
+
+      // Back-compat: a single {exchangeProductId, exchangeColorId} from an older client is
+      // just a one-element list covering the whole quantity.
+      if (!exchangeTargets.length) {
+        const rawProduct = item.exchangeProductId ?? item.exchange_product_id ?? null;
+        const rawColor = item.exchangeColorId ?? item.exchange_color_id ?? null;
+        if (Number(rawProduct) > 0 || Number(rawColor) > 0) {
+          const single = normalizeTarget(
+            { product_id: rawProduct, color_id: rawColor, quantity: qty > 0 ? qty : 1 },
+          );
+          if (single) exchangeTargets = [single];
+        }
+      }
+
+      itemMap.set(orderItemId, { quantity: qty > 0 ? qty : null, exchangeTargets });
     }
   });
   return Array.from(itemMap.entries()).map(([orderItemId, value]) => ({
     orderItemId,
     quantity: value.quantity,
-    exchangeColorId: value.exchangeColorId,
-    exchangeProductId: value.exchangeProductId,
+    exchangeTargets: value.exchangeTargets,
   }));
 };
 
@@ -360,40 +375,72 @@ class OrderItemActionController {
         return res.status(400).json({ message: 'Please select at least one product.' });
       }
 
-      // Exchange: validate what the customer wants INSTEAD — a colour of the same product,
-      // or a DIFFERENT product at exactly the same price — against live data, so a stale or
-      // forged client can't request something unavailable or cheaper/dearer. The resolved
-      // names are stored on the request so the admin queue reads in plain English.
+      // Exchange: validate what the customer wants INSTEAD, against live data — a stale or
+      // forged client must not be able to request something unavailable, cheaper, dearer, or
+      // more units than it is handing back. The resolved names are stored on the request so
+      // the admin queue reads in plain English.
       if (actionType === ACTION_TYPES.EXCHANGE) {
         for (const selection of selections) {
           const orderItem = orderItems.find((it) => Number(it.id) === Number(selection.orderItemId));
           if (!orderItem) continue;
 
-          const isCrossProduct = selection.exchangeProductId
-            && Number(selection.exchangeProductId) !== Number(orderItem.product_id);
-          // Nothing chosen at all — same product, same colour. Nothing to validate.
-          if (!isCrossProduct && !selection.exchangeColorId) continue;
+          const exchangeQty = Number(selection.quantity) > 0
+            ? Number(selection.quantity)
+            : getWholeProductActionQuantity(orderItem);
 
-          const targetProductId = selection.exchangeProductId || orderItem.product_id;
-          const product = await Product.findByPk(targetProductId, {
-            attributes: ['id', 'name', 'status', 'selling_price', 'color_stocks'],
-            transaction,
-          });
-          if (!product) {
-            await transaction.rollback();
-            return res.status(400).json({ message: 'The selected product is no longer available.' });
+          // Nothing chosen — a like-for-like swap of the same saree in the same colour.
+          if (!selection.exchangeTargets?.length) {
+            selection.exchangeTargets = [{
+              product_id: orderItem.product_id,
+              product_name: orderItem.product_name || null,
+              color_id: orderItem.colorId ?? orderItem.color_id ?? null,
+              color_name: null,
+              quantity: exchangeQty,
+            }];
           }
 
-          if (isCrossProduct) {
+          // EVERY unit going back must have a named unit coming out. Anything else would
+          // silently short the customer or hand out a free saree.
+          const targetQty = totalTargetQuantity(selection.exchangeTargets);
+          if (targetQty !== exchangeQty) {
+            await transaction.rollback();
+            return res.status(400).json({
+              message: `You are exchanging ${exchangeQty} item(s) of ${orderItem.product_name || 'this product'} but chose ${targetQty}. Please pick exactly ${exchangeQty}.`,
+            });
+          }
+
+          const paidPrice = roundMoney(Number(orderItem.price || 0));
+
+          // Collapse duplicate picks of the same product+colour so stock is checked against
+          // the TOTAL wanted, not one line at a time (2 + 2 of a colour with 3 left must fail).
+          const merged = new Map();
+          for (const target of selection.exchangeTargets) {
+            const key = `${target.product_id}|${target.color_id ?? ''}`;
+            const existing = merged.get(key);
+            if (existing) existing.quantity += target.quantity;
+            else merged.set(key, { ...target });
+          }
+          const mergedTargets = [...merged.values()];
+
+          for (const target of mergedTargets) {
+            const product = await Product.findByPk(target.product_id, {
+              attributes: ['id', 'name', 'status', 'selling_price', 'color_stocks'],
+              transaction,
+            });
+            if (!product) {
+              await transaction.rollback();
+              return res.status(400).json({ message: 'One of the selected products is no longer available.' });
+            }
             if (product.status !== 'active') {
               await transaction.rollback();
               return res.status(400).json({ message: `${product.name} is currently unavailable for exchange.` });
             }
+
             // EXACT price match, against what the customer actually PAID for the item (not
-            // the original product's current list price, which may have moved since). An
-            // even swap means no money changes hands in either direction: no ledger entry,
-            // no coupon re-rate, no top-up to collect, no difference to refund.
-            const paidPrice = roundMoney(Number(orderItem.price || 0));
+            // the original product's current list price, which may have moved since). An even
+            // swap means no money changes hands in either direction: no ledger entry, no
+            // coupon re-rate, no top-up to collect, no difference to refund. This holds for
+            // EVERY target, so however the customer splits the quantity, the money is unmoved.
             const targetPrice = roundMoney(Number(product.selling_price || 0));
             if (targetPrice !== paidPrice) {
               await transaction.rollback();
@@ -401,31 +448,34 @@ class OrderItemActionController {
                 message: `${product.name} is priced at Rs. ${targetPrice.toLocaleString('en-IN')}. An exchange must be for a product at exactly Rs. ${paidPrice.toLocaleString('en-IN')} — the price you paid.`,
               });
             }
-            selection.exchangeProductName = product.name;
+            target.product_name = product.name;
+
+            const stocks = product.color_stocks || {};
+            if (target.color_id) {
+              const key = String(target.color_id);
+              if (!(key in stocks)) {
+                await transaction.rollback();
+                return res.status(400).json({ message: `The selected colour is not available for ${product.name}.` });
+              }
+              if (Number(stocks[key]) < target.quantity) {
+                await transaction.rollback();
+                return res.status(400).json({
+                  message: `Only ${Math.max(0, Number(stocks[key]))} left of ${product.name} in that colour — you asked for ${target.quantity}.`,
+                });
+              }
+              const color = await Color.findByPk(target.color_id, { attributes: ['id', 'name'], transaction });
+              target.color_name = color?.name || null;
+            } else {
+              // A product with colour variants needs one chosen — we can't guess.
+              const inStock = Object.entries(stocks).filter(([, qty]) => Number(qty) > 0);
+              if (inStock.length) {
+                await transaction.rollback();
+                return res.status(400).json({ message: `Please choose a colour for ${product.name}.` });
+              }
+            }
           }
 
-          // Colour must be a real, in-stock variant OF THE TARGET PRODUCT.
-          if (selection.exchangeColorId) {
-            const stocks = product.color_stocks || {};
-            const key = String(selection.exchangeColorId);
-            if (!(key in stocks)) {
-              await transaction.rollback();
-              return res.status(400).json({ message: `The selected colour is not available for ${product.name}.` });
-            }
-            if (Number(stocks[key]) <= 0) {
-              await transaction.rollback();
-              return res.status(400).json({ message: 'The selected colour is out of stock. Please choose another colour.' });
-            }
-            const color = await Color.findByPk(selection.exchangeColorId, { attributes: ['id', 'name'], transaction });
-            selection.exchangeColorName = color?.name || null;
-          } else if (isCrossProduct) {
-            // A different product with colour variants needs one chosen — we can't guess.
-            const inStock = Object.entries(product.color_stocks || {}).filter(([, qty]) => Number(qty) > 0);
-            if (inStock.length) {
-              await transaction.rollback();
-              return res.status(400).json({ message: `Please choose a colour for ${product.name}.` });
-            }
-          }
+          selection.exchangeTargets = mergedTargets;
         }
       }
 
@@ -726,59 +776,52 @@ class OrderItemActionController {
 
           if (groupAction.action_type === ACTION_TYPES.EXCHANGE) {
             const returnedProductId = Number(groupAction.product_id || item.product_id);
-            // What they're getting instead. Either may be unchanged: a plain colour swap
-            // keeps the product, a cross-product swap of a single-variant saree keeps the
-            // (null) colour.
-            const targetProductId = Number(groupAction.meta?.exchange_product_id || returnedProductId);
-            const targetColorId = groupAction.meta?.exchange_color_id ?? returnedColorId;
+            const targets = exchangeTargetsOf(groupAction, item);
 
-            const sameProduct = targetProductId === returnedProductId;
-            const sameColor = String(targetColorId ?? '') === String(returnedColorId ?? '');
+            // A like-for-like swap (same saree, same colour, whole quantity) nets to zero —
+            // don't churn the stock rows for it.
+            const isLikeForLike = targets.length === 1
+              && Number(targets[0].product_id) === returnedProductId
+              && String(targets[0].color_id ?? '') === String(returnedColorId ?? '');
 
-            // An exchange is a release of what came back and a consume of what goes out.
-            // When both are identical (a straight like-for-like replacement) the two cancel
-            // out, so touch nothing rather than churn the rows.
-            if (!sameProduct || !sameColor) {
+            if (!isLikeForLike) {
+              // Everything handed back goes on the shelf...
               await releaseStock({
                 productId: returnedProductId,
                 colorId: returnedColorId,
                 quantity,
                 transaction,
               });
-              // Stock was checked when the exchange was REQUESTED, which may have been days
-              // ago — it can be gone by now. consumeStock throws rather than going negative,
-              // rolling the whole completion back, so we never promise a saree we don't have.
-              // The admin's way out is to restock it or reject the exchange.
-              const targetName = groupAction.meta?.exchange_product_name || item.product_name || 'this product';
-              const targetColorName = groupAction.meta?.exchange_color_name
-                || (targetColorId ? `colour #${targetColorId}` : null);
-              await consumeStock({
-                productId: targetProductId,
-                colorId: targetColorId,
-                quantity,
-                transaction,
-                label: targetColorName ? `${targetName} (${targetColorName})` : targetName,
-              });
 
-              // The customer now owns the NEW saree — repoint the order line at it so the
-              // order, the replacement shipment and any future return of this item all
-              // describe what they actually hold.
-              //
-              // `price` is deliberately NOT touched: an exchange is an even swap (the target
-              // was validated at EXACTLY the price paid), so what they paid for this line is
-              // unchanged. Rewriting it would desync the line from the ledger, which still
-              // carries the original PRODUCT_CHARGE — and no money moved, so nothing should.
-              const product = await Product.findByPk(targetProductId, {
-                attributes: ['id', 'name', 'sku', 'variant_skus'],
-                transaction,
-              });
-              await item.update({
-                product_id: targetProductId,
-                product_name: product?.name || item.product_name,
-                colorId: targetColorId,
-                sku: product?.variant_skus?.[String(targetColorId)] || product?.sku || item.sku,
-              }, { transaction });
+              // ...and every unit going out comes off it. Stock was checked when the
+              // exchange was REQUESTED, possibly days ago, and can be gone by now.
+              // consumeStock throws rather than going negative, rolling the whole completion
+              // back, so we never promise a saree we don't have. The admin's way out is to
+              // restock it or reject the exchange.
+              for (const target of targets) {
+                const label = target.color_name
+                  ? `${target.product_name || 'this product'} (${target.color_name})`
+                  : (target.product_name || 'this product');
+                await consumeStock({
+                  productId: target.product_id,
+                  colorId: target.color_id,
+                  quantity: target.quantity,
+                  transaction,
+                  label,
+                });
+              }
             }
+
+            // NOTE: the order line is deliberately NOT repointed at the new saree.
+            //   • The quantity can now be split across SEVERAL products (2 × A + 1 × B), and
+            //     one order_items row cannot represent two products — there is nothing
+            //     coherent to repoint it to.
+            //   • The line is the record of what was PURCHASED and paid for, which an
+            //     exchange does not change. Its price still backs the PRODUCT_CHARGE in the
+            //     ledger, and no money moved.
+            // What was actually swapped lives on the action row (exchange_targets +
+            // original_*), which is where the order page, the admin queue and the
+            // replacement shipment all read it from.
           }
         }
 
