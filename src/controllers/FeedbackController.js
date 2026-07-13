@@ -4,37 +4,38 @@ const Customer = require('../models/Customer');
 const Product = require('../models/Product');
 const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
+const OrderItemAction = require('../models/OrderItemAction');
 const { generateUploadSignature, uploadBufferToCloudinary } = require('../config/cloudinary');
 const { ensureFeedbackColumns } = require('../utils/dbConstraints');
+const { exchangeTargetsOf } = require('../utils/exchangeTargets');
 
 const toInt = (value) => {
   const next = Number(value);
   return Number.isInteger(next) ? next : null;
 };
 
-const PRE_DELIVERY_STATUSES = new Set([
-  'pending',
-  'order placed',
-  'order_placed',
-  'processing',
-  'picked up',
-  'picked_up',
-  'awb assigned',
-  'awb_assigned',
-  'shipped',
-  'out for delivery',
-  'out_for_delivery',
-  'undelivered',
-  'rto initiated',
-  'rto_initiated',
-  'rto in transit',
-  'rto_in_transit',
-]);
-
+// Delivery is a fact stamped on delivered_at — the order's *status* can legitimately move
+// on afterwards (shipping an exchange replacement puts the order back into 'Processing',
+// see ExchangeReplacementService), and that must never retract the right to review a
+// product the customer has already received. Mirrors isDeliveredEnoughForPostDeliveryAction.
 const isReviewAllowedForOrder = (order) => {
   const status = String(order?.status || '').toLowerCase();
-  if (PRE_DELIVERY_STATUSES.has(status)) return false;
   return status === 'delivered' || Boolean(order?.delivered_at);
+};
+
+// The replacement product(s) an exchange on this line swapped TO. Reviewable only once the
+// replacement itself has been delivered — which is exactly when the line reaches
+// 'Exchange Completed' (ShipRocketController flips it there on the replacement's delivery
+// scan). Before that the customer is still waiting for the parcel and has nothing to judge.
+// exchangeTargetsOf normalises every historical shape the targets have been stored in.
+const exchangeReplacementProductIds = (item) => {
+  if (String(item?.status || '').toLowerCase() !== 'exchange completed') return [];
+
+  return (item?.OrderItemActions || [])
+    .filter((action) => String(action.action_type || '').toLowerCase() === 'exchange'
+      && !['rejected', 'cancelled'].includes(String(action.status || '').toLowerCase()))
+    .flatMap((action) => exchangeTargetsOf(action, item).map((target) => Number(target.product_id)))
+    .filter(Boolean);
 };
 
 const serializeSummary = (rows) => {
@@ -113,6 +114,9 @@ exports.submitFeedback = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Please write a short review about the product.' });
     }
 
+    // The line is matched by id only — the product is verified below, because a review may
+    // legitimately be for the product the customer ORDERED, or for the one they were sent
+    // INSTEAD after an exchange (a different product_id on the same line).
     const order = await Order.findOne({
       where: {
         id: orderId,
@@ -120,12 +124,26 @@ exports.submitFeedback = async (req, res) => {
       },
       include: [{
         model: OrderItem,
-        where: { id: orderItemId, product_id: productId },
+        where: { id: orderItemId },
         required: true,
+        include: [{ model: OrderItemAction, required: false }],
       }],
     });
 
     if (!order || !isReviewAllowedForOrder(order)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Review is available only after this product is delivered to your account.',
+      });
+    }
+
+    const orderItem = (order.OrderItems || [])[0];
+    const reviewableProductIds = [
+      Number(orderItem?.product_id),
+      ...exchangeReplacementProductIds(orderItem),
+    ].filter(Boolean);
+
+    if (!reviewableProductIds.includes(productId)) {
       return res.status(403).json({
         success: false,
         message: 'Review is available only after this product is delivered to your account.',

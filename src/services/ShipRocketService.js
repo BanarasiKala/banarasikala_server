@@ -198,10 +198,19 @@ class ShipRocketService {
 
   /**
    * Create a return shipment order on ShipRocket.
-   * @param {{ order: object, items: Array, reason: string }} returnData
+   *
+   * `channelOrderId` MUST be unique per reverse request. ShipRocket keys a channel order by
+   * this id, so pushing two reverse requests for the same order under the same id (the old
+   * `RET-${order_number}`) made the second one collide with the first: SR echoed back the
+   * FIRST return order's id instead of booking a second pickup, so an exchange raised after
+   * a return was never actually scheduled for collection. Callers pass the request-group id
+   * to keep them distinct. Mirrors the RTO re-dispatch path, which overrides order_number
+   * for exactly the same reason.
+   *
+   * @param {{ order: object, items: Array, reason: string, channelOrderId?: string }} returnData
    */
   async createReturnOrder(returnData) {
-    const { order, items, reason } = returnData;
+    const { order, items, reason, channelOrderId } = returnData;
     const pickupLocation = await this.getActivePickupLocation();
 
     const orderItems = items.map((item, idx) => ({
@@ -220,7 +229,7 @@ class ShipRocketService {
     const orderDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
     const payload = {
-      order_id: `RET-${order.order_number}`,
+      order_id: channelOrderId || `RET-${order.order_number}`,
       order_date: orderDate,
       pickup_location: pickupLocation.name,
 

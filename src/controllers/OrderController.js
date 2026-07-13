@@ -387,6 +387,12 @@ const serializeOrder = (order, feedbackRows = [], actionRows = []) => {
     actionable_quantity: getActionableQuantity(item, actionsByItem.get(String(item.id)) || []),
     actions: actionsByItem.get(String(item.id)) || [],
     feedback: feedbackByItem.get(`${json.id}:${item.id}:${item.product_id}`) || null,
+    // Every review left against this LINE, keyed by product. After an exchange the line
+    // carries reviews for two different products — the one ordered and the replacement —
+    // and `feedback` above only ever resolves the ordered one.
+    feedbacks: rows.filter((row) => (
+      Number(row.order_id) === Number(json.id) && Number(row.order_item_id) === Number(item.id)
+    )),
   }));
   // Expose refunds array and flatten the latest one to top-level for frontend compat
   const refunds = (json.Refunds || []).slice().sort((a, b) => rowTime(b) - rowTime(a));
@@ -1293,12 +1299,24 @@ class OrderController {
 
         const seen = new Set();
         for (const action of reverseActions) {
-          const key = action.shiprocket_return_awb || action.shiprocket_return_order_id;
-          if (!key || seen.has(key)) continue; // one entry per distinct reverse shipment
+          // One entry per reverse REQUEST, keyed by its request group — NOT by the ShipRocket
+          // id. A return and a later exchange are two distinct pickups the customer must be
+          // able to see, but legacy rows (booked before the channel-order-id collision was
+          // fixed) share a single SR id, so keying on that silently swallowed the second one.
+          const key = String(action.request_group_id || action.id);
+          if (seen.has(key)) continue;
+          if (!action.shiprocket_return_awb && !action.shiprocket_return_order_id) continue;
           seen.add(key);
-          const reverseRow = action.shiprocket_return_order_id
-            ? reverseShipmentBySrId.get(String(action.shiprocket_return_order_id))
-            : null;
+          // Prefer the row this request actually created; fall back to the SR-id join for
+          // rows written before reverse shipments were tracked per request.
+          const reverseRow = (
+            (action.meta?.reverse_shipment_row_id
+              ? reverseShipmentRows.find((row) => Number(row.id) === Number(action.meta.reverse_shipment_row_id))
+              : null)
+            || (action.shiprocket_return_order_id
+              ? reverseShipmentBySrId.get(String(action.shiprocket_return_order_id))
+              : null)
+          );
           try {
             const tracking = action.shiprocket_return_awb
               ? await ShipRocketService.trackByAWB(action.shiprocket_return_awb)

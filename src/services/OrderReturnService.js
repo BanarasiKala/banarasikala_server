@@ -874,6 +874,9 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason, pick
     detail: null, booked: false, error: null, pickupRateCard: null,
   };
   const anchorAction = entries[0]?.action || null;
+  // Stable identity of THIS reverse request (a return and a later exchange on the same order
+  // are different groups). Used to keep the ShipRocket channel order id unique per request.
+  const reverseGroupId = Number(anchorAction?.request_group_id || anchorAction?.id) || Date.now();
 
   // Declared value on the ShipRocket reverse order = the VALUE OF THE GOODS being
   // carried (item price × qty), for BOTH returns and exchanges — the same basis the
@@ -947,10 +950,21 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason, pick
       }
     }
 
-    reverseShipment = await Shipment.findOne({
-      where: { order_id: order.id, type: SHIPMENT_TYPE.REVERSE },
-      order: [['created_at', 'DESC']],
-    });
+    // ONE reverse shipment row per reverse REQUEST, not per order. This used to look up any
+    // REVERSE row on the order and reuse it, so a second reverse request (an exchange raised
+    // after a return) silently attached itself to the first one's row — and, because that row
+    // already had a shiprocket_order_id, the stamping guard below skipped it too. The
+    // exchange's courier, AWB, pickup/received timestamps and rate card then had nowhere to
+    // land, and tracking could not tell the two pickups apart.
+    //
+    // The row id is remembered on the anchor action so a RE-BOOK of the same request (the
+    // failure path further down) still reuses its own row instead of creating a duplicate.
+    const existingRowId = Number(anchorAction?.meta?.reverse_shipment_row_id) || null;
+    if (existingRowId) {
+      reverseShipment = await Shipment.findOne({
+        where: { id: existingRowId, order_id: order.id, type: SHIPMENT_TYPE.REVERSE },
+      });
+    }
     if (!reverseShipment) {
       reverseShipment = await Shipment.create({
         order_id: order.id,
@@ -963,6 +977,11 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason, pick
         // return is placed rather than only after the webhook fires.
         selected_courier_data: rateCard,
       });
+      if (anchorAction) {
+        await anchorAction.update({
+          meta: { ...(anchorAction.meta || {}), reverse_shipment_row_id: reverseShipment.id },
+        });
+      }
     } else if (rateCard && !reverseShipment.selected_courier_data) {
       await reverseShipment.update({ selected_courier_data: rateCard });
     }
@@ -980,6 +999,11 @@ const finalizeReverseActions = async ({ order, entries, actionType, reason, pick
       reason: actionType === ACTION_TYPES.EXCHANGE
         ? `Exchange: ${String(reason || 'Exchange requested').slice(0, 200)}`
         : String(reason || 'Customer requested return').slice(0, 200),
+      // Unique per reverse REQUEST. ShipRocket keys a channel order by this id, so the old
+      // `RET-${order_number}` made a second reverse request on the same order collide with
+      // the first — SR echoed back the first return order's id and never booked a second
+      // pickup. The request-group id keeps a return and a later exchange distinct.
+      channelOrderId: `RET-${order.order_number}-${reverseGroupId}`,
     });
     result.detail = data;
     result.shipmentId = data?.shipment_id || null;
