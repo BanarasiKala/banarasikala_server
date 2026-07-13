@@ -419,6 +419,37 @@ class EmailService {
   }
 
   /** Admin replied to, resolved or closed a ticket. */
+  /** Support posted a reply on the ticket's conversation. */
+  async sendSupportTicketReply(ticket, order, replyText) {
+    if (!ticket?.email) return;
+    const orderNumber = order?.order_number || `#${ticket.order_id}`;
+
+    const mailOptions = {
+      from: `"Banarasi Kala" <${config.emailUser}>`,
+      to: ticket.email,
+      replyTo: config.supportEmail,
+      subject: `Reply on your request ${ticket.ticket_number} | Banarasi Kala`,
+      html: `
+        <div style="font-family: 'Playfair Display', serif; color: #3D2817; max-width: 600px; margin: auto; border: 1px solid #D4AF37; padding: 40px; background-color: #FDFCFB;">
+          <h1 style="color: #800020; text-align: center; border-bottom: 2px solid #D4AF37; padding-bottom: 20px;">Banarasi Kala</h1>
+          <p>Dear ${ticket.name || 'Customer'},</p>
+          <p>Our support team has replied to your request <strong>${ticket.ticket_number}</strong> for order <strong>${orderNumber}</strong>.</p>
+          <div style="margin: 24px 0; padding: 20px; background-color: #FAF8F6; border-left: 3px solid #D4AF37;">
+            <p style="margin: 0; font-size: 14px; white-space: pre-wrap;">${replyText}</p>
+          </div>
+          <p style="font-size: 14px;">You can reply from the <strong>Tickets</strong> page in your account, or simply reply to this email.</p>
+          <p style="margin-top: 40px; font-style: italic; text-align: center; color: #D4AF37;">A new heritage begins with you.</p>
+        </div>
+      `,
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+    } catch (error) {
+      console.error('Error sending support ticket reply email:', error);
+    }
+  }
+
   async sendSupportTicketUpdate(ticket, order) {
     if (!ticket?.email) return;
     const orderNumber = order?.order_number || `#${ticket.order_id}`;

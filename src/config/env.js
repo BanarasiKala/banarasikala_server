@@ -110,6 +110,21 @@ const config = {
   // NOTE: returnGatewayFeePercent / returnGatewayFeeGstPercent were removed. Retaining the
   // payment-gateway fee out of a full-return refund was reverted — we absorb that cost. The
   // RETURN_GATEWAY_FEE_* entries in .env are now dead and can be deleted.
+
+  // ── AI assistant (Claude) ───────────────────────────────────────────────────
+  // Deliberately NOT readEnv(): that throws on a missing variable and would take the whole
+  // server down over a chatbot. Absent key => the AI assistant is disabled and the chatbot
+  // silently serves the original rule-based replies instead.
+  anthropicApiKey: (process.env.ANTHROPIC_API_KEY || "").trim() || null,
+  aiChatModel: (process.env.AI_CHAT_MODEL || "claude-sonnet-5").trim(),
+  // How many past turns are replayed to the model. The DB keeps everything; the model only
+  // sees a recent slice — resending an unbounded history makes cost grow with conversation
+  // length on EVERY turn.
+  aiChatReplayTurns: Number(process.env.AI_CHAT_REPLAY_TURNS) || 10,
+  // Hard stop on the tool loop. A loop that never terminates is a billing incident.
+  aiChatMaxIterations: Number(process.env.AI_CHAT_MAX_ITERATIONS) || 6,
+  // Transcripts are deleted after this many days (see ChatBotController.purgeOldConversations).
+  aiChatRetentionDays: Number(process.env.AI_CHAT_RETENTION_DAYS) || 90,
 };
 
 module.exports = { config };

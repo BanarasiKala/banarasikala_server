@@ -285,19 +285,208 @@ const FALLBACK_REPLIES = [
   "I'm still learning, and that one stumped me! 🙈\n\nCould you try asking in a different way? I'm great at answering questions about our sarees, shipping, returns, orders, and more. Give it another try! 😊",
 ];
 
-exports.message = (req, res) => {
-  try {
-    const userMessage = String(req.body.message || "").trim();
-    if (!userMessage) {
-      return res.status(400).json({ reply: "Please type something so I can help you! 😊" });
+// ── The original rule-based bot, kept as the fallback ─────────────────────────────────────
+// Serves every request when ANTHROPIC_API_KEY is unset, and any request where the Claude call
+// fails (outage, rate limit, bad key). A degraded assistant beats a dead one, and this one is
+// already written and already correct about the policies.
+const ruleBasedReply = (userMessage) => {
+  const matched = rules.find((rule) => rule.match(userMessage));
+  return matched ? matched.reply(userMessage) : pick(FALLBACK_REPLIES);
+};
+
+const AiChatService = require("../services/AiChatService");
+const ChatConversation = require("../models/ChatConversation");
+const ChatMessage = require("../models/ChatMessage");
+const { config } = require("../config/env");
+const { Op } = require("sequelize");
+
+// Global schema sync is off in this project, so the chat tables are created on first use —
+// the same pattern as ensureOrderItemActionSchema.
+let chatSchemaReady = false;
+const ensureChatSchema = async () => {
+  if (chatSchemaReady) return;
+  await ChatConversation.sync();
+  await ChatMessage.sync();
+  chatSchemaReady = true;
+};
+
+// ── SSE ───────────────────────────────────────────────────────────────────────────────────
+const sse = (res, event, data) => {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data || {})}\n\n`);
+};
+
+/**
+ * Rebuild the model's view of the conversation from the DB.
+ *
+ * Only the last N turns are replayed. The DB keeps everything; the model sees a window —
+ * otherwise input tokens grow with every message and a long chat costs quadratically.
+ *
+ * Public tool calls are replayed as real tool_use/tool_result pairs so the model can still
+ * answer "tell me about the second one". Account tool calls are replayed as the assistant's
+ * TEXT ONLY: we never stored their results, and a tool_use block without a matching
+ * tool_result is an API error — so the block is dropped along with the PII it saw.
+ */
+const buildReplay = (rows) => {
+  const messages = [];
+
+  for (const row of rows) {
+    if (row.role === "user") {
+      messages.push({ role: "user", content: row.content || "" });
+      continue;
     }
 
-    const matched = rules.find((rule) => rule.match(userMessage));
-    const reply = matched ? matched.reply(userMessage) : pick(FALLBACK_REPLIES);
+    const results = Array.isArray(row.tool_results) ? row.tool_results : [];
+    const replayableIds = new Set(results.map((r) => r.tool_use_id));
+    const calls = (Array.isArray(row.tool_calls) ? row.tool_calls : [])
+      .filter((call) => call.id && replayableIds.has(call.id)); // public calls only
 
-    return res.status(200).json({ reply });
-  } catch (error) {
-    console.error("ChatBot error:", error);
-    return res.status(500).json({ reply: "Oops! Something went wrong on my end. Please try again in a moment. 🙏" });
+    const content = [];
+    if (row.content) content.push({ type: "text", text: row.content });
+    for (const call of calls) {
+      content.push({ type: "tool_use", id: call.id, name: call.name, input: call.input || {} });
+    }
+    if (!content.length) continue;
+
+    messages.push({ role: "assistant", content });
+
+    // Every tool_use must be answered by a tool_result in the very next user turn.
+    if (calls.length) {
+      messages.push({
+        role: "user",
+        content: calls.map((call) => ({
+          type: "tool_result",
+          tool_use_id: call.id,
+          content: results.find((r) => r.tool_use_id === call.id)?.content || "{}",
+        })),
+      });
+    }
   }
+
+  // The API requires the first message to be from the user.
+  while (messages.length && messages[0].role !== "user") messages.shift();
+  return messages;
+};
+
+exports.message = async (req, res) => {
+  const userMessage = String(req.body.message || "").trim();
+  if (!userMessage) {
+    return res.status(400).json({ reply: "Please type something so I can help you! 😊" });
+  }
+  if (userMessage.length > 1000) {
+    return res.status(400).json({ reply: "That's a bit long for me — could you shorten it?" });
+  }
+
+  // The identity comes from the JWT (optionalAuthMiddleware), never from the request body.
+  const customerId = req.userRole === "customer" ? req.user?.id || null : null;
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no"); // don't let nginx buffer the stream
+  res.flushHeaders?.();
+
+  // The client shows the typing dots until the first text delta lands. Emitted here rather than
+  // sniffed off the stream: with thinking display defaulting to "omitted", the thinking blocks
+  // arrive with empty text and are not a reliable signal.
+  sse(res, "thinking", {});
+
+  const degrade = (conversationId) => {
+    sse(res, "text", { delta: ruleBasedReply(userMessage) });
+    sse(res, "done", { chat_id: conversationId || null, degraded: true });
+    res.end();
+  };
+
+  if (!AiChatService.isEnabled()) return degrade(null);
+
+  let conversation = null;
+  try {
+    await ensureChatSchema();
+
+    // ── Resolve the conversation ────────────────────────────────────────────────────────
+    const requestedId = String(req.body.chat_id || "").trim() || null;
+    if (requestedId) {
+      conversation = await ChatConversation.findByPk(requestedId);
+      // Someone else's conversation (guessed UUID), or one that started anonymous and is now
+      // being claimed by a signed-in user. Either way, don't touch it — start fresh.
+      if (conversation && (conversation.customer_id || null) !== customerId) conversation = null;
+    }
+    if (!conversation) {
+      conversation = await ChatConversation.create({ customer_id: customerId });
+    }
+
+    const history = await ChatMessage.findAll({
+      where: { conversation_id: conversation.id },
+      order: [["id", "DESC"]],
+      limit: config.aiChatReplayTurns * 2, // a "turn" is a user message plus a reply
+    });
+    const messages = buildReplay(history.reverse());
+    messages.push({ role: "user", content: userMessage });
+
+    await ChatMessage.create({
+      conversation_id: conversation.id,
+      role: "user",
+      content: userMessage,
+    });
+
+    // ── Run the turn ────────────────────────────────────────────────────────────────────
+    const turn = await AiChatService.runTurn({
+      messages,
+      customerId,
+      onText: (delta) => sse(res, "text", { delta }),
+      onToolResult: (name, input, result) => {
+        // Product CARDS are rendered from the tool result, not from Claude's prose. The model
+        // describes; React renders. That way a price can never be hallucinated into the DOM.
+        const products = result?.products || (result?.product_id ? [result] : null);
+        if (products?.length) sse(res, "products", { products });
+        if (name === "add_to_cart" && result?.added) sse(res, "cart_updated", {});
+      },
+    });
+
+    await ChatMessage.create({
+      conversation_id: conversation.id,
+      role: "assistant",
+      content: turn.text,
+      tool_calls: turn.toolCalls.length ? turn.toolCalls : null,
+      tool_results: turn.toolResults.length ? turn.toolResults : null,
+    });
+
+    await conversation.update({
+      input_tokens: conversation.input_tokens + turn.usage.input_tokens,
+      output_tokens: conversation.output_tokens + turn.usage.output_tokens,
+      cache_read_tokens: conversation.cache_read_tokens + turn.usage.cache_read_input_tokens,
+      message_count: conversation.message_count + 2,
+      last_message_at: new Date(),
+      escalated: conversation.escalated || /support@banarasikala\.com/i.test(turn.text),
+    });
+
+    sse(res, "done", { chat_id: conversation.id });
+    return res.end();
+  } catch (error) {
+    console.error("[ChatBot] AI turn failed:", error?.message || error);
+    // Outage, rate limit, bad key — serve the rule-based reply rather than a dead chat.
+    if (res.writableEnded) return undefined;
+    return degrade(conversation?.id);
+  }
+};
+
+/**
+ * Delete transcripts past the retention window (default 90 days).
+ *
+ * A chat log is a PII store the day a signed-in customer uses it. Keeping it forever is a
+ * liability with no owner; call this from a daily cron.
+ */
+exports.purgeOldConversations = async () => {
+  await ensureChatSchema();
+  const cutoff = new Date(Date.now() - config.aiChatRetentionDays * 24 * 60 * 60 * 1000);
+  const stale = await ChatConversation.findAll({
+    where: { created_at: { [Op.lt]: cutoff } },
+    attributes: ["id"],
+  });
+  if (!stale.length) return 0;
+  const ids = stale.map((row) => row.id);
+  await ChatMessage.destroy({ where: { conversation_id: { [Op.in]: ids } } });
+  await ChatConversation.destroy({ where: { id: { [Op.in]: ids } } });
+  console.log(`[ChatBot] purged ${ids.length} conversation(s) older than ${config.aiChatRetentionDays} days.`);
+  return ids.length;
 };
