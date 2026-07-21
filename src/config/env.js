@@ -120,7 +120,12 @@ const config = {
   // How many past turns are replayed to the model. The DB keeps everything; the model only
   // sees a recent slice — resending an unbounded history makes cost grow with conversation
   // length on EVERY turn.
-  aiChatReplayTurns: Number(process.env.AI_CHAT_REPLAY_TURNS) || 10,
+  // How many past turns are replayed to the model. The DB keeps the whole conversation; this
+  // only bounds what is re-sent each turn. Input tokens grow with every replayed message, so
+  // an unbounded window makes a long chat cost quadratically. Shop chats are short — 6 turns
+  // covers the context that actually matters ("the blue one", "that second saree") while
+  // cutting both read and write volume against a 10-turn window.
+  aiChatReplayTurns: Number(process.env.AI_CHAT_REPLAY_TURNS) || 6,
   // Hard stop on the tool loop. A loop that never terminates is a billing incident.
   aiChatMaxIterations: Number(process.env.AI_CHAT_MAX_ITERATIONS) || 6,
   // Transcripts are deleted after this many days (see ChatBotController.purgeOldConversations).

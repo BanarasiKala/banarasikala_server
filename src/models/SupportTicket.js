@@ -68,6 +68,20 @@ const SupportTicket = sequelize.define('SupportTicket', {
     type: DataTypes.DATE,
     allowNull: true,
   },
+  // Read receipts, stored as a per-side watermark rather than a flag per message.
+  //
+  // "Unread for me" is then `messages from the other side WHERE created_at > my watermark`
+  // — one column write on open instead of N row updates, and it yields the unread badge
+  // for free. A per-message read flag would cost a write per message and answer no
+  // question this one doesn't.
+  customer_read_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  admin_read_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
 }, {
   tableName: 'support_tickets',
   schema: config.dbSchema,

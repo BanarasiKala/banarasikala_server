@@ -7,9 +7,29 @@ const SupportTicketMessage = require("../models/SupportTicketMessage");
 
 // Global schema sync is off (see config/db.js), so these tables create themselves on first
 // load — same pattern as ContactRoutes. Messages after tickets: it references them.
-SupportTicket.sync({ force: false })
-  .then(() => SupportTicketMessage.sync({ force: false }))
-  .catch((err) => console.error("SupportTicket table sync failed:", err));
+//
+// sync({ force: false }) CREATES a missing table but never ALTERS an existing one, so the
+// read-receipt columns have to be added explicitly for anyone whose support_tickets table
+// already exists. Idempotent, same shape as ensureOrderItemActionSchema.
+const { sequelize } = require("../config/db");
+const { config } = require("../config/env");
+const { DataTypes } = require("sequelize");
+
+const ensureSupportSchema = async () => {
+  await SupportTicket.sync({ force: false });
+  await SupportTicketMessage.sync({ force: false });
+
+  const qi = sequelize.getQueryInterface();
+  const table = { tableName: "support_tickets", schema: config.dbSchema };
+  const columns = await qi.describeTable(table);
+  for (const name of ["customer_read_at", "admin_read_at"]) {
+    if (!columns[name]) {
+      await qi.addColumn(table, name, { type: DataTypes.DATE, allowNull: true });
+    }
+  }
+};
+
+ensureSupportSchema().catch((err) => console.error("Support schema sync failed:", err));
 
 // The categories the modal offers, so the client never drifts from the validator.
 router.get("/categories", (_req, res) => res.json(SupportController.TICKET_CATEGORIES));
@@ -21,6 +41,19 @@ router.get("/tickets/my", authMiddleware, SupportController.listMyTickets);
 // Admin queue. Declared BEFORE /tickets/:id so "tickets" can't be read as an :id.
 router.get("/tickets", authMiddleware, adminMiddleware, SupportController.listTickets);
 router.patch("/tickets/:id", authMiddleware, adminMiddleware, SupportController.updateTicket);
+
+// ── Realtime ────────────────────────────────────────────────────────────────────────────
+// EventSource cannot send an Authorization header, so the two /stream routes are NOT behind
+// authMiddleware. They authenticate with a short-lived single-use token minted here, by a
+// normal authenticated POST. See SupportRealtime.issueStreamTicket.
+router.post("/stream-ticket", authMiddleware, SupportController.streamTicket);
+
+// Admin inbox firehose. Declared BEFORE /tickets/:id/stream so "admin" is never read as an id.
+router.get("/stream/admin", SupportController.stream);
+router.get("/tickets/:id/stream", SupportController.stream);
+
+router.post("/tickets/:id/typing", authMiddleware, SupportController.typing);
+router.post("/tickets/:id/read", authMiddleware, SupportController.markRead);
 
 // Shared by both sides — the handler decides what it may see/do from the authenticated role.
 router.get("/tickets/:id", authMiddleware, SupportController.getTicket);

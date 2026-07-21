@@ -183,14 +183,25 @@ const buildTool = (definition, handler, customerId, onToolResult, isPublic) => b
       console.error(`[AiChat] tool ${definition.name} failed:`, error.message);
       result = { error: 'That lookup failed. Apologise briefly and suggest they try again.' };
     }
-    const payload = JSON.stringify(result);
+    // A tool result is not paid for once — it stays in the conversation and is re-sent on
+    // every later turn. So the model gets the narrow shape and the browser gets the full one.
+    //
+    // `_cards` carries render-only fields (image URL, MRP, discount, description). Strip it
+    // before the result reaches Claude: a Cloudinary URL is ~100 chars, and across 6 products
+    // that is ~350 tokens of pure overhead, compounding for the rest of the conversation.
+    const { _cards, ...forModel } = result || {};
+    const payload = JSON.stringify(forModel);
+
     if (onToolResult) {
       onToolResult({
         // The tool_use id — needed to pair this result back up on replay.
         id: context?.toolUse?.id || null,
         name: definition.name,
         input,
-        result,
+        // Full-width: what the browser renders cards from.
+        result: _cards ? { ...forModel, products: _cards } : forModel,
+        // Narrow: what gets persisted and replayed to the model next turn. Persisting the
+        // fat shape would reintroduce the cost on every subsequent turn.
         payload,
         // Only public (catalogue) results are safe to persist and replay. See ChatMessage.
         isPublic,

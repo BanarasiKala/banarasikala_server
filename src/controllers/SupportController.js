@@ -3,6 +3,7 @@ const SupportTicket = require('../models/SupportTicket');
 const SupportTicketMessage = require('../models/SupportTicketMessage');
 const Order = require('../models/Order');
 const EmailService = require('../services/EmailService');
+const Realtime = require('../services/SupportRealtime');
 
 // Kept in sync with TICKET_CATEGORIES in the client's support modal.
 const TICKET_CATEGORIES = [
@@ -81,8 +82,27 @@ const publicTicket = (ticket, { withThread = false } = {}) => ({
   createdAt: ticket.createdAt,
   updatedAt: ticket.updatedAt,
   can_reply: !isThreadClosed(ticket),
+  // Read receipts. `*_read_at` is when THAT side last opened the thread; the client uses
+  // the other side's watermark to render "Seen" under its own last message.
+  customer_read_at: ticket.customer_read_at || null,
+  admin_read_at: ticket.admin_read_at || null,
   ...(withThread ? { messages: threadOf(ticket) } : {}),
 });
+
+// Messages from `side` that landed after the other side last read the thread. Drives the
+// unread badge without a per-message read flag.
+const unreadFor = (ticket, viewer) => {
+  const watermark = viewer === 'admin' ? ticket.admin_read_at : ticket.customer_read_at;
+  const fromOther = viewer === 'admin' ? 'customer' : 'admin';
+  const messages = ticket.Messages || [];
+
+  // The ticket's opening message is itself a customer message an admin may not have read.
+  const opening = fromOther === 'customer'
+    && (!watermark || new Date(ticket.createdAt) > new Date(watermark)) ? 1 : 0;
+
+  return opening + messages.filter((m) => m.sender === fromOther
+    && (!watermark || new Date(m.created_at || m.createdAt) > new Date(watermark))).length;
+};
 
 exports.TICKET_CATEGORIES = TICKET_CATEGORIES;
 exports.TICKET_STATUSES = TICKET_STATUSES;
@@ -111,10 +131,21 @@ exports.createTicket = async (req, res) => {
     const order = await findOwnedOrder(orderId, req.user);
     if (!order) return res.status(404).json({ message: 'Order not found' });
 
-    // ONE ticket per order. A follow-up is a message on the existing thread, not a new
-    // ticket — otherwise the same conversation fragments across several tickets and nobody
-    // (customer or support) can see the whole story in one place.
-    const existing = await SupportTicket.findOne({ where: { order_id: order.id } });
+    // One OPEN ticket per order — not one ticket per order ever.
+    //
+    // While a thread is live (Open / In Progress / Resolved), a follow-up belongs on it, not
+    // in a new ticket: otherwise the same conversation fragments and neither the customer nor
+    // support can see the whole story in one place. Resolved is deliberately included — a
+    // customer replying "that didn't work" should land back in the original thread.
+    //
+    // But a CLOSED thread cannot be replied to (see isThreadClosed in the reply handler), so
+    // matching on it regardless of status left the customer with no route at all: no reply,
+    // no new ticket. A saree that arrives damaged a week after a shipping query was closed is
+    // a genuinely new issue and deserves its own thread.
+    const existing = await SupportTicket.findOne({
+      where: { order_id: order.id, status: { [Op.ne]: 'Closed' } },
+      order: [['id', 'DESC']],
+    });
     if (existing) {
       return res.status(409).json({
         message: `You already have ticket ${existing.ticket_number} for this order — continue the conversation there.`,
@@ -138,6 +169,16 @@ exports.createTicket = async (req, res) => {
     // reason to lose the ticket that is already saved.
     EmailService.sendSupportTicketRaised(ticket, order).catch((error) => {
       console.error('SupportController: ticket email failed:', error.message);
+    });
+
+    // Admin inbox only — the customer who raised it already has it on screen.
+    Realtime.emitTicketCreated({
+      ...publicTicket(ticket),
+      name: ticket.name,
+      email: ticket.email,
+      Order: { id: order.id, order_number: order.order_number },
+      message_count: 1,
+      awaiting_reply: true,
     });
 
     return res.status(201).json({
@@ -261,6 +302,15 @@ exports.addMessage = async (req, res) => {
       });
     }
 
+    // Push to anyone watching this thread, and to the admin inbox. Sending necessarily means
+    // you have stopped typing — clear it first, or the indicator lingers underneath the
+    // message that just arrived.
+    Realtime.clearTyping({ ticketId: ticket.id, side: sender });
+    Realtime.emitMessage(ticket.id, publicMessage(row));
+    if (isAdmin && ticket.status === 'In Progress') {
+      Realtime.emitStatusChange(ticket.id, 'In Progress', !isThreadClosed(ticket));
+    }
+
     return res.status(201).json({ success: true, message: publicMessage(row) });
   } catch (error) {
     console.error('SupportController.addMessage error:', error);
@@ -302,6 +352,8 @@ exports.listTickets = async (req, res) => {
         message_count: messages.length + 1, // + the opening message on the ticket itself
         // Whose turn it is: the customer spoke last and nobody has answered.
         awaiting_reply: !last || last.sender === 'customer',
+        // Drives the per-row unread badge in the admin inbox.
+        unread_count: unreadFor(ticket, 'admin'),
       };
     }));
   } catch (error) {
@@ -327,6 +379,10 @@ exports.updateTicket = async (req, res) => {
       resolved_at: status === 'Resolved' || status === 'Closed' ? new Date() : null,
     });
 
+    // The customer's composer must disable itself the moment support closes the thread —
+    // otherwise they type a reply into a box that will reject it.
+    Realtime.emitStatusChange(ticket.id, status, !isThreadClosed(ticket));
+
     if (status === 'Resolved' || status === 'Closed') {
       EmailService.sendSupportTicketUpdate(ticket, ticket.Order).catch((error) => {
         console.error('SupportController: ticket update email failed:', error.message);
@@ -337,5 +393,144 @@ exports.updateTicket = async (req, res) => {
   } catch (error) {
     console.error('SupportController.updateTicket error:', error);
     return res.status(500).json({ message: 'Unable to update the ticket.' });
+  }
+};
+
+// ── Realtime ──────────────────────────────────────────────────────────────────────────
+// Everything below powers the live thread and the live admin inbox. See
+// services/SupportRealtime.js for why this is SSE and not WebSockets, and for the
+// single-instance caveat.
+
+/**
+ * Mint a short-lived credential for the SSE connection.
+ *
+ * EventSource cannot set an Authorization header, so the stream itself cannot carry the
+ * normal Bearer token. This endpoint CAN (it is a normal POST behind authMiddleware), so
+ * the client trades its real JWT for a 60-second single-use token and puts that in the
+ * stream URL instead. See issueStreamTicket for the reasoning.
+ */
+exports.streamTicket = async (req, res) => {
+  if (!req.user?.id) return res.status(401).json({ message: 'Authentication required' });
+  return res.json({
+    token: Realtime.issueStreamTicket({ userId: req.user.id, role: req.userRole || 'customer' }),
+  });
+};
+
+/**
+ * The SSE stream.
+ *
+ * Customers subscribe to ONE ticket (theirs, ownership verified below). Admins subscribe to
+ * the shared inbox firehose and filter client-side.
+ *
+ * Auth is the stream ticket in the query string — this route is deliberately NOT behind
+ * authMiddleware, because the browser cannot send the header here.
+ */
+exports.stream = async (req, res) => {
+  const identity = Realtime.redeemStreamTicket(req.query.token);
+  if (!identity) return res.status(401).json({ message: 'Invalid or expired stream token.' });
+
+  const isAdmin = identity.role === 'admin';
+  const ticketId = req.params.id ? Number(req.params.id) : null;
+
+  // Ownership: a customer may only ever stream a ticket that is theirs. Without this,
+  // any signed-in customer could stream any ticket id and read another person's support
+  // conversation — which contains order numbers, names and complaint details.
+  if (!isAdmin) {
+    if (!ticketId) return res.status(400).json({ message: 'A ticket is required.' });
+    const owned = await SupportTicket.findOne({
+      where: { id: ticketId, customer_id: identity.userId },
+      attributes: ['id'],
+    });
+    if (!owned) return res.status(404).json({ message: 'Ticket not found' });
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // nginx must not buffer a stream
+  res.flushHeaders?.();
+
+  const send = (payload) => {
+    if (res.writableEnded) return;
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  send({ type: 'connected' });
+
+  // Channel follows the ROUTE, not the role: /stream/admin is the inbox firehose,
+  // /tickets/:id/stream is one thread. An admin with a thread open wants that thread's
+  // events, not every ticket in the system.
+  const channel = ticketId ? Realtime.ticketChannel(ticketId) : Realtime.ADMIN_CHANNEL;
+  const unsubscribe = Realtime.subscribe(channel, send);
+
+  // Idle proxies and load balancers close a connection with no traffic, typically at 60s.
+  // A comment line is a valid SSE no-op that keeps it alive without reaching the client's
+  // message handler.
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded) res.write(': ping\n\n');
+  }, 25000);
+
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+    if (!res.writableEnded) res.end();
+  };
+  req.on('close', cleanup);
+  req.on('error', cleanup);
+};
+
+/**
+ * "X is typing" — ephemeral, never persisted.
+ *
+ * The client pings this while the composer has focus and text; the server re-arms a short
+ * TTL. Nothing is written to the database, because the fact is worthless a second later.
+ */
+exports.typing = async (req, res) => {
+  if (!req.user?.id) return res.status(401).json({ message: 'Authentication required' });
+  const isAdmin = req.userRole === 'admin';
+
+  const where = { id: req.params.id };
+  if (!isAdmin) where.customer_id = req.user.id;
+  const ticket = await SupportTicket.findOne({ where, attributes: ['id', 'name'] });
+  if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+
+  Realtime.setTyping({
+    ticketId: ticket.id,
+    side: isAdmin ? 'admin' : 'customer',
+    name: isAdmin ? (req.user.name || 'Support') : ticket.name,
+  });
+  return res.status(204).end();
+};
+
+/**
+ * Mark the thread read up to now, and tell the other side.
+ *
+ * A per-side watermark rather than a flag per message: one write on open instead of N, and
+ * it answers the unread-badge question for free (messages from the other side newer than
+ * my watermark).
+ */
+exports.markRead = async (req, res) => {
+  try {
+    if (!req.user?.id) return res.status(401).json({ message: 'Authentication required' });
+    const isAdmin = req.userRole === 'admin';
+
+    const where = { id: req.params.id };
+    if (!isAdmin) where.customer_id = req.user.id;
+    const ticket = await SupportTicket.findOne({ where });
+    if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+
+    const readAt = new Date();
+    // silent: this is a read receipt, not activity — bumping updated_at would reorder the
+    // admin inbox (sorted by updated_at DESC) every time someone merely opened a thread.
+    await ticket.update(
+      isAdmin ? { admin_read_at: readAt } : { customer_read_at: readAt },
+      { silent: true },
+    );
+
+    Realtime.emitRead(ticket.id, isAdmin ? 'admin' : 'customer', readAt);
+    return res.json({ success: true, read_at: readAt });
+  } catch (error) {
+    console.error('SupportController.markRead error:', error);
+    return res.status(500).json({ message: 'Unable to update read status.' });
   }
 };

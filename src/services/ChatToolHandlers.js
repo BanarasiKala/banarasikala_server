@@ -39,6 +39,20 @@ const money = (value) => Math.round((Number(value) || 0) * 100) / 100;
 
 // What the model (and the product-card renderer) sees for one saree. Deliberately small —
 // every field here is re-sent to the model on every subsequent turn.
+/**
+ * A search hit, in two widths.
+ *
+ * The browser needs the image URL, MRP and strike-through discount to render a card. The
+ * MODEL does not — it only needs enough to talk about the saree and to pass a slug to a
+ * follow-up tool. That difference matters because a tool result is not paid for once: it
+ * stays in the conversation and is re-sent on every subsequent turn.
+ *
+ * A Cloudinary URL alone is ~100 characters. Across 6 products, plus mrp/discount/description,
+ * the fat shape is ~600 tokens per search and the slim one ~250 — and that gap compounds for
+ * the rest of the conversation.
+ *
+ * So: `card` goes to React over SSE, `model` goes to Claude.
+ */
 const serializeProduct = (product) => {
   const plain = typeof product?.toJSON === 'function' ? product.toJSON() : product;
   if (!plain) return null;
@@ -56,6 +70,15 @@ const serializeProduct = (product) => {
     short_description: plain.short_description || null,
   };
 };
+
+// What Claude actually needs to describe a saree and reference it in a follow-up tool call.
+// Drops image_url, mrp, discount_percent and short_description — all rendering concerns.
+const slimForModel = (p) => ({
+  name: p.name,
+  slug: p.slug,
+  price: p.price,
+  in_stock: p.in_stock,
+});
 
 // ── PUBLIC TOOLS ───────────────────────────────────────────────────────────────────────
 
@@ -97,7 +120,9 @@ const search_products = async (input = {}) => {
       note: 'No sarees matched. Do NOT invent one. Tell the customer nothing matched and offer to widen the search (different colour, higher budget, or another fabric).',
     };
   }
-  return { found: results.length, products: results };
+  // products -> the model (slim). _cards -> the browser (full). AiChatService.buildTool
+  // strips _cards before the result reaches Claude.
+  return { found: results.length, products: results.map(slimForModel), _cards: results };
 };
 
 const get_product_details = async (input = {}) => {
@@ -126,7 +151,7 @@ const find_similar_products = async (input = {}) => {
     Math.min(6, Math.max(1, Number(input.limit) || 4)),
   );
   const results = (related || []).map(serializeProduct).filter(Boolean);
-  return { found: results.length, products: results };
+  return { found: results.length, products: results.map(slimForModel), _cards: results };
 };
 
 // ── ACCOUNT TOOLS ──────────────────────────────────────────────────────────────────────
