@@ -35,6 +35,16 @@ const SupportTicketMessage = sequelize.define('SupportTicketMessage', {
     type: DataTypes.TEXT,
     allowNull: false,
   },
+  // When the RECIPIENT's client actually received this message — the middle tick state.
+  //
+  // Distinct from "read" (which is a per-side watermark on the ticket): delivered means it
+  // reached their browser, read means they looked at the thread. Persisted rather than
+  // derived because the sender must still see ✓✓ after a page reload; a purely in-memory
+  // notion of delivery would reset to ✓ every refresh.
+  delivered_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
 }, {
   tableName: 'support_ticket_messages',
   schema: config.dbSchema,

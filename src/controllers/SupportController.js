@@ -52,7 +52,38 @@ const publicMessage = (row) => ({
   sender_name: row.sender_name,
   message: row.message,
   createdAt: row.createdAt,
+  // Drives the middle tick. Read (blue) is derived client-side from the ticket's read
+  // watermark, so it isn't repeated per message.
+  delivered_at: row.delivered_at || null,
 });
+
+/**
+ * Mark every message from `fromSide` on this ticket as delivered, and tell the sender.
+ *
+ * Called when the OTHER side's client connects — that connection is the moment the
+ * messages genuinely reached their browser. Idempotent: only rows still null are touched,
+ * so a reconnect loop can't churn the table or re-emit.
+ */
+const markDelivered = async (ticketId, fromSide) => {
+  try {
+    const pending = await SupportTicketMessage.findAll({
+      where: { ticket_id: ticketId, sender: fromSide, delivered_at: null },
+      attributes: ['id'],
+    });
+    if (!pending.length) return;
+
+    const deliveredAt = new Date();
+    const ids = pending.map((row) => row.id);
+    await SupportTicketMessage.update(
+      { delivered_at: deliveredAt },
+      { where: { id: ids }, silent: true },
+    );
+    Realtime.emitDelivered(ticketId, ids, deliveredAt);
+  } catch (error) {
+    // A delivery receipt is cosmetic — never let it break the stream it rides on.
+    console.error('SupportController.markDelivered error:', error.message);
+  }
+};
 
 // The ticket's own `message` is the FIRST message of the thread — it is rendered as such,
 // not as a separate field, so the client only ever walks one list.
@@ -234,6 +265,10 @@ exports.getTicket = async (req, res) => {
     });
     if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
 
+    // Fetching the thread is itself a delivery: these messages are now on this side's
+    // client. Covers the case where the reader never opens a stream at all.
+    markDelivered(ticket.id, req.userRole === 'admin' ? 'customer' : 'admin');
+
     return res.json(publicTicket(ticket, { withThread: true }));
   } catch (error) {
     console.error('SupportController.getTicket error:', error);
@@ -279,11 +314,17 @@ exports.addMessage = async (req, res) => {
     });
     if (recent) return res.status(201).json({ success: true, message: publicMessage(recent) });
 
+    // If the recipient already has a live connection, this message reaches their browser
+    // in the same breath as it is saved — so it is delivered on arrival (✓✓ immediately,
+    // no round trip). An admin sitting on the Tickets page is the common case.
+    const deliveredNow = Realtime.recipientIsPresent(sender, ticket.id) ? new Date() : null;
+
     const row = await SupportTicketMessage.create({
       ticket_id: ticket.id,
       sender,
       sender_name: isAdmin ? (req.user.name || 'Banarasi Kala Support') : ticket.name,
       message: cleanMessage,
+      delivered_at: deliveredNow,
     });
 
     // An admin replying to an Open ticket moves it along on its own — support has picked it
@@ -463,6 +504,19 @@ exports.stream = async (req, res) => {
   const channel = ticketId ? Realtime.ticketChannel(ticketId) : Realtime.ADMIN_CHANNEL;
   const unsubscribe = Realtime.subscribe(channel, send);
 
+  // Presence drives the middle tick — see SupportRealtime. Registered against the side
+  // that is watching, so a message written while they're connected is delivered on arrival.
+  const side = isAdmin ? 'admin' : 'customer';
+  Realtime.addPresence(side, ticketId);
+
+  // Anything the other side sent before this connection opened has now reached us too.
+  // For the admin inbox (no ticketId) this is skipped: sweeping every open ticket on each
+  // connect would be an unbounded query, and the per-ticket stream covers it when a thread
+  // is actually opened.
+  if (ticketId) {
+    markDelivered(ticketId, isAdmin ? 'customer' : 'admin');
+  }
+
   // Idle proxies and load balancers close a connection with no traffic, typically at 60s.
   // A comment line is a valid SSE no-op that keeps it alive without reaching the client's
   // message handler.
@@ -470,9 +524,15 @@ exports.stream = async (req, res) => {
     if (!res.writableEnded) res.write(': ping\n\n');
   }, 25000);
 
+  let cleanedUp = false;
   const cleanup = () => {
+    // 'close' and 'error' can both fire — without this guard the presence count would be
+    // decremented twice and the recipient would look absent while still connected.
+    if (cleanedUp) return;
+    cleanedUp = true;
     clearInterval(heartbeat);
     unsubscribe();
+    Realtime.dropPresence(side, ticketId);
     if (!res.writableEnded) res.end();
   };
   req.on('close', cleanup);

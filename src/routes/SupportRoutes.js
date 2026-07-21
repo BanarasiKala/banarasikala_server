@@ -20,12 +20,19 @@ const ensureSupportSchema = async () => {
   await SupportTicketMessage.sync({ force: false });
 
   const qi = sequelize.getQueryInterface();
+
   const table = { tableName: "support_tickets", schema: config.dbSchema };
   const columns = await qi.describeTable(table);
   for (const name of ["customer_read_at", "admin_read_at"]) {
     if (!columns[name]) {
       await qi.addColumn(table, name, { type: DataTypes.DATE, allowNull: true });
     }
+  }
+
+  const messageTable = { tableName: "support_ticket_messages", schema: config.dbSchema };
+  const messageColumns = await qi.describeTable(messageTable);
+  if (!messageColumns.delivered_at) {
+    await qi.addColumn(messageTable, "delivered_at", { type: DataTypes.DATE, allowNull: true });
   }
 };
 

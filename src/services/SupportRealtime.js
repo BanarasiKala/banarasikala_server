@@ -46,6 +46,47 @@ const ticketChannel = (ticketId) => `ticket:${ticketId}`;
 const ADMIN_CHANNEL = 'admin:inbox';
 
 /**
+ * Presence — who currently has a live connection.
+ *
+ * This is what makes the middle tick honest. Without it "delivered" would either be a lie
+ * (always ✓✓ the moment we save) or indistinguishable from "read" (only set when they open
+ * the thread, by which point it's read anyway) — and the three-state tick would collapse
+ * into two.
+ *
+ * An admin sitting on the Tickets page holds the inbox stream open, so a customer message
+ * is genuinely delivered to their browser the instant it is written, well before anyone
+ * opens the thread. That is exactly the ✓✓-but-not-blue window.
+ *
+ * Counted, not boolean: the same person may have two tabs open, and the first one closing
+ * must not mark them absent.
+ */
+const adminConnections = { count: 0 };
+const customerConnections = new Map(); // ticketId -> count
+
+const addPresence = (side, ticketId) => {
+  if (side === 'admin') {
+    adminConnections.count += 1;
+  } else {
+    customerConnections.set(ticketId, (customerConnections.get(ticketId) || 0) + 1);
+  }
+};
+
+const dropPresence = (side, ticketId) => {
+  if (side === 'admin') {
+    adminConnections.count = Math.max(0, adminConnections.count - 1);
+    return;
+  }
+  const next = (customerConnections.get(ticketId) || 1) - 1;
+  if (next <= 0) customerConnections.delete(ticketId);
+  else customerConnections.set(ticketId, next);
+};
+
+// Is the RECIPIENT of a message from `sender` currently connected?
+const recipientIsPresent = (sender, ticketId) => (sender === 'customer'
+  ? adminConnections.count > 0
+  : (customerConnections.get(Number(ticketId)) || 0) > 0);
+
+/**
  * Stream tickets — the answer to "EventSource cannot send headers".
  *
  * The browser's EventSource API has no way to set an Authorization header, so the only
@@ -137,12 +178,20 @@ const emitStatusChange = (ticketId, status, canReply) => {
   publish(ADMIN_CHANNEL, { type: 'status', ticket_id: ticketId, status });
 };
 
-// Read receipts: tell the OTHER side their message has been seen.
+// Read receipts: tell the OTHER side their message has been seen (blue ticks).
 const emitRead = (ticketId, side, readAt) => {
   publish(ticketChannel(ticketId), { type: 'read', side, read_at: readAt });
   if (side === 'admin') {
     publish(ADMIN_CHANNEL, { type: 'read', ticket_id: ticketId, side, read_at: readAt });
   }
+};
+
+// Delivery receipts: the sender's ✓ becomes ✓✓. `ids` are the messages that just landed
+// on the recipient's client.
+const emitDelivered = (ticketId, ids, deliveredAt) => {
+  if (!ids.length) return;
+  publish(ticketChannel(ticketId), { type: 'delivered', ids, delivered_at: deliveredAt });
+  publish(ADMIN_CHANNEL, { type: 'delivered', ticket_id: ticketId, ids, delivered_at: deliveredAt });
 };
 
 // Periodic sweep of expired stream tickets. Redemption deletes them, so this only collects
@@ -161,10 +210,14 @@ module.exports = {
   ADMIN_CHANNEL,
   issueStreamTicket,
   redeemStreamTicket,
+  addPresence,
+  dropPresence,
+  recipientIsPresent,
   setTyping,
   clearTyping,
   emitMessage,
   emitTicketCreated,
   emitStatusChange,
   emitRead,
+  emitDelivered,
 };
