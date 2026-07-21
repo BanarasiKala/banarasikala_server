@@ -35,6 +35,12 @@ const SupportTicketMessage = sequelize.define('SupportTicketMessage', {
     type: DataTypes.TEXT,
     allowNull: false,
   },
+  // Photos sent with this message — [{ url, public_id }]. Either side can attach.
+  attachments: {
+    type: DataTypes.JSONB,
+    allowNull: false,
+    defaultValue: [],
+  },
   // When the RECIPIENT's client actually received this message — the middle tick state.
   //
   // Distinct from "read" (which is a per-side watermark on the ticket): delivered means it

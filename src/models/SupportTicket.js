@@ -54,6 +54,24 @@ const SupportTicket = sequelize.define('SupportTicket', {
     type: DataTypes.TEXT,
     allowNull: false,
   },
+  // Photos the customer attached when raising the query — [{ url, public_id }].
+  // A damaged saree is far easier to show than to describe, and support resolving one of
+  // these without asking for pictures first is the whole point.
+  attachments: {
+    type: DataTypes.JSONB,
+    allowNull: false,
+    defaultValue: [],
+  },
+  // Delivery receipt for the OPENING message.
+  //
+  // The thread's first message is this row's `message` field, not a support_ticket_messages
+  // row, so it has nowhere to carry a delivered_at of its own. Without this the customer's
+  // very first message — the query itself — is the one message in the conversation with no
+  // tick at all, while every reply after it has one.
+  opening_delivered_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
   // Open | In Progress | Resolved | Closed
   status: {
     type: DataTypes.STRING,

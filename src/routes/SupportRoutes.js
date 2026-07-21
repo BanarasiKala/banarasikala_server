@@ -23,10 +23,20 @@ const ensureSupportSchema = async () => {
 
   const table = { tableName: "support_tickets", schema: config.dbSchema };
   const columns = await qi.describeTable(table);
-  for (const name of ["customer_read_at", "admin_read_at"]) {
+  for (const name of ["customer_read_at", "admin_read_at", "opening_delivered_at"]) {
     if (!columns[name]) {
       await qi.addColumn(table, name, { type: DataTypes.DATE, allowNull: true });
     }
+  }
+
+  // Photo attachments. NOT NULL with a [] default so existing rows land on an empty array
+  // rather than null — every read path can then treat this as an array unconditionally.
+  if (!columns.attachments) {
+    await qi.addColumn(table, "attachments", {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: [],
+    });
   }
 
   const messageTable = { tableName: "support_ticket_messages", schema: config.dbSchema };
@@ -34,12 +44,24 @@ const ensureSupportSchema = async () => {
   if (!messageColumns.delivered_at) {
     await qi.addColumn(messageTable, "delivered_at", { type: DataTypes.DATE, allowNull: true });
   }
+  if (!messageColumns.attachments) {
+    await qi.addColumn(messageTable, "attachments", {
+      type: DataTypes.JSONB,
+      allowNull: false,
+      defaultValue: [],
+    });
+  }
 };
 
 ensureSupportSchema().catch((err) => console.error("Support schema sync failed:", err));
 
 // The categories the modal offers, so the client never drifts from the validator.
+// The storefront form no longer asks for one, but the admin console still filters by them.
 router.get("/categories", (_req, res) => res.json(SupportController.TICKET_CATEGORIES));
+
+// Signed credentials for uploading a photo straight to Cloudinary. Auth only (no admin
+// gate) — customers attach photos when raising a query and support attaches them in replies.
+router.get("/upload-signature", authMiddleware, SupportController.getUploadSignature);
 
 // Customer — one ticket per order, then a conversation on it.
 router.post("/tickets", authMiddleware, SupportController.createTicket);

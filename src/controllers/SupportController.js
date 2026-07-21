@@ -4,8 +4,16 @@ const SupportTicketMessage = require('../models/SupportTicketMessage');
 const Order = require('../models/Order');
 const EmailService = require('../services/EmailService');
 const Realtime = require('../services/SupportRealtime');
+const { generateUploadSignature } = require('../config/cloudinary');
 
-// Kept in sync with TICKET_CATEGORIES in the client's support modal.
+/**
+ * Legacy categories.
+ *
+ * The storefront no longer asks the customer to pick one — the form is a description plus
+ * photos — so new queries are stored as DEFAULT_CATEGORY. The list stays because rows
+ * raised before the change still carry these values and the admin console filters on them;
+ * a submitted category is still accepted and validated if one arrives.
+ */
 const TICKET_CATEGORIES = [
   'Delivery or shipping issue',
   'Payment or refund issue',
@@ -14,6 +22,7 @@ const TICKET_CATEGORIES = [
   'Return or exchange help',
   'Other',
 ];
+const DEFAULT_CATEGORY = 'Other';
 
 const TICKET_STATUSES = ['Open', 'In Progress', 'Resolved', 'Closed'];
 const OPEN_STATUSES = ['Open', 'In Progress'];
@@ -24,6 +33,28 @@ const OPEN_STATUSES = ['Open', 'In Progress'];
 const isThreadClosed = (ticket) => String(ticket?.status || '') === 'Closed';
 
 const MAX_MESSAGE_LENGTH = 2000;
+const MAX_ATTACHMENTS = 5;
+
+// Uploads go straight from the browser to Cloudinary (signed), so the server only ever
+// receives the resulting URL. This is the one shape it will store or serve.
+const CLOUDINARY_URL = /^https:\/\/res\.cloudinary\.com\//i;
+
+/**
+ * Sanitise an attachments array arriving from a client.
+ *
+ * The upload itself goes straight from the browser to Cloudinary (signed), so the server
+ * only ever sees the resulting URLs — which means it must not trust them. Anything that is
+ * not an https Cloudinary URL is discarded, and only url/public_id are kept, so a caller
+ * cannot smuggle extra keys or a `javascript:`/`data:` URL into a column that later ends up
+ * inside an <img src> on the admin console.
+ */
+const sanitizeAttachments = (value) => (Array.isArray(value) ? value : [])
+  .filter((item) => item && typeof item.url === 'string' && CLOUDINARY_URL.test(item.url))
+  .slice(0, MAX_ATTACHMENTS)
+  .map((item) => ({
+    url: item.url,
+    public_id: String(item.public_id || '').slice(0, 255),
+  }));
 // A double-submit (impatient click, retried request) must not create a second row — the
 // same text on the same thread inside this window is treated as the one message it is.
 const DUPLICATE_WINDOW_MS = 2 * 60 * 1000;
@@ -46,11 +77,22 @@ const findOwnedOrder = (orderId, user) => Order.findOne({
   },
 });
 
+/**
+ * Attachments as the client is allowed to see them.
+ *
+ * Re-filtered on the way OUT as well as in: the column is JSONB, so rows written before
+ * sanitizeAttachments existed — or by anything other than this controller — are not
+ * guaranteed to hold the shape this claims to return. Reusing the same rule in both
+ * directions means a bad row is inert rather than rendered into an <img>.
+ */
+const publicAttachments = sanitizeAttachments;
+
 const publicMessage = (row) => ({
   id: row.id,
   sender: row.sender,
   sender_name: row.sender_name,
   message: row.message,
+  attachments: publicAttachments(row.attachments),
   createdAt: row.createdAt,
   // Drives the middle tick. Read (blue) is derived client-side from the ticket's read
   // watermark, so it isn't repeated per message.
@@ -66,18 +108,33 @@ const publicMessage = (row) => ({
  */
 const markDelivered = async (ticketId, fromSide) => {
   try {
+    const deliveredAt = new Date();
+    const ids = [];
+
     const pending = await SupportTicketMessage.findAll({
       where: { ticket_id: ticketId, sender: fromSide, delivered_at: null },
       attributes: ['id'],
     });
-    if (!pending.length) return;
+    if (pending.length) {
+      ids.push(...pending.map((row) => row.id));
+      await SupportTicketMessage.update(
+        { delivered_at: deliveredAt },
+        { where: { id: ids }, silent: true },
+      );
+    }
 
-    const deliveredAt = new Date();
-    const ids = pending.map((row) => row.id);
-    await SupportTicketMessage.update(
-      { delivered_at: deliveredAt },
-      { where: { id: ids }, silent: true },
-    );
+    // The opening message is the ticket row itself, so it is stamped here too — it is a
+    // customer message, and it reaches the admin at the same moment the rest do. Its id in
+    // the thread is the synthetic `ticket-<id>`, which is what the client keys ticks by.
+    if (fromSide === 'customer') {
+      const [stamped] = await SupportTicket.update(
+        { opening_delivered_at: deliveredAt },
+        { where: { id: ticketId, opening_delivered_at: null }, silent: true },
+      );
+      if (stamped) ids.push(`ticket-${ticketId}`);
+    }
+
+    if (!ids.length) return;
     Realtime.emitDelivered(ticketId, ids, deliveredAt);
   } catch (error) {
     // A delivery receipt is cosmetic — never let it break the stream it rides on.
@@ -93,6 +150,11 @@ const threadOf = (ticket) => {
     sender: 'customer',
     sender_name: ticket.name,
     message: ticket.message,
+    // The photos raised WITH the query belong to its opening message, which is where the
+    // customer attached them.
+    attachments: publicAttachments(ticket.attachments),
+    // Same tick states as any other message — see opening_delivered_at on the model.
+    delivered_at: ticket.opening_delivered_at || null,
     createdAt: ticket.createdAt,
   };
   const replies = (ticket.Messages || []).map(publicMessage);
@@ -108,6 +170,7 @@ const publicTicket = (ticket, { withThread = false } = {}) => ({
   order_number: ticket.Order?.order_number || null,
   category: ticket.category,
   message: ticket.message,
+  attachments: publicAttachments(ticket.attachments),
   status: ticket.status,
   resolved_at: ticket.resolved_at,
   createdAt: ticket.createdAt,
@@ -150,6 +213,21 @@ const Noun = (req) => (req.userRole === 'admin' ? 'Ticket' : 'Query');
 
 exports.TICKET_CATEGORIES = TICKET_CATEGORIES;
 exports.TICKET_STATUSES = TICKET_STATUSES;
+exports.MAX_ATTACHMENTS = MAX_ATTACHMENTS;
+
+/**
+ * Signed Cloudinary upload credentials for support photos.
+ *
+ * The browser uploads straight to Cloudinary; this endpoint is what makes that safe — the
+ * API secret never leaves the server, and the signature it returns is scoped to one folder.
+ * Behind auth for the same reason: an open signature endpoint is an open upload bucket.
+ * Both sides use it, so support staff can attach photos to a reply too.
+ */
+exports.getUploadSignature = (req, res) => {
+  if (!req.user?.id) return res.status(401).json({ message: 'Authentication required' });
+  const signature = generateUploadSignature('vns-saree/support');
+  return res.json({ ...signature, resourceType: 'image' });
+};
 
 exports.createTicket = async (req, res) => {
   try {
@@ -158,8 +236,11 @@ exports.createTicket = async (req, res) => {
     }
 
     const { orderId, category, message, phone } = req.body;
-    const cleanCategory = String(category || '').trim();
+    // The storefront no longer collects a category. Absent means DEFAULT_CATEGORY; a value
+    // that IS sent still has to be one of the known ones.
+    const cleanCategory = String(category || '').trim() || DEFAULT_CATEGORY;
     const cleanMessage = String(message || '').trim();
+    const attachments = sanitizeAttachments(req.body.attachments);
 
     // Customer-facing copy says "query", not "ticket" — the storefront calls this a query
     // end to end (My Orders shows "Query Us" / "Raise Query"), and these messages are shown
@@ -167,7 +248,7 @@ exports.createTicket = async (req, res) => {
     // which is what support staff and the admin console call it.
     if (!orderId) return res.status(400).json({ message: 'An order is required to raise a query.' });
     if (!TICKET_CATEGORIES.includes(cleanCategory)) {
-      return res.status(400).json({ message: 'Please choose what your query is about.' });
+      return res.status(400).json({ message: 'That query type is not recognised.' });
     }
     if (cleanMessage.length < 10) {
       return res.status(400).json({ message: 'Please describe your issue in a little more detail.' });
@@ -209,6 +290,7 @@ exports.createTicket = async (req, res) => {
       phone: normalizePhone(phone) || null,
       category: cleanCategory,
       message: cleanMessage,
+      attachments,
       status: 'Open',
     });
     await ticket.update({ ticket_number: `TKT${String(ticket.id).padStart(6, '0')}` });
@@ -301,8 +383,11 @@ exports.addMessage = async (req, res) => {
     if (!req.user?.id) return res.status(401).json({ message: 'Authentication required' });
 
     const cleanMessage = String(req.body.message || '').trim();
-    if (cleanMessage.length < 1) {
-      return res.status(400).json({ message: 'Please type a message.' });
+    const attachments = sanitizeAttachments(req.body.attachments);
+    // A photo on its own is a complete message — "here is what arrived damaged" needs no
+    // caption. Only a message with neither text nor an image is rejected.
+    if (!cleanMessage && !attachments.length) {
+      return res.status(400).json({ message: 'Please type a message or attach a photo.' });
     }
     if (cleanMessage.length > MAX_MESSAGE_LENGTH) {
       return res.status(400).json({ message: `Please keep your message under ${MAX_MESSAGE_LENGTH} characters.` });
@@ -321,7 +406,10 @@ exports.addMessage = async (req, res) => {
     }
 
     const sender = isAdmin ? 'admin' : 'customer';
-    const recent = await SupportTicketMessage.findOne({
+    // Double-submit guard. Skipped when photos are attached: two image messages sent in
+    // quick succession legitimately share the same (often empty) text, and collapsing them
+    // would silently swallow the second batch of photos.
+    const recent = attachments.length ? null : await SupportTicketMessage.findOne({
       where: {
         ticket_id: ticket.id,
         sender,
@@ -341,6 +429,7 @@ exports.addMessage = async (req, res) => {
       sender,
       sender_name: isAdmin ? (req.user.name || 'Banarasi Kala Support') : ticket.name,
       message: cleanMessage,
+      attachments,
       delivered_at: deliveredNow,
     });
 
@@ -355,7 +444,11 @@ exports.addMessage = async (req, res) => {
     await ticket.save({ silent: false });
 
     if (isAdmin) {
-      EmailService.sendSupportTicketReply(ticket, ticket.Order, cleanMessage).catch((error) => {
+      // An image-only reply has no text to quote, so the email says what arrived instead of
+      // going out with an empty body.
+      const emailBody = cleanMessage
+        || `${attachments.length} photo${attachments.length === 1 ? '' : 's'} attached — open the ${noun(req)} to view.`;
+      EmailService.sendSupportTicketReply(ticket, ticket.Order, emailBody).catch((error) => {
         console.error('SupportController: reply email failed:', error.message);
       });
     }
