@@ -148,7 +148,11 @@ exports.createTicket = async (req, res) => {
     const cleanCategory = String(category || '').trim();
     const cleanMessage = String(message || '').trim();
 
-    if (!orderId) return res.status(400).json({ message: 'An order is required to raise a ticket.' });
+    // Customer-facing copy says "query", not "ticket" — the storefront calls this a query
+    // end to end (My Orders shows "Query Us" / "Raise Query"), and these messages are shown
+    // to the customer verbatim as a toast. Admin-facing responses further down keep "ticket",
+    // which is what support staff and the admin console call it.
+    if (!orderId) return res.status(400).json({ message: 'An order is required to raise a query.' });
     if (!TICKET_CATEGORIES.includes(cleanCategory)) {
       return res.status(400).json({ message: 'Please choose what your query is about.' });
     }
@@ -179,7 +183,7 @@ exports.createTicket = async (req, res) => {
     });
     if (existing) {
       return res.status(409).json({
-        message: `You already have ticket ${existing.ticket_number} for this order — continue the conversation there.`,
+        message: `You already have an open query (${existing.ticket_number}) for this order — continue the conversation there.`,
         ticket: publicTicket(existing),
       });
     }
@@ -214,12 +218,12 @@ exports.createTicket = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: `Ticket ${ticket.ticket_number} raised. Our support team will reach out soon.`,
+      message: `Query ${ticket.ticket_number} raised. Our support team will reach out soon.`,
       ticket: publicTicket(ticket),
     });
   } catch (error) {
     console.error('SupportController.createTicket error:', error);
-    return res.status(500).json({ message: 'Unable to raise your ticket right now. Please try again.' });
+    return res.status(500).json({ message: 'Unable to raise your query right now. Please try again.' });
   }
 };
 
