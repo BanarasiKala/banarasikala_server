@@ -135,6 +135,19 @@ const unreadFor = (ticket, viewer) => {
     && (!watermark || new Date(m.created_at || m.createdAt) > new Date(watermark))).length;
 };
 
+/**
+ * What to call this thing in a message the caller will read.
+ *
+ * Support staff call these tickets and the admin console says "ticket" throughout; the
+ * storefront calls them queries end to end ("Query Us", "Raise Query", "My Queries").
+ * getTicket and addMessage serve BOTH sides from one handler, so the noun is chosen from
+ * the caller's role rather than hard-coded — otherwise one audience is always shown the
+ * other's vocabulary. Takes `req` (not a boolean) so it is safe to call from a catch block,
+ * where the handler's own `isAdmin` is out of scope.
+ */
+const noun = (req) => (req.userRole === 'admin' ? 'ticket' : 'query');
+const Noun = (req) => (req.userRole === 'admin' ? 'Ticket' : 'Query');
+
 exports.TICKET_CATEGORIES = TICKET_CATEGORIES;
 exports.TICKET_STATUSES = TICKET_STATUSES;
 
@@ -245,7 +258,7 @@ exports.listMyTickets = async (req, res) => {
     return res.json(tickets.map((ticket) => publicTicket(ticket)));
   } catch (error) {
     console.error('SupportController.listMyTickets error:', error);
-    return res.status(500).json({ message: 'Unable to fetch your tickets.' });
+    return res.status(500).json({ message: 'Unable to fetch your queries.' });
   }
 };
 
@@ -267,7 +280,7 @@ exports.getTicket = async (req, res) => {
       ],
       order: [[{ model: SupportTicketMessage, as: 'Messages' }, 'created_at', 'ASC']],
     });
-    if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+    if (!ticket) return res.status(404).json({ message: `${Noun(req)} not found` });
 
     // Fetching the thread is itself a delivery: these messages are now on this side's
     // client. Covers the case where the reader never opens a stream at all.
@@ -276,7 +289,7 @@ exports.getTicket = async (req, res) => {
     return res.json(publicTicket(ticket, { withThread: true }));
   } catch (error) {
     console.error('SupportController.getTicket error:', error);
-    return res.status(500).json({ message: 'Unable to fetch this ticket.' });
+    return res.status(500).json({ message: `Unable to fetch this ${noun(req)}.` });
   }
 };
 
@@ -299,11 +312,11 @@ exports.addMessage = async (req, res) => {
     if (!isAdmin) where.customer_id = req.user.id;
 
     const ticket = await SupportTicket.findOne({ where, include: [{ model: Order }] });
-    if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+    if (!ticket) return res.status(404).json({ message: `${Noun(req)} not found` });
 
     if (isThreadClosed(ticket)) {
       return res.status(409).json({
-        message: 'This ticket is closed. Please raise a new one if you still need help.',
+        message: `This ${noun(req)} is closed. Please raise a new one if you still need help.`,
       });
     }
 
