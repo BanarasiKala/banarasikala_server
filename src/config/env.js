@@ -62,7 +62,7 @@ const config = {
   emailPort: Number(process.env.SMTP_PORT) || 465,
   emailUser: process.env.SMTP_USER || process.env.EMAIL_USER || readEnv("SMTP_USER"),
   emailPass: process.env.SMTP_PASS || process.env.EMAIL_PASS || readEnv("SMTP_PASS"),
-  // Inbox that receives customer support tickets. Defaults to the SMTP sender.
+  // Reply-to on support mail we send customers. Defaults to the SMTP sender.
   supportEmail: (process.env.SUPPORT_EMAIL || "").trim()
     || process.env.SMTP_USER
     || process.env.EMAIL_USER,

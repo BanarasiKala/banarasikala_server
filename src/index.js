@@ -229,7 +229,7 @@ app.use("/api/addresses", CustomerAddressRoutes);
 // Contact form — public, no auth required
 app.use("/api/contact", ContactRoutes);
 
-// Order support tickets — customer raises against their own order; admin queue.
+// Support chat — one live conversation per customer, plus the admin inbox.
 app.use("/api/support", SupportRoutes);
 
 // Newsletter subscription — public subscribe, admin list
