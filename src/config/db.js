@@ -43,7 +43,19 @@ const connectDB = async () => {
     console.log(`Database schema: ${config.dbSchema}`);
 
     await runSchemaSync();
-  
+
+    // Foreign-key indexes for the order graph. Postgres does not index FKs automatically,
+    // so without these every My Orders load runs a sequential scan per association — cost
+    // scaling with total rows in the system rather than the customer's own. Idempotent
+    // (CREATE INDEX IF NOT EXISTS) and best-effort: never block boot on it.
+    // Runs AFTER sync so the tables exist.
+    try {
+      const { ensureOrderIndexes } = require('../utils/ensureIndexes');
+      await ensureOrderIndexes();
+    } catch (indexError) {
+      console.error('[Indexes] Skipped:', indexError.message);
+    }
+
   } catch (error) {
     console.error("Unable to connect to the database:", error);
     process.exit(1);

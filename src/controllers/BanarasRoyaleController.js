@@ -10,7 +10,7 @@ const normalizeImages = (images) => (Array.isArray(images)
 
 class BanarasRoyaleController {
   // Public storefront list — active entries only, with the linked product.
-  async getAll(req, res) {
+  async getAll(req, res) { 
     try {
       const rows = await BanarasRoyale.findAll({
         where: { is_active: true },

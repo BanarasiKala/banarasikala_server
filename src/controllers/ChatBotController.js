@@ -294,6 +294,43 @@ const ruleBasedReply = (userMessage) => {
   return matched ? matched.reply(userMessage) : pick(FALLBACK_REPLIES);
 };
 
+// ── Free-tier short-circuit ───────────────────────────────────────────────────────────────
+// Questions whose correct answer is FIXED TEXT — no catalogue lookup, no account access, no
+// judgement. The rules engine already answers these correctly and costs nothing, so calling
+// Claude for them is pure spend. Typically 30-50% of chat traffic is this kind of filler.
+//
+// DELIBERATELY NARROW. The rules array also matches "price", "colour", "types", "wedding",
+// "new arrivals", "track my order" — but those need LIVE data (stock, prices) or the
+// customer's own orders, and answering them from a canned string would be a downgrade, not a
+// saving. Those must reach Claude and its tools.
+//
+// The bar for adding a pattern here: would the ideal answer be identical for every customer,
+// on every day, regardless of what is in stock? If not, it does not belong.
+const STATIC_INTENTS = [
+  /^(hi+|hello+|hey+|helo|howdy|yo|hiya|heya|greetings)[\s!.?]*$/i,
+  /\bgood\s*(morning|afternoon|evening|night)\b/i,
+  /\b(namaste|namaskar|pranam|sat sri akal)\b/i,
+  /(how are you|how r u|how's it going|kaise ho|kya haal)/i,
+  /(are you (a )?(bot|robot|ai|machine|real|human)|who are you|who made you)/i,
+  /\b(thank|thanks|thank you|thx|dhanyavad|shukriya)\b/i,
+  // Brand story, contact details, payment methods, care instructions, account help:
+  // all fixed text that never depends on the catalogue.
+  /(about (the )?(brand|company|you)|your story|who is banarasi kala|brand story)/i,
+  /(contact|whatsapp number|phone number|email address|customer care|speak to (a )?human)/i,
+  /(payment (method|option)s?|which payments|do you accept (upi|card)|how (do|can) i pay)/i,
+  /(care instruction|how (to|do i) (wash|clean|store|iron|maintain)|washing instruction)/i,
+  /(forgot password|reset password|how (do|to) (i )?(login|log in|sign ?up|register))/i,
+];
+
+// A static-intent message must ALSO match a real rule — otherwise the rules engine would just
+// emit a random "I didn't understand" fallback, and Claude would have answered properly.
+const staticReplyFor = (userMessage) => {
+  const text = String(userMessage || '');
+  if (!STATIC_INTENTS.some((pattern) => pattern.test(text))) return null;
+  const matched = rules.find((rule) => rule.match(text));
+  return matched ? matched.reply(text) : null;
+};
+
 const AiChatService = require("../services/AiChatService");
 const ChatConversation = require("../models/ChatConversation");
 const ChatMessage = require("../models/ChatMessage");
@@ -402,6 +439,29 @@ exports.message = async (req, res) => {
   let conversation = null;
   try {
     await ensureChatSchema();
+
+    // ── Free-tier short-circuit ─────────────────────────────────────────────────────────
+    // "hi", "thanks", "what payment methods do you take" — fixed answers that need no
+    // catalogue lookup and no account access. The rules engine handles them for ₹0, so
+    // spending an API call is pure waste. Still persisted, so the analytics and the
+    // conversation history stay complete.
+    //
+    // Only short-circuits on the FIRST message of a conversation. Mid-conversation, a bare
+    // "thanks" may be a reply to something Claude just said, and a canned greeting would be
+    // a non-sequitur — let the model keep the thread.
+    const isFirstMessage = !String(req.body.chat_id || "").trim();
+    const staticReply = isFirstMessage ? staticReplyFor(userMessage) : null;
+    if (staticReply) {
+      const convo = await ChatConversation.create({ customer_id: customerId });
+      await ChatMessage.bulkCreate([
+        { conversation_id: convo.id, role: "user", content: userMessage },
+        { conversation_id: convo.id, role: "assistant", content: staticReply },
+      ]);
+      await convo.update({ last_message_at: new Date() });
+      sse(res, "text", { delta: staticReply });
+      sse(res, "done", { chat_id: convo.id });
+      return res.end();
+    }
 
     // ── Resolve the conversation ────────────────────────────────────────────────────────
     const requestedId = String(req.body.chat_id || "").trim() || null;
