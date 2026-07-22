@@ -152,7 +152,28 @@ const renderProductHtml = (product, pageUrl) => {
 loadClientIndexHtml();
 
 app.use(helmet());
-app.use(compression());
+
+/**
+ * Compression, except on server-sent event streams.
+ *
+ * gzip is a buffering codec: it holds bytes back until it has enough to emit a block. On a
+ * normal response that is invisible, because the response ends and everything flushes. An SSE
+ * stream never ends — so every `res.write` of an event sat in the compressor and the browser
+ * received nothing at all. The connection opened, stayed open, and delivered silence, which
+ * is exactly what makes it hard to spot: nothing errors, live updates simply never arrive.
+ *
+ * `X-Accel-Buffering: no` on the stream handler covers the same problem one layer out, at
+ * nginx. It cannot help here, because this buffering happens inside Express, before the
+ * response ever leaves the process.
+ *
+ * The filter runs at the first write, by which point the handler has set its Content-Type.
+ */
+app.use(compression({
+  filter: (req, res) => {
+    if (String(res.getHeader("Content-Type") || "").includes("text/event-stream")) return false;
+    return compression.filter(req, res);
+  },
+}));
 app.use(
   cors({
     origin: function (origin, callback) {
