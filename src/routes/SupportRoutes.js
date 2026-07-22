@@ -65,6 +65,7 @@ router.get("/upload-signature", authMiddleware, SupportController.getUploadSigna
 router.get("/conversation", authMiddleware, SupportController.getMyConversation);
 router.get("/conversation/unread", authMiddleware, SupportController.getMyUnreadCount);
 router.post("/conversation/messages", authMiddleware, SupportController.sendMyMessage);
+router.post("/conversation/reopen", authMiddleware, SupportController.reopenMyTopic);
 router.post("/conversation/read", authMiddleware, SupportController.markMyRead);
 router.post("/conversation/typing", authMiddleware, SupportController.typing);
 

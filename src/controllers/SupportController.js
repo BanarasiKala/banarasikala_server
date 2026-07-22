@@ -4,7 +4,6 @@ const SupportTopic = require('../models/SupportTopic');
 const SupportMessage = require('../models/SupportMessage');
 const Order = require('../models/Order');
 const Customer = require('../models/Customer');
-const EmailService = require('../services/EmailService');
 const Realtime = require('../services/SupportRealtime');
 const { loadOrderCard } = require('../services/SupportOrderCard');
 const { generateUploadSignature } = require('../config/cloudinary');
@@ -405,6 +404,24 @@ const postMessage = async (req, res, { conversation, topic, isAdmin }) => {
   const invalid = draftError({ body, attachments });
   if (invalid) return res.status(400).json({ message: invalid });
 
+  /**
+   * A CLOSED strand refuses customer messages until it is explicitly reopened.
+   *
+   * Enforced here and not only in the UI, or "Closed" would be decorative at the API level —
+   * the box would be hidden while the endpoint quietly accepted anything sent to it. The
+   * client asks "do you still have a query?" and calls /conversation/reopen; that is the one
+   * way back in.
+   *
+   * Support is exempt: an agent following up on something they closed is normal, and their
+   * reply is what would prompt the customer to come back anyway.
+   */
+  if (!isAdmin && topic.status === 'Closed') {
+    return res.status(409).json({
+      message: 'This conversation is closed. Reopen it to send a message.',
+      topic: publicTopic(topic),
+    });
+  }
+
   const sender = isAdmin ? 'admin' : 'customer';
 
   // Double-submit guard. Skipped when photos are attached: two image messages sent in quick
@@ -448,7 +465,10 @@ const postMessage = async (req, res, { conversation, topic, isAdmin }) => {
    */
   const previousStatus = topic.status;
   let nextStatus = previousStatus;
-  if (!isAdmin && SETTLED.has(previousStatus)) nextStatus = 'Open';
+  // Resolved still wakes on a reply — "we think this is sorted" is an invitation to say it
+  // isn't, so making the customer confirm first would be a gate on the wrong door. Closed is
+  // the deliberate one, and it never reaches here (rejected above).
+  if (!isAdmin && previousStatus === 'Resolved') nextStatus = 'Open';
   else if (isAdmin && previousStatus === 'Open') nextStatus = 'In Progress';
 
   await topic.update({ status: nextStatus, last_message_at: row.createdAt });
@@ -466,21 +486,9 @@ const postMessage = async (req, res, { conversation, topic, isAdmin }) => {
     Realtime.emitStatusChange(conversation.id, topic.id, nextStatus);
   }
 
-  /**
-   * Email only ever travels one way: outward, to the customer.
-   *
-   * They are usually not on the site when support answers, so a reply that only existed in
-   * the chat would go unseen for hours. Support is the opposite case — they live in the admin
-   * console, where a customer message already arrives as a live row, a toast and an unread
-   * badge. Mailing them as well turned every message in a back-and-forth into an inbox item
-   * about something they were already looking at.
-   */
-  if (isAdmin) {
-    const text = body || `${attachments.length} photo${attachments.length === 1 ? '' : 's'} attached`;
-    EmailService.sendSupportReplyToCustomer(conversation, text).catch((error) => {
-      console.error('SupportController: reply email failed:', error.message);
-    });
-  }
+  // No email, in either direction. The chat is the channel: a message here is delivered by
+  // the live stream and waits in the thread otherwise, and mirroring every line of a
+  // back-and-forth into two inboxes made a conversation feel like a mailing list.
 
   return res.status(201).json({
     success: true,
@@ -529,6 +537,57 @@ exports.sendMyMessage = async (req, res) => {
       return res.status(500).json({ message: 'Unable to send your message right now.' });
     }
     return undefined;
+  }
+};
+
+/**
+ * Reopen a closed strand, deliberately.
+ *
+ * A Closed strand takes the composer away — support has ended that conversation, and a
+ * customer typing into it would be talking to a thread nobody is assigned to. So instead of a
+ * disabled box they get a question, and answering it is what reopens the strand.
+ *
+ * The asking matters. Writing used to reopen implicitly, which meant "Closed" was decorative:
+ * it said the conversation was over while quietly accepting the next message anyway. Now the
+ * customer says yes, and the reopen is a thing that happened, in the thread, with support
+ * seeing it move back into their queue.
+ *
+ * Only ever moves a SETTLED strand. Anything already live is returned untouched, so a
+ * double-tap is a no-op rather than a second system line.
+ */
+exports.reopenMyTopic = async (req, res) => {
+  try {
+    if (!req.user?.id || req.userRole === 'admin') {
+      return res.status(401).json({ message: 'Customer authentication required' });
+    }
+    const conversation = await findConversation(req.user.id);
+    if (!conversation) return res.status(404).json({ message: 'No conversation yet.' });
+
+    // Named the same two ways the read path allows: by order for the sheet, by topic for a
+    // caller that already holds one.
+    const where = { conversation_id: conversation.id };
+    if (req.body.topicId) where.id = req.body.topicId;
+    else if (req.body.orderId) where.order_id = req.body.orderId;
+    else where.order_id = null;
+
+    const topic = await SupportTopic.findOne({ where });
+    if (!topic) return res.status(404).json({ message: 'Conversation not found.' });
+    if (!SETTLED.has(topic.status)) {
+      return res.json({ success: true, topic: publicTopic(topic) });
+    }
+
+    await topic.update({ status: 'Open' });
+    const line = await writeSystemLine(topic, 'Conversation reopened');
+    Realtime.emitStatusChange(conversation.id, topic.id, 'Open');
+
+    // The line is returned as well as broadcast. It is already on its way over the stream,
+    // but the customer clicked a button and must see the result of that click — making the
+    // confirmation depend on a socket round trip would leave the thread looking unchanged
+    // whenever the stream is slow or reconnecting. The client dedupes on id.
+    return res.json({ success: true, topic: publicTopic(topic), message: publicMessage(line) });
+  } catch (error) {
+    console.error('SupportController.reopenMyTopic error:', error);
+    return res.status(500).json({ message: 'Unable to reopen this conversation.' });
   }
 };
 
@@ -780,14 +839,10 @@ exports.updateTopic = async (req, res) => {
       Resolved: 'Marked resolved by support',
       Closed: 'Conversation closed by support',
     }[status];
+    // The system line in the thread IS the notification — no email goes out for a status
+    // change either.
     await writeSystemLine(topic, line);
     Realtime.emitStatusChange(conversation.id, topic.id, status);
-
-    if (SETTLED.has(status)) {
-      EmailService.sendSupportStatusToCustomer(conversation, status).catch((error) => {
-        console.error('SupportController: status email failed:', error.message);
-      });
-    }
 
     return res.json({ success: true, topic: publicTopic(topic) });
   } catch (error) {

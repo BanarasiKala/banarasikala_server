@@ -371,67 +371,6 @@ class EmailService {
     }
   }
 
-  /**
-   * Support replied. Sent because the customer is usually not on the site when the answer
-   * lands — the live chat covers the case where they are, and this covers the case where
-   * they closed the tab an hour ago.
-   */
-  async sendSupportReplyToCustomer(conversation, replyText) {
-    if (!conversation?.email) return;
-
-    const mailOptions = {
-      from: `"Banarasi Kala" <${config.emailUser}>`,
-      to: conversation.email,
-      replyTo: config.supportEmail,
-      subject: `Reply from Banarasi Kala Support`,
-      html: `
-        <div style="font-family: 'Playfair Display', serif; color: #3D2817; max-width: 600px; margin: auto; border: 1px solid #D4AF37; padding: 40px; background-color: #FDFCFB;">
-          <h1 style="color: #800020; text-align: center; border-bottom: 2px solid #D4AF37; padding-bottom: 20px;">Banarasi Kala</h1>
-          <p>Dear ${esc(conversation.name) || 'Customer'},</p>
-          <p>Our support team has replied to you.</p>
-          <div style="margin: 24px 0; padding: 20px; background-color: #FAF8F6; border-left: 3px solid #D4AF37;">
-            <p style="margin: 0; font-size: 14px; white-space: pre-wrap;">${esc(replyText)}</p>
-          </div>
-          <p style="font-size: 14px;">Continue the conversation on the <strong>Support</strong> page in your account, or simply reply to this email.</p>
-          <p style="margin-top: 40px; font-style: italic; text-align: center; color: #D4AF37;">A new heritage begins with you.</p>
-        </div>
-      `,
-    };
-
-    try {
-      await transporter.sendMail(mailOptions);
-    } catch (error) {
-      console.error('Error sending support reply email:', error);
-    }
-  }
-
-  /** Support moved the conversation to Resolved or Closed. */
-  async sendSupportStatusToCustomer(conversation, status) {
-    if (!conversation?.email) return;
-
-    const mailOptions = {
-      from: `"Banarasi Kala" <${config.emailUser}>`,
-      to: conversation.email,
-      replyTo: config.supportEmail,
-      subject: `Your support conversation is ${String(status).toLowerCase()} | Banarasi Kala`,
-      html: `
-        <div style="font-family: 'Playfair Display', serif; color: #3D2817; max-width: 600px; margin: auto; border: 1px solid #D4AF37; padding: 40px; background-color: #FDFCFB;">
-          <h1 style="color: #800020; text-align: center; border-bottom: 2px solid #D4AF37; padding-bottom: 20px;">Banarasi Kala</h1>
-          <p>Dear ${esc(conversation.name) || 'Customer'},</p>
-          <p>Our support team has marked your conversation as <strong>${esc(status)}</strong>.</p>
-          <p style="font-size: 14px;">If anything is still unresolved, just send another message on the <strong>Support</strong> page &mdash; the same conversation picks straight back up.</p>
-          <p style="margin-top: 40px; font-style: italic; text-align: center; color: #D4AF37;">A new heritage begins with you.</p>
-        </div>
-      `,
-    };
-
-    try {
-      await transporter.sendMail(mailOptions);
-    } catch (error) {
-      console.error('Error sending support status email:', error);
-    }
-  }
-
   async sendEmailVerification(email, name, verificationUrl) {
     const mailOptions = {
       from: `"Banarasi Kala" <${config.emailUser}>`,
