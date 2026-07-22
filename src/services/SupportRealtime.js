@@ -179,9 +179,15 @@ const emitStatusChange = (ticketId, status, canReply) => {
 };
 
 // Read receipts: tell the OTHER side their message has been seen (blue ticks).
+//
+// `side` is who DID the reading, so the party that needs telling is the other one. The thread
+// channel carries both directions — each side's open thread listens on it. The admin inbox is
+// a second listener, and the only read it can act on is the CUSTOMER's: it renders support's
+// own ticks. Mirroring the admin's own read back to the inbox announced something it already
+// knew and left it deaf to the one event the channel exists to carry.
 const emitRead = (ticketId, side, readAt) => {
   publish(ticketChannel(ticketId), { type: 'read', side, read_at: readAt });
-  if (side === 'admin') {
+  if (side === 'customer') {
     publish(ADMIN_CHANNEL, { type: 'read', ticket_id: ticketId, side, read_at: readAt });
   }
 };
