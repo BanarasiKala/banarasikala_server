@@ -1,0 +1,648 @@
+{
+  "exported_at": "2026-07-22T16:17:54.109Z",
+  "note": "Full support chat contents immediately before a deliberate wipe for testing. The photo URLs below are dead after the wipe — the files themselves are in ./photos.",
+  "conversations": [
+    {
+      "id": 2,
+      "customer_id": 6,
+      "name": "NANDANI MAURYA",
+      "email": "131.nandani@gmail.com",
+      "phone": "6307715455",
+      "last_message_at": "2026-07-22T12:49:39.478Z",
+      "customer_read_at": "2026-07-22T15:51:07.104Z",
+      "admin_read_at": "2026-07-22T07:44:57.134Z",
+      "createdAt": "2026-07-22T10:03:41.512Z",
+      "updatedAt": "2026-07-22T12:49:39.664Z"
+    }
+  ],
+  "topics": [
+    {
+      "id": 1,
+      "conversation_id": 2,
+      "order_id": 81,
+      "order_snapshot": {
+        "number": "BKS2026071281",
+        "extraItems": 0,
+        "productName": "Royal Purple Banarasi Booti Saree",
+        "statusLabel": "Exchange Initiated",
+        "productImage": "https://res.cloudinary.com/drvmplgnr/image/upload/v1782979621/vns-saree/products/caq6hvsdkhktvbyzxgmn.png"
+      },
+      "status": "Open",
+      "last_message_at": "2026-07-13T20:18:19.073Z",
+      "createdAt": "2026-07-22T12:08:39.003Z",
+      "updatedAt": "2026-07-22T12:49:41.726Z"
+    },
+    {
+      "id": 2,
+      "conversation_id": 2,
+      "order_id": 84,
+      "order_snapshot": {
+        "number": "BKS2026071384",
+        "extraItems": 4,
+        "productName": "Mauve Pink Tissue Silk Blend Banarasi Saree",
+        "statusLabel": "Return Completed",
+        "productImage": "https://res.cloudinary.com/drvmplgnr/image/upload/v1782407769/vns-saree/products/lvtjfeyuvqgj5agusrf2.webp"
+      },
+      "status": "Open",
+      "last_message_at": "2026-07-18T12:34:20.928Z",
+      "createdAt": "2026-07-22T12:08:39.508Z",
+      "updatedAt": "2026-07-22T12:49:41.805Z"
+    },
+    {
+      "id": 3,
+      "conversation_id": 2,
+      "order_id": 85,
+      "order_snapshot": {
+        "number": "BKS2026071885",
+        "extraItems": 0,
+        "productName": "Royal Purple Banarasi Booti Saree",
+        "statusLabel": "Processing",
+        "productImage": "https://res.cloudinary.com/drvmplgnr/image/upload/v1782979621/vns-saree/products/caq6hvsdkhktvbyzxgmn.png"
+      },
+      "status": "Open",
+      "last_message_at": "2026-07-21T20:34:01.979Z",
+      "createdAt": "2026-07-22T12:08:39.822Z",
+      "updatedAt": "2026-07-22T12:49:41.885Z"
+    },
+    {
+      "id": 4,
+      "conversation_id": 2,
+      "order_id": 82,
+      "order_snapshot": {
+        "number": "BKS2026071382",
+        "extraItems": 0,
+        "productName": "Royal Purple Banarasi Booti Saree",
+        "statusLabel": "Processing",
+        "productImage": "https://res.cloudinary.com/drvmplgnr/image/upload/v1782979621/vns-saree/products/caq6hvsdkhktvbyzxgmn.png"
+      },
+      "status": "Open",
+      "last_message_at": "2026-07-21T16:56:52.471Z",
+      "createdAt": "2026-07-22T12:08:40.326Z",
+      "updatedAt": "2026-07-22T12:49:41.964Z"
+    },
+    {
+      "id": 5,
+      "conversation_id": 2,
+      "order_id": 86,
+      "order_snapshot": {
+        "number": "BKS2026072286",
+        "extraItems": 0,
+        "productName": "Mauve Pink Tissue Silk Blend Banarasi Saree",
+        "statusLabel": "Processing",
+        "productImage": "https://res.cloudinary.com/drvmplgnr/image/upload/v1782407769/vns-saree/products/lvtjfeyuvqgj5agusrf2.webp"
+      },
+      "status": "Open",
+      "last_message_at": "2026-07-22T12:49:39.478Z",
+      "createdAt": "2026-07-22T12:08:40.895Z",
+      "updatedAt": "2026-07-22T12:49:42.044Z"
+    },
+    {
+      "id": 6,
+      "conversation_id": 2,
+      "order_id": 87,
+      "order_snapshot": {
+        "number": "BKS2026072187",
+        "extraItems": 1,
+        "productName": "Mauve Pink Tissue Silk Blend Banarasi Saree",
+        "statusLabel": "Processing",
+        "productImage": "https://res.cloudinary.com/drvmplgnr/image/upload/v1782407769/vns-saree/products/lvtjfeyuvqgj5agusrf2.webp"
+      },
+      "status": "Open",
+      "last_message_at": "2026-07-22T12:49:38.644Z",
+      "createdAt": "2026-07-22T12:08:41.572Z",
+      "updatedAt": "2026-07-22T12:49:42.122Z"
+    }
+  ],
+  "messages": [
+    {
+      "id": 50,
+      "conversation_id": 2,
+      "topic_id": 1,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "fjbfkrbhrbkhrkrbhk",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-12T19:51:46.663Z",
+      "updatedAt": "2026-07-12T19:51:46.663Z"
+    },
+    {
+      "id": 51,
+      "conversation_id": 2,
+      "topic_id": 1,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "egnegkjegjege",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-13T20:16:33.959Z",
+      "updatedAt": "2026-07-13T20:16:33.959Z"
+    },
+    {
+      "id": 53,
+      "conversation_id": 2,
+      "topic_id": 1,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "sjkgbekjgeg",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-13T20:18:02.416Z",
+      "updatedAt": "2026-07-13T20:18:02.416Z"
+    },
+    {
+      "id": 82,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "hii",
+      "attachments": [],
+      "delivered_at": "2026-07-22T10:10:03.243Z",
+      "createdAt": "2026-07-22T05:21:45.752Z",
+      "updatedAt": "2026-07-22T05:21:45.752Z"
+    },
+    {
+      "id": 83,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "hiiiiii",
+      "attachments": [],
+      "delivered_at": "2026-07-22T10:10:03.243Z",
+      "createdAt": "2026-07-22T05:22:33.239Z",
+      "updatedAt": "2026-07-22T05:22:33.239Z"
+    },
+    {
+      "id": 52,
+      "conversation_id": 2,
+      "topic_id": 1,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "hello",
+      "attachments": [],
+      "delivered_at": "2026-07-22T10:10:03.243Z",
+      "createdAt": "2026-07-13T20:17:26.526Z",
+      "updatedAt": "2026-07-13T20:17:26.526Z"
+    },
+    {
+      "id": 54,
+      "conversation_id": 2,
+      "topic_id": 1,
+      "sender": "system",
+      "sender_name": null,
+      "type": "status",
+      "body": "Conversation closed by support",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-13T20:18:19.073Z",
+      "updatedAt": "2026-07-13T20:18:19.073Z"
+    },
+    {
+      "id": 56,
+      "conversation_id": 2,
+      "topic_id": 2,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "describing",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-14T06:30:20.517Z",
+      "updatedAt": "2026-07-14T06:30:20.517Z"
+    },
+    {
+      "id": 57,
+      "conversation_id": 2,
+      "topic_id": 2,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "ghfhgf",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-18T12:29:28.266Z",
+      "updatedAt": "2026-07-18T12:29:28.266Z"
+    },
+    {
+      "id": 58,
+      "conversation_id": 2,
+      "topic_id": 2,
+      "sender": "system",
+      "sender_name": null,
+      "type": "status",
+      "body": "Conversation closed by support",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-18T12:34:20.928Z",
+      "updatedAt": "2026-07-18T12:34:20.928Z"
+    },
+    {
+      "id": 60,
+      "conversation_id": 2,
+      "topic_id": 3,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "jnkjkjnkjn",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-20T16:38:51.813Z",
+      "updatedAt": "2026-07-20T16:38:51.813Z"
+    },
+    {
+      "id": 61,
+      "conversation_id": 2,
+      "topic_id": 3,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "hiii",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-20T16:39:45.640Z",
+      "updatedAt": "2026-07-20T16:39:45.640Z"
+    },
+    {
+      "id": 62,
+      "conversation_id": 2,
+      "topic_id": 3,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "how are you maam",
+      "attachments": [],
+      "delivered_at": "2026-07-21T16:36:14.882Z",
+      "createdAt": "2026-07-20T16:40:30.323Z",
+      "updatedAt": "2026-07-20T16:40:30.323Z"
+    },
+    {
+      "id": 63,
+      "conversation_id": 2,
+      "topic_id": 3,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "better then yesterday sir",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-20T16:47:35.026Z",
+      "updatedAt": "2026-07-20T16:47:35.026Z"
+    },
+    {
+      "id": 64,
+      "conversation_id": 2,
+      "topic_id": 3,
+      "sender": "system",
+      "sender_name": null,
+      "type": "status",
+      "body": "Conversation closed by support",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-20T16:49:30.567Z",
+      "updatedAt": "2026-07-20T16:49:30.567Z"
+    },
+    {
+      "id": 66,
+      "conversation_id": 2,
+      "topic_id": 4,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "hello think that the Co-Founder whose name is Nandani Maurya sometimes scold very bad...... for a little mistake or not even a mistake",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-21T14:29:43.405Z",
+      "updatedAt": "2026-07-21T14:29:43.405Z"
+    },
+    {
+      "id": 67,
+      "conversation_id": 2,
+      "topic_id": 4,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "Don't worry! You're definitely not alone. 😅 We have all been through the same experience. We are with you on this\nStay strong... we'll survive this together....",
+      "attachments": [],
+      "delivered_at": "2026-07-21T16:27:05.354Z",
+      "createdAt": "2026-07-21T14:45:33.209Z",
+      "updatedAt": "2026-07-21T14:45:33.209Z"
+    },
+    {
+      "id": 68,
+      "conversation_id": 2,
+      "topic_id": 4,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "xfxbf cv cvbcv",
+      "attachments": [],
+      "delivered_at": "2026-07-21T16:27:05.354Z",
+      "createdAt": "2026-07-21T15:14:26.362Z",
+      "updatedAt": "2026-07-21T15:14:26.362Z"
+    },
+    {
+      "id": 69,
+      "conversation_id": 2,
+      "topic_id": 4,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "but why always me.....",
+      "attachments": [],
+      "delivered_at": "2026-07-21T16:28:13.043Z",
+      "createdAt": "2026-07-21T16:28:13.043Z",
+      "updatedAt": "2026-07-21T16:28:13.043Z"
+    },
+    {
+      "id": 70,
+      "conversation_id": 2,
+      "topic_id": 4,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "what",
+      "attachments": [],
+      "delivered_at": "2026-07-21T16:28:22.862Z",
+      "createdAt": "2026-07-21T16:28:22.862Z",
+      "updatedAt": "2026-07-21T16:28:22.862Z"
+    },
+    {
+      "id": 71,
+      "conversation_id": 2,
+      "topic_id": 4,
+      "sender": "system",
+      "sender_name": null,
+      "type": "status",
+      "body": "Conversation closed by support",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-21T16:56:52.471Z",
+      "updatedAt": "2026-07-21T16:56:52.471Z"
+    },
+    {
+      "id": 73,
+      "conversation_id": 2,
+      "topic_id": 5,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "not very good product",
+      "attachments": [
+        {
+          "url": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784664949/vns-saree/support/hhwmsmirvvmbotmcj48l.png",
+          "public_id": "vns-saree/support/hhwmsmirvvmbotmcj48l"
+        },
+        {
+          "url": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784664950/vns-saree/support/q65rf6hmkihuo4d9ulej.png",
+          "public_id": "vns-saree/support/q65rf6hmkihuo4d9ulej"
+        },
+        {
+          "url": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784664951/vns-saree/support/z6kykdc30ydv4phpmyus.png",
+          "public_id": "vns-saree/support/z6kykdc30ydv4phpmyus"
+        }
+      ],
+      "delivered_at": "2026-07-21T20:29:06.409Z",
+      "createdAt": "2026-07-21T20:18:08.043Z",
+      "updatedAt": "2026-07-21T20:18:08.043Z"
+    },
+    {
+      "id": 89,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "you are the only issue of mine",
+      "attachments": [
+        {
+          "url": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784703697/vns-saree/support/h8rwmp4c0lzm13nvohd3.png",
+          "public_id": "vns-saree/support/h8rwmp4c0lzm13nvohd3"
+        }
+      ],
+      "delivered_at": "2026-07-22T07:02:14.963Z",
+      "createdAt": "2026-07-22T07:01:40.334Z",
+      "updatedAt": "2026-07-22T07:01:40.334Z"
+    },
+    {
+      "id": 90,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "ok",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:02:23.727Z",
+      "createdAt": "2026-07-22T07:02:23.728Z",
+      "updatedAt": "2026-07-22T07:02:23.728Z"
+    },
+    {
+      "id": 91,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "yes",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:02:57.291Z",
+      "createdAt": "2026-07-22T07:02:32.379Z",
+      "updatedAt": "2026-07-22T07:02:32.379Z"
+    },
+    {
+      "id": 92,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "okkk",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:03:38.629Z",
+      "createdAt": "2026-07-22T07:03:38.629Z",
+      "updatedAt": "2026-07-22T07:03:38.629Z"
+    },
+    {
+      "id": 93,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "ij",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:03:43.969Z",
+      "createdAt": "2026-07-22T07:03:43.970Z",
+      "updatedAt": "2026-07-22T07:03:43.970Z"
+    },
+    {
+      "id": 94,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "ok",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:25:07.536Z",
+      "createdAt": "2026-07-22T07:03:50.001Z",
+      "updatedAt": "2026-07-22T07:03:50.001Z"
+    },
+    {
+      "id": 95,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "Hello",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:28:34.224Z",
+      "createdAt": "2026-07-22T07:28:15.249Z",
+      "updatedAt": "2026-07-22T07:28:15.249Z"
+    },
+    {
+      "id": 96,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "hiii",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:33:03.093Z",
+      "createdAt": "2026-07-22T07:30:04.856Z",
+      "updatedAt": "2026-07-22T07:30:04.856Z"
+    },
+    {
+      "id": 74,
+      "conversation_id": 2,
+      "topic_id": 5,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "again not good product",
+      "attachments": [
+        {
+          "url": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784665248/vns-saree/support/xn07rhkjc6xqgkqjpgam.png",
+          "public_id": "vns-saree/support/xn07rhkjc6xqgkqjpgam"
+        }
+      ],
+      "delivered_at": "2026-07-21T20:21:14.035Z",
+      "createdAt": "2026-07-21T20:21:14.036Z",
+      "updatedAt": "2026-07-21T20:21:14.036Z"
+    },
+    {
+      "id": 75,
+      "conversation_id": 2,
+      "topic_id": 5,
+      "sender": "admin",
+      "sender_name": "Banarasi Kala Admin",
+      "type": "text",
+      "body": "resolved",
+      "attachments": [],
+      "delivered_at": "2026-07-21T20:27:38.754Z",
+      "createdAt": "2026-07-21T20:27:38.755Z",
+      "updatedAt": "2026-07-21T20:27:38.755Z"
+    },
+    {
+      "id": 76,
+      "conversation_id": 2,
+      "topic_id": 5,
+      "sender": "system",
+      "sender_name": null,
+      "type": "status",
+      "body": "Conversation closed by support",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-21T20:29:09.565Z",
+      "updatedAt": "2026-07-21T20:29:09.565Z"
+    },
+    {
+      "id": 78,
+      "conversation_id": 2,
+      "topic_id": 5,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "jnjknjknkj",
+      "attachments": [],
+      "delivered_at": "2026-07-21T20:29:59.310Z",
+      "createdAt": "2026-07-21T20:29:46.554Z",
+      "updatedAt": "2026-07-21T20:29:46.554Z"
+    },
+    {
+      "id": 79,
+      "conversation_id": 2,
+      "topic_id": 5,
+      "sender": "system",
+      "sender_name": null,
+      "type": "status",
+      "body": "Conversation closed by support",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-21T20:33:16.856Z",
+      "updatedAt": "2026-07-21T20:33:16.856Z"
+    },
+    {
+      "id": 81,
+      "conversation_id": 2,
+      "topic_id": 3,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "dgdgdfdgdfgdgdfg",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:37:55.055Z",
+      "createdAt": "2026-07-21T20:34:01.979Z",
+      "updatedAt": "2026-07-21T20:34:01.979Z"
+    },
+    {
+      "id": 86,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "customer",
+      "sender_name": "NANDANI MAURYA",
+      "type": "text",
+      "body": "issue hhuukk",
+      "attachments": [],
+      "delivered_at": "2026-07-22T07:37:58.415Z",
+      "createdAt": "2026-07-22T04:42:11.603Z",
+      "updatedAt": "2026-07-22T04:42:11.603Z"
+    },
+    {
+      "id": 84,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "system",
+      "sender_name": null,
+      "type": "status",
+      "body": "Marked resolved by support",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-22T05:09:01.208Z",
+      "updatedAt": "2026-07-22T05:09:01.208Z"
+    },
+    {
+      "id": 87,
+      "conversation_id": 2,
+      "topic_id": 6,
+      "sender": "system",
+      "sender_name": null,
+      "type": "status",
+      "body": "Conversation closed by support",
+      "attachments": [],
+      "delivered_at": null,
+      "createdAt": "2026-07-22T05:09:57.341Z",
+      "updatedAt": "2026-07-22T05:09:57.341Z"
+    }
+  ]
+}
