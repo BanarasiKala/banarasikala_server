@@ -957,8 +957,62 @@ class OrderController {
 
       await t.commit();
 
-      // ── Fire & forget: email confirmation (enrich with the computed total) ────
-      EmailService.sendOrderConfirmation({ ...order.toJSON(), total_amount: final_total }, enrichedItems);
+      /**
+       * Fire & forget: the confirmation receipt.
+       *
+       * Every figure is handed over already resolved. The template formats and never
+       * computes — a receipt that re-derived its own total would eventually disagree with
+       * what the customer was actually charged, and the email is the copy they keep.
+       *
+       * `discount` is the money off the goods; the shipping waiver is shown by the Shipping
+       * line reading 0.00, not folded in here, or the two would double-count. "Saved" is
+       * both together, because that is the number the customer means by saved.
+       */
+      const emailShipping = Math.max(0, actualShippingCharge - actualShippingDiscount);
+      EmailService.sendOrderConfirmation(
+        { ...order.toJSON(), total_amount: final_total },
+        enrichedItems.map((item) => ({
+          ...item,
+          image: pickOrderItemImage(productMap[item.id], item.colorId || item.color_id),
+        })),
+        {
+          // The same figures seedPlacementLedger records, so the receipt and the ledger can
+          // never tell different stories about one order.
+          subtotal: itemSubtotal,
+          couponDiscount: discount_amount,
+          couponCode: order.coupon_code || '',
+          shipping: emailShipping,
+          // What delivery WOULD have cost. Drives the struck-through price beside "FREE" —
+          // a waiver the customer cannot see the value of is a waiver they do not notice.
+          shippingWaived: actualShippingDiscount,
+          platformFee: actualPlatformFee,
+          codFee: actualCodFee,
+          giftCharge: actualGiftCharge,
+          prepaidDiscount: actualPaymentDiscount,
+          walletUsed: walletDebit,
+          // No GST line: prices are quoted inclusive, so a separate tax row would be
+          // double-counting. Zero here means the row is omitted rather than shown as 0.00.
+          tax: 0,
+          total: final_total,
+          // final_total is already net of wallet (see above), so this is genuinely what is
+          // due now — nothing for COD, the balance for prepaid.
+          paidToday: normalizedPaymentMethod === 'COD' ? 0 : final_total,
+          saved: discount_amount + actualShippingDiscount + actualPaymentDiscount,
+          placedAt: order.createdAt,
+          shippingAddress: {
+            name: orderAddress.name,
+            line: orderAddress.line,
+            city: orderAddress.city,
+            state: orderAddress.state,
+            pincode: orderAddress.pincode,
+            phone: orderAddress.phone,
+          },
+          paymentLabel: normalizedPaymentMethod === 'COD'
+            ? 'Cash on Delivery'
+            : `Paid online${normalizedGateway ? ` (${normalizedGateway})` : ''}`,
+          shippingMethod: emailShipping > 0 ? 'Standard Shipping' : 'Free Shipping',
+        },
+      );
 
       // ── Fire & forget: push to ShipRocket (never blocks customer response) ──
       (async () => {

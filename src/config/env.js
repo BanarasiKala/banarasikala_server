@@ -62,10 +62,18 @@ const config = {
   emailPort: Number(process.env.SMTP_PORT) || 465,
   emailUser: process.env.SMTP_USER || process.env.EMAIL_USER || readEnv("SMTP_USER"),
   emailPass: process.env.SMTP_PASS || process.env.EMAIL_PASS || readEnv("SMTP_PASS"),
-  // Reply-to on support mail we send customers. Defaults to the SMTP sender.
+  /**
+   * Where customers are told to write with a question.
+   *
+   * Defaults to support@ on the sending domain, NOT the SMTP login. Those are different
+   * jobs: the login is whichever mailbox happens to hold the SMTP credentials, while this is
+   * printed in every email as the address a customer replies to. Defaulting to the login
+   * meant a receipt told people to write to info@, which is not where support reads.
+   *
+   * SUPPORT_EMAIL still overrides it, so a different desk can be pointed at without a deploy.
+   */
   supportEmail: (process.env.SUPPORT_EMAIL || "").trim()
-    || process.env.SMTP_USER
-    || process.env.EMAIL_USER,
+    || `support@${String(process.env.SMTP_USER || process.env.EMAIL_USER || "banarasikala.com").split("@")[1] || "banarasikala.com"}`,
   // Seller identity printed on the tax invoice.
   invoiceSeller: {
     name: process.env.INVOICE_SELLER_NAME || "Banarasi Kala",
