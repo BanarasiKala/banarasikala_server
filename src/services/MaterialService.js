@@ -1,4 +1,5 @@
 const Material = require('../models/Material');
+const { uniqueSlug } = require('../utils/slugify');
 
 const pickAttributes = (fields, allowed) => {
   if (!fields) return undefined;
@@ -22,13 +23,25 @@ class MaterialService {
   }
 
   async createMaterial(data) {
-    return await Material.create(data);
+    // The slug is derived from the name, not accepted from the caller — see utils/slugify.
+    const slug = await uniqueSlug(Material, data.name);
+    return await Material.create({ ...data, slug });
   }
 
   async updateMaterial(id, data) {
-    const material = await Material.findByPk(id);
-    if (!material) throw new Error('Material not found');
-    return await material.update(data);
+    const row = await Material.findByPk(id);
+    if (!row) throw new Error('Material not found');
+
+    // A rename re-slugs. Leaving the old slug behind is how a URL ends up describing a
+    // name the row no longer has.
+    const patch = { ...data };
+    if (patch.name && patch.name !== row.name) {
+      patch.slug = await uniqueSlug(Material, patch.name, { excludeId: row.id });
+    } else {
+      // Never let a stale slug posted by an old client overwrite the real one.
+      delete patch.slug;
+    }
+    return await row.update(patch);
   }
 
   async deleteMaterial(id) {

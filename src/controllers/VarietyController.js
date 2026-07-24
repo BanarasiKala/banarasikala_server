@@ -29,8 +29,11 @@ class VarietyController {
         data.image = uploadResult.secure_url;
       }
 
-      if (!data.image) {
-        return res.status(400).json({ message: "Image is mandatory for Variety" });
+      // Name is the only required field. An image and a description are presentation, and
+      // demanding them up front blocked the one thing that has to happen first — getting the
+      // taxonomy named so products can be assigned to it. Both can be added later.
+      if (!String(data.name || '').trim()) {
+        return res.status(400).json({ message: "Name is required." });
       }
 
       const variety = await VarietyService.createVariety(data);
