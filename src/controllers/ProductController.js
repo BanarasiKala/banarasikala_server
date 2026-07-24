@@ -1,3 +1,8 @@
+const { Op } = require('sequelize');
+const { sequelize } = require('../config/db');
+const Product = require('../models/Product');
+const Variety = require('../models/Variety');
+const Material = require('../models/Material');
 const ProductService = require('../services/ProductService');
 const { generateUploadSignature } = require("../config/cloudinary");
 const { generateS3PresignedUploadUrl } = require("../config/s3");
@@ -221,6 +226,158 @@ class ProductController {
     } catch (error) {
       logServerError("updateWithImages", error);
       res.status(400).json({ message: userFacingMessage(error, "Could not update product. Please review entered values and images.") });
+    }
+  }
+
+  /**
+   * Products stripped to what the bulk-assign screen needs.
+   *
+   * Deliberately not `getAll`: that endpoint carries the storefront's includes, pagination and
+   * sort machinery, and the assign screen wants the opposite — every matching product at once,
+   * with four columns, so the "select all matching" button can honestly mean ALL of them
+   * rather than "all on this page". A page-by-page selector is how half a catalogue ends up
+   * assigned and the other half forgotten.
+   *
+   * Filters: `search` (name/sku), `varietyId`, `materialId`, and the two that make the screen
+   * work — `unassignedVariety` / `unassignedMaterial`, which is how you answer "what is left".
+   */
+  async getAttributeBoard(req, res) {
+    try {
+      const { search = '', varietyId, materialId, unassignedVariety, unassignedMaterial } = req.query;
+      const where = {};
+
+      const term = String(search).trim();
+      if (term) {
+        where[Op.or] = [
+          { name: { [Op.iLike]: `%${term}%` } },
+          { sku: { [Op.iLike]: `%${term}%` } },
+        ];
+      }
+
+      // `unassigned` wins over an explicit id: asking for both is contradictory, and the
+      // unassigned view is the one someone reaches for when they are trying to finish.
+      if (String(unassignedVariety) === 'true') where.variety_id = null;
+      else if (varietyId) where.variety_id = Number(varietyId);
+
+      if (String(unassignedMaterial) === 'true') where.material_id = null;
+      else if (materialId) where.material_id = Number(materialId);
+
+      const products = await Product.findAll({
+        where,
+        attributes: ['id', 'name', 'sku', 'images', 'variety_id', 'material_id', 'status'],
+        order: [['name', 'ASC']],
+      });
+
+      // Counts for the whole catalogue, not the filtered set — the screen shows progress
+      // ("12 still need a variety"), and a count that shrank as you filtered would be
+      // describing the filter rather than the work left.
+      const [totalProducts, missingVariety, missingMaterial] = await Promise.all([
+        Product.count(),
+        Product.count({ where: { variety_id: null } }),
+        Product.count({ where: { material_id: null } }),
+      ]);
+
+      return res.status(200).json({
+        products: products.map((p) => {
+          const images = Array.isArray(p.images) ? p.images : [];
+          const cover = images.find((i) => i.is_cover) || images[0] || null;
+          return {
+            id: p.id,
+            name: p.name,
+            sku: p.sku,
+            status: p.status,
+            variety_id: p.variety_id,
+            material_id: p.material_id,
+            image: cover?.url || cover?.image_url || '',
+          };
+        }),
+        totals: { totalProducts, missingVariety, missingMaterial },
+      });
+    } catch (error) {
+      logServerError('getAttributeBoard', error);
+      return res.status(500).json({ message: 'Failed to load products.' });
+    }
+  }
+
+  /**
+   * Set variety and/or material on many products at once.
+   *
+   * ── The three-state field ───────────────────────────────────────────────────────────────
+   * Each of `varietyId` / `materialId` can be:
+   *   omitted   leave every selected product's value alone
+   *   a number  set it
+   *   null      clear it
+   *
+   * Omitted and null have to be distinguishable or the endpoint cannot express "set the
+   * material, don't touch the variety" — which is the whole point of assigning them
+   * separately. `Object.hasOwn` on the parsed body is what draws that line.
+   *
+   * ── Why the ids are checked first ───────────────────────────────────────────────────────
+   * variety_id and material_id are real foreign keys, so a bad id would fail at the database
+   * with a constraint error after some rows had already been considered. Validating up front
+   * turns that into a clean 400 naming the offending id, and the transaction means a failure
+   * anywhere leaves the catalogue exactly as it was.
+   */
+  async bulkSetAttributes(req, res) {
+    const { productIds, varietyId, materialId } = req.body || {};
+
+    const ids = [...new Set((Array.isArray(productIds) ? productIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0))];
+
+    if (!ids.length) {
+      return res.status(400).json({ message: 'Select at least one product.' });
+    }
+    if (ids.length > 500) {
+      return res.status(400).json({ message: 'Too many products in one request (max 500).' });
+    }
+
+    const setsVariety = Object.hasOwn(req.body || {}, 'varietyId');
+    const setsMaterial = Object.hasOwn(req.body || {}, 'materialId');
+    if (!setsVariety && !setsMaterial) {
+      return res.status(400).json({ message: 'Choose a variety or a material to apply.' });
+    }
+
+    const patch = {};
+    if (setsVariety) patch.variety_id = varietyId === null || varietyId === '' ? null : Number(varietyId);
+    if (setsMaterial) patch.material_id = materialId === null || materialId === '' ? null : Number(materialId);
+
+    for (const [field, value] of Object.entries(patch)) {
+      if (value !== null && !Number.isInteger(value)) {
+        return res.status(400).json({ message: `Invalid ${field}.` });
+      }
+    }
+
+    try {
+      if (patch.variety_id) {
+        const exists = await Variety.findByPk(patch.variety_id, { attributes: ['id'] });
+        if (!exists) return res.status(400).json({ message: `Variety ${patch.variety_id} does not exist.` });
+      }
+      if (patch.material_id) {
+        const exists = await Material.findByPk(patch.material_id, { attributes: ['id'] });
+        if (!exists) return res.status(400).json({ message: `Material ${patch.material_id} does not exist.` });
+      }
+
+      const updated = await sequelize.transaction(async (transaction) => {
+        const [count] = await Product.update(patch, { where: { id: ids }, transaction });
+        return count;
+      });
+
+      // Note: the catalogue endpoints carry a 120s Cache-Control (middleware/cacheHeaders),
+      // so a browser or CDN may serve the old variety for up to two minutes after this. There
+      // is no server-side store to purge — it is purely an HTTP TTL.
+
+      return res.status(200).json({
+        success: true,
+        updated,
+        applied: {
+          ...(setsVariety ? { variety_id: patch.variety_id } : {}),
+          ...(setsMaterial ? { material_id: patch.material_id } : {}),
+        },
+      });
+    } catch (error) {
+      logServerError('bulkSetAttributes', error);
+      return res.status(500).json({ message: 'Failed to update products.' });
     }
   }
 }

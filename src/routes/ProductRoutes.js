@@ -7,6 +7,10 @@ const { catalogCache } = require('../middleware/cacheHeaders');
 // Public routes
 router.get('/', catalogCache, ProductController.getAll);
 router.get('/summary', authMiddleware, adminMiddleware, ProductController.getSummary);
+// Bulk variety/material assignment. Declared before '/:slug' so "attribute-board" is never
+// read as a product slug.
+router.get('/attribute-board', authMiddleware, adminMiddleware, ProductController.getAttributeBoard);
+router.patch('/bulk-attributes', authMiddleware, adminMiddleware, ProductController.bulkSetAttributes);
 router.get('/upload-signature', authMiddleware, adminMiddleware, ProductController.getUploadSignature);
 router.get('/s3-video-url', authMiddleware, adminMiddleware, ProductController.getS3VideoUrl);
 router.get('/:slug/related', catalogCache, ProductController.getRelatedBySlug);

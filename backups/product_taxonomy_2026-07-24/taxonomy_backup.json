@@ -1,0 +1,564 @@
+{
+  "exported_at": "2026-07-24T15:39:22.133Z",
+  "note": "Product -> variety/material mapping immediately before the taxonomy was cleared and rebuilt. Restore by matching product_id and re-pointing variety_id/material_id at the new taxonomy.",
+  "counts": {
+    "products": 47,
+    "varieties": 9,
+    "materials": 9
+  },
+  "products": [
+    {
+      "product_id": 1,
+      "product_name": "Banarasi Art Silk Saree (Mauve Pink)",
+      "product_sku": "BKS00001",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 2,
+      "product_name": " Self Design Banarasi Art Silk Saree (Peach)",
+      "product_sku": "BKS00002",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 3,
+      "product_name": " Banarasi Art Silk Saree (Grey)",
+      "product_sku": "BKS00003",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 4,
+      "product_name": "Banarasi Art Silk Saree (Light Green)",
+      "product_sku": "BKS00004",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 5,
+      "product_name": "Banarasi Art Silk Saree (Pink Orange)",
+      "product_sku": "BKS00005",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 6,
+      "product_name": "Banarasi Art Silk Saree (Smoky Blue)",
+      "product_sku": "BKS00006",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 7,
+      "product_name": "Heritage Floral Weave Organza Saree(Charcoal Black)",
+      "product_sku": "BKS00007",
+      "variety_id": 6,
+      "variety_name": "Banarasi Kora",
+      "material_id": 3,
+      "material_name": "Organza"
+    },
+    {
+      "product_id": 8,
+      "product_name": "Heritage Floral Weave Organza Saree( Red)",
+      "product_sku": "BKS00008",
+      "variety_id": 6,
+      "variety_name": "Banarasi Kora",
+      "material_id": 3,
+      "material_name": "Organza"
+    },
+    {
+      "product_id": 9,
+      "product_name": "Heritage Floral Weave Organza Saree( Wine Maroon)",
+      "product_sku": "BKS00009",
+      "variety_id": 6,
+      "variety_name": "Banarasi Kora",
+      "material_id": 3,
+      "material_name": "Organza"
+    },
+    {
+      "product_id": 10,
+      "product_name": "Midnight Floral Banarasi Cutwork Saree(Charcoal Black)",
+      "product_sku": "BKS00010",
+      "variety_id": 7,
+      "variety_name": "Cutwork",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 11,
+      "product_name": "Midnight Floral Banarasi Cutwork Saree(Dark Green)",
+      "product_sku": "BKS00011",
+      "variety_id": 7,
+      "variety_name": "Cutwork",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 12,
+      "product_name": "Midnight Floral Banarasi Cutwork Saree(Navy Blue)",
+      "product_sku": "BKS00012",
+      "variety_id": 7,
+      "variety_name": "Cutwork",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 13,
+      "product_name": "Midnight Floral Banarasi Cutwork Saree(Steel Blue)",
+      "product_sku": "BKS00013",
+      "variety_id": 7,
+      "variety_name": "Cutwork",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 14,
+      "product_name": "Midnight Floral Banarasi Cutwork Saree(Midnight Blue)",
+      "product_sku": "BKS00014",
+      "variety_id": 7,
+      "variety_name": "Cutwork",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 15,
+      "product_name": "Midnight Floral Banarasi Cutwork Saree(Greyish Black)",
+      "product_sku": "BKS00015",
+      "variety_id": 7,
+      "variety_name": "Cutwork",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 16,
+      "product_name": "Royal Green Banarasi Booti Saree",
+      "product_sku": "BKS00016",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 4,
+      "material_name": "Satin Silk"
+    },
+    {
+      "product_id": 17,
+      "product_name": "Royal Deep Purple Banarasi Booti Saree",
+      "product_sku": "BKS00017",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 4,
+      "material_name": "Satin Silk"
+    },
+    {
+      "product_id": 18,
+      "product_name": "Deep Teal Green Banarasi Booti Saree",
+      "product_sku": "BKS00018",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 4,
+      "material_name": "Satin Silk"
+    },
+    {
+      "product_id": 19,
+      "product_name": "Royal Blue Banarasi Booti Saree",
+      "product_sku": "BKS00019",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 4,
+      "material_name": "Satin Silk"
+    },
+    {
+      "product_id": 20,
+      "product_name": "Royal Purple Banarasi Booti Saree",
+      "product_sku": "BKS00020",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 4,
+      "material_name": "Satin Silk"
+    },
+    {
+      "product_id": 21,
+      "product_name": "Wine Maroon Banarasi Booti Saree",
+      "product_sku": "BKS00021",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 4,
+      "material_name": "Satin Silk"
+    },
+    {
+      "product_id": 22,
+      "product_name": "Purple Women's Semi Silk Banarasi Saree",
+      "product_sku": "BKS00022",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 5,
+      "material_name": "Semi Silk"
+    },
+    {
+      "product_id": 23,
+      "product_name": "Mehandi Green Women's Semi Silk Banarasi Saree",
+      "product_sku": "BKS00023",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 2,
+      "material_name": "Silk"
+    },
+    {
+      "product_id": 24,
+      "product_name": "Reddish Orange Women's Semi Silk Banarasi Saree",
+      "product_sku": "BKS00024",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 5,
+      "material_name": "Semi Silk"
+    },
+    {
+      "product_id": 25,
+      "product_name": "Teal Blue Women's Semi Silk Banarasi Saree",
+      "product_sku": "BKS00025",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 5,
+      "material_name": "Semi Silk"
+    },
+    {
+      "product_id": 26,
+      "product_name": "Deep Plum Wine Buti Grace Weave Saree",
+      "product_sku": "BKS00026",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 4,
+      "material_name": "Satin Silk"
+    },
+    {
+      "product_id": 27,
+      "product_name": "Golden Mustard Wine Buti Grace Weave Saree",
+      "product_sku": "BKS00027",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 7,
+      "material_name": "Silk Blend Crepe"
+    },
+    {
+      "product_id": 28,
+      "product_name": "Peacock Blue  Buti Grace Weave Saree",
+      "product_sku": "BKS00028",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 7,
+      "material_name": "Silk Blend Crepe"
+    },
+    {
+      "product_id": 29,
+      "product_name": "Mauve Purple  Buti Grace Weave Saree",
+      "product_sku": "BKS00029",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 7,
+      "material_name": "Silk Blend Crepe"
+    },
+    {
+      "product_id": 30,
+      "product_name": "Royal Blue  Buti Grace Weave Saree",
+      "product_sku": "BKS00030",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 7,
+      "material_name": "Silk Blend Crepe"
+    },
+    {
+      "product_id": 31,
+      "product_name": "Teal Satin Silk Kadwa Buti Banarasi Saree",
+      "product_sku": "BKS00031",
+      "variety_id": 9,
+      "variety_name": "Kadwa Buti",
+      "material_id": 4,
+      "material_name": "Satin Silk"
+    },
+    {
+      "product_id": 32,
+      "product_name": "Royal Blue Satin Silk Kadwa Buti Banarasi Saree",
+      "product_sku": "BKS00032",
+      "variety_id": 9,
+      "variety_name": "Kadwa Buti",
+      "material_id": 6,
+      "material_name": "\tSatin Silk Blend"
+    },
+    {
+      "product_id": 33,
+      "product_name": "Green Satin Silk Kadwa Buti Banarasi Saree",
+      "product_sku": "BKS00033",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 6,
+      "material_name": "\tSatin Silk Blend"
+    },
+    {
+      "product_id": 34,
+      "product_name": "Rani Pink Satin Silk Kadwa Buti Banarasi Saree",
+      "product_sku": "BKS00034",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 6,
+      "material_name": "\tSatin Silk Blend"
+    },
+    {
+      "product_id": 35,
+      "product_name": "Pink Satin Silk Kadwa Buti Banarasi Saree",
+      "product_sku": "BKS00035",
+      "variety_id": 2,
+      "variety_name": "Banarasi buti Saree",
+      "material_id": 6,
+      "material_name": "\tSatin Silk Blend"
+    },
+    {
+      "product_id": 36,
+      "product_name": "Ruby Red Tissue Silk Blend Banarasi Saree",
+      "product_sku": "BKS00036",
+      "variety_id": 10,
+      "variety_name": "Tissue",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 37,
+      "product_name": "Magenta Purple Tissue Silk Blend Banarasi Saree",
+      "product_sku": "BKS00037",
+      "variety_id": 10,
+      "variety_name": "Tissue",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 38,
+      "product_name": "Mauve Pink Tissue Silk Blend Banarasi Saree",
+      "product_sku": "BKS00038",
+      "variety_id": 10,
+      "variety_name": "Tissue",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 39,
+      "product_name": "Peach beigeTissue Silk Blend Banarasi Saree",
+      "product_sku": "BKS00039",
+      "variety_id": 10,
+      "variety_name": "Tissue",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 40,
+      "product_name": " Royal Blue Tissue Silk Blend Banarasi Saree",
+      "product_sku": "BKS00040",
+      "variety_id": 10,
+      "variety_name": "Tissue",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 41,
+      "product_name": "Royal Purple Tissue Silk Blend Banarasi Saree",
+      "product_sku": "BKS00041",
+      "variety_id": 10,
+      "variety_name": "Tissue",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 42,
+      "product_name": "Teal Green Tissue Silk Blend Banarasi Saree",
+      "product_sku": "BKS00042",
+      "variety_id": 10,
+      "variety_name": "Tissue",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 43,
+      "product_name": "Sea Green Banarasi Satin Katan Saree",
+      "product_sku": "BKS00043",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 6,
+      "material_name": "\tSatin Silk Blend"
+    },
+    {
+      "product_id": 44,
+      "product_name": "Stone Grey Banarasi Satin Katan Saree",
+      "product_sku": "BKS00044",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 6,
+      "material_name": "\tSatin Silk Blend"
+    },
+    {
+      "product_id": 45,
+      "product_name": "Light Blue Banarasi Satin Katan Saree",
+      "product_sku": "BKS00045",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 46,
+      "product_name": "Pista Green Banarasi Satin Katan Saree",
+      "product_sku": "BKS00046",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 8,
+      "material_name": "Silk Blend Banarasi"
+    },
+    {
+      "product_id": 47,
+      "product_name": "Banarasi Kala Woven, Floral Print Banarasi Brocade, Blend Silk Saree (Wine Purple)",
+      "product_sku": "BKS00047",
+      "variety_id": 5,
+      "variety_name": "Katan",
+      "material_id": 1,
+      "material_name": "Katan"
+    }
+  ],
+  "varieties": [
+    {
+      "id": 1,
+      "name": "Mushroom",
+      "slug": "mushroom",
+      "description": "Mushroom Design Banarasi",
+      "image": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781972571/vns-saree/products/evt1rdgb1yzx1dwxu8w0.png"
+    },
+    {
+      "id": 2,
+      "name": "Banarasi buti Saree",
+      "slug": "banarasi-buti-saree",
+      "description": "Small woven motifs elegantly spread across the saree.",
+      "image": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781973804/vns-saree/products/m8rf7arc5l8qakmly6ov.png"
+    },
+    {
+      "id": 3,
+      "name": "Jaal",
+      "slug": "jaal",
+      "description": "Elegant Interwoven Floral Jaal Pattern",
+      "image": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781974115/vns-saree/products/le8bkagqgruppko6kpfl.png"
+    },
+    {
+      "id": 4,
+      "name": "Kadwa",
+      "slug": "kadwa",
+      "description": "Luxurious Banarasi Kadwa Floral Design",
+      "image": "https://res.cloudinary.com/dyovgyfsi/image/upload/v1781974389/vns-saree/products/kwcfokonrybjmoqdphxq.png"
+    },
+    {
+      "id": 5,
+      "name": "Katan",
+      "slug": "katan",
+      "description": "A premium pure silk weave known for its smooth texture, rich sheen, and timeless Banarasi elegance.",
+      "image": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784710160/vns-saree/products/k1ld6d1exrix9hipp4qv.png"
+    },
+    {
+      "id": 6,
+      "name": "Banarasi Kora",
+      "slug": "banarasi-kora",
+      "description": "Lightweight Banarasi Kora Organza Saree",
+      "image": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784901996/vns-saree/products/lecyvnnldhkypwg7fafb.png"
+    },
+    {
+      "id": 7,
+      "name": "Cutwork",
+      "slug": "cutwork",
+      "description": "Elegant Banarasi Cutwork Saree with Floral Weaving",
+      "image": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784901661/vns-saree/products/s2a4jnftgft9yugrtkkk.png"
+    },
+    {
+      "id": 9,
+      "name": "Kadwa Buti",
+      "slug": "kadwa-buti",
+      "description": "",
+      "image": "https://res.cloudinary.com/drvmplgnr/image/upload/v1784709789/vns-saree/products/v4e6rl5vvvwa72v8wcln.png"
+    },
+    {
+      "id": 10,
+      "name": "Tissue",
+      "slug": "tissue",
+      "description": "",
+      "image": "https://res.cloudinary.com/drvmplgnr/image/upload/v1782386109/vns-saree/products/rzjmerqgpw7ulnvneuh7.png"
+    }
+  ],
+  "materials": [
+    {
+      "id": 1,
+      "name": "Katan",
+      "slug": "katan",
+      "description": "katan",
+      "image": null
+    },
+    {
+      "id": 2,
+      "name": "Silk",
+      "slug": "silk",
+      "description": "silk",
+      "image": null
+    },
+    {
+      "id": 3,
+      "name": "Organza",
+      "slug": "organza",
+      "description": "organza",
+      "image": null
+    },
+    {
+      "id": 4,
+      "name": "Satin Silk",
+      "slug": "satin-silk",
+      "description": "",
+      "image": null
+    },
+    {
+      "id": 5,
+      "name": "Semi Silk",
+      "slug": "semi-silk",
+      "description": "",
+      "image": null
+    },
+    {
+      "id": 6,
+      "name": "\tSatin Silk Blend",
+      "slug": "satin-silk-blend",
+      "description": "",
+      "image": null
+    },
+    {
+      "id": 7,
+      "name": "Silk Blend Crepe",
+      "slug": "silk-blend-crepe",
+      "description": "",
+      "image": null
+    },
+    {
+      "id": 8,
+      "name": "Silk Blend Banarasi",
+      "slug": "silk-blend-banarasi",
+      "description": "",
+      "image": null
+    },
+    {
+      "id": 9,
+      "name": "Kora",
+      "slug": "kora",
+      "description": "",
+      "image": null
+    }
+  ]
+}
