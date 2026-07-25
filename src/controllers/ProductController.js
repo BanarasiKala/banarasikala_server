@@ -1,9 +1,16 @@
-const { Op } = require('sequelize');
+const { Op, literal } = require('sequelize');
 const { sequelize } = require('../config/db');
 const Product = require('../models/Product');
 const Variety = require('../models/Variety');
 const Material = require('../models/Material');
+const ProductVariety = require('../models/ProductVariety');
+const ProductMaterial = require('../models/ProductMaterial');
 const ProductService = require('../services/ProductService');
+
+// Prefix for raw subqueries so they resolve under the configured schema (vns_saree).
+const schemaPrefix = sequelize.options?.define?.schema
+  ? `"${sequelize.options.define.schema}".`
+  : '';
 const { generateUploadSignature } = require("../config/cloudinary");
 const { generateS3PresignedUploadUrl } = require("../config/s3");
 
@@ -245,6 +252,7 @@ class ProductController {
     try {
       const { search = '', varietyId, materialId, unassignedVariety, unassignedMaterial } = req.query;
       const where = {};
+      const and = [];
 
       const term = String(search).trim();
       if (term) {
@@ -254,27 +262,40 @@ class ProductController {
         ];
       }
 
-      // `unassigned` wins over an explicit id: asking for both is contradictory, and the
-      // unassigned view is the one someone reaches for when they are trying to finish.
-      if (String(unassignedVariety) === 'true') where.variety_id = null;
-      else if (varietyId) where.variety_id = Number(varietyId);
-
-      if (String(unassignedMaterial) === 'true') where.material_id = null;
-      else if (materialId) where.material_id = Number(materialId);
+      // Variety and material are many-to-many now, so a filter is EXISTS / NOT EXISTS against
+      // the join table, not a column compare. `unassigned` wins over an explicit id — the two
+      // together are contradictory, and "what's left" is the view someone reaches for to
+      // finish. `schemaPrefix` keeps the raw SQL valid under the vns_saree schema.
+      const link = (table, column, hasId, wantUnassigned) => {
+        if (String(wantUnassigned) === 'true') {
+          and.push(literal(`NOT EXISTS (SELECT 1 FROM ${schemaPrefix}"${table}" j WHERE j.product_id = "Product"."id")`));
+        } else if (hasId) {
+          and.push(literal(`EXISTS (SELECT 1 FROM ${schemaPrefix}"${table}" j WHERE j.product_id = "Product"."id" AND j.${column} = ${Number(hasId)})`));
+        }
+      };
+      link('product_varieties', 'variety_id', varietyId, unassignedVariety);
+      link('product_materials', 'material_id', materialId, unassignedMaterial);
+      if (and.length) where[Op.and] = and;
 
       const products = await Product.findAll({
         where,
-        attributes: ['id', 'name', 'sku', 'images', 'variety_id', 'material_id', 'status'],
+        attributes: ['id', 'name', 'sku', 'images', 'status'],
+        include: [
+          { model: Variety, attributes: ['id', 'name'], through: { attributes: [] } },
+          { model: Material, attributes: ['id', 'name'], through: { attributes: [] } },
+        ],
         order: [['name', 'ASC']],
       });
 
-      // Counts for the whole catalogue, not the filtered set — the screen shows progress
-      // ("12 still need a variety"), and a count that shrank as you filtered would be
-      // describing the filter rather than the work left.
+      // Progress counts for the WHOLE catalogue — a product "needs a variety" when it has no
+      // rows in product_varieties. Counting distinct products with no link is one NOT EXISTS.
+      const missingCount = (table) => Product.count({
+        where: literal(`NOT EXISTS (SELECT 1 FROM ${schemaPrefix}"${table}" j WHERE j.product_id = "Product"."id")`),
+      });
       const [totalProducts, missingVariety, missingMaterial] = await Promise.all([
         Product.count(),
-        Product.count({ where: { variety_id: null } }),
-        Product.count({ where: { material_id: null } }),
+        missingCount('product_varieties'),
+        missingCount('product_materials'),
       ]);
 
       return res.status(200).json({
@@ -286,8 +307,10 @@ class ProductController {
             name: p.name,
             sku: p.sku,
             status: p.status,
-            variety_id: p.variety_id,
-            material_id: p.material_id,
+            variety_ids: (p.Varieties || []).map((v) => v.id),
+            material_ids: (p.Materials || []).map((m) => m.id),
+            varieties: (p.Varieties || []).map((v) => ({ id: v.id, name: v.name })),
+            materials: (p.Materials || []).map((m) => ({ id: m.id, name: m.name })),
             image: cover?.url || cover?.image_url || '',
           };
         }),
@@ -300,81 +323,91 @@ class ProductController {
   }
 
   /**
-   * Set variety and/or material on many products at once.
+   * Add, remove, or replace variety/material links on many products at once.
    *
-   * ── The three-state field ───────────────────────────────────────────────────────────────
-   * Each of `varietyId` / `materialId` can be:
-   *   omitted   leave every selected product's value alone
-   *   a number  set it
-   *   null      clear it
+   * ── `mode`, because these are now sets ──────────────────────────────────────────────────
+   * A product holds several varieties and materials, so "apply Silk to 6 products" needs to
+   * say what happens to what is already there:
+   *   add      Silk joins whatever each product already has (the default — you are building up)
+   *   remove   Silk is taken off, the rest untouched
+   *   replace  the selected set becomes exactly what each product has for that attribute
    *
-   * Omitted and null have to be distinguishable or the endpoint cannot express "set the
-   * material, don't touch the variety" — which is the whole point of assigning them
-   * separately. `Object.hasOwn` on the parsed body is what draws that line.
+   * `add` is the default because the catalogue is being populated from empty; replace is the
+   * blunt instrument, offered but not assumed.
    *
-   * ── Why the ids are checked first ───────────────────────────────────────────────────────
-   * variety_id and material_id are real foreign keys, so a bad id would fail at the database
-   * with a constraint error after some rows had already been considered. Validating up front
-   * turns that into a clean 400 naming the offending id, and the transaction means a failure
-   * anywhere leaves the catalogue exactly as it was.
+   * ── Independence and validation ─────────────────────────────────────────────────────────
+   * `varietyIds` and `materialIds` are handled separately — sending one never touches the
+   * other. Ids are checked before anything is written (a bad id would be an FK error mid-way),
+   * and the whole thing runs in one transaction so a failure leaves the catalogue untouched.
    */
   async bulkSetAttributes(req, res) {
-    const { productIds, varietyId, materialId } = req.body || {};
+    const { productIds, varietyIds, materialIds, mode = 'add' } = req.body || {};
 
     const ids = [...new Set((Array.isArray(productIds) ? productIds : [])
       .map((id) => Number(id))
       .filter((id) => Number.isInteger(id) && id > 0))];
+    if (!ids.length) return res.status(400).json({ message: 'Select at least one product.' });
+    if (ids.length > 500) return res.status(400).json({ message: 'Too many products in one request (max 500).' });
 
-    if (!ids.length) {
-      return res.status(400).json({ message: 'Select at least one product.' });
-    }
-    if (ids.length > 500) {
-      return res.status(400).json({ message: 'Too many products in one request (max 500).' });
+    if (!['add', 'remove', 'replace'].includes(mode)) {
+      return res.status(400).json({ message: 'Mode must be add, remove or replace.' });
     }
 
-    const setsVariety = Object.hasOwn(req.body || {}, 'varietyId');
-    const setsMaterial = Object.hasOwn(req.body || {}, 'materialId');
+    const cleanIds = (value) => [...new Set((Array.isArray(value) ? value : [])
+      .map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    const setsVariety = Object.hasOwn(req.body || {}, 'varietyIds');
+    const setsMaterial = Object.hasOwn(req.body || {}, 'materialIds');
+    const varIds = cleanIds(varietyIds);
+    const matIds = cleanIds(materialIds);
+
     if (!setsVariety && !setsMaterial) {
       return res.status(400).json({ message: 'Choose a variety or a material to apply.' });
     }
-
-    const patch = {};
-    if (setsVariety) patch.variety_id = varietyId === null || varietyId === '' ? null : Number(varietyId);
-    if (setsMaterial) patch.material_id = materialId === null || materialId === '' ? null : Number(materialId);
-
-    for (const [field, value] of Object.entries(patch)) {
-      if (value !== null && !Number.isInteger(value)) {
-        return res.status(400).json({ message: `Invalid ${field}.` });
-      }
+    // add/remove need something to act with; replace-with-nothing is a legitimate "clear all".
+    if (mode !== 'replace' && setsVariety && !varIds.length && setsMaterial && !matIds.length) {
+      return res.status(400).json({ message: 'Pick at least one variety or material.' });
     }
 
     try {
-      if (patch.variety_id) {
-        const exists = await Variety.findByPk(patch.variety_id, { attributes: ['id'] });
-        if (!exists) return res.status(400).json({ message: `Variety ${patch.variety_id} does not exist.` });
+      // Every id must exist before a single row is written.
+      if (varIds.length) {
+        const found = await Variety.count({ where: { id: varIds } });
+        if (found !== varIds.length) return res.status(400).json({ message: 'One or more varieties do not exist.' });
       }
-      if (patch.material_id) {
-        const exists = await Material.findByPk(patch.material_id, { attributes: ['id'] });
-        if (!exists) return res.status(400).json({ message: `Material ${patch.material_id} does not exist.` });
+      if (matIds.length) {
+        const found = await Material.count({ where: { id: matIds } });
+        if (found !== matIds.length) return res.status(400).json({ message: 'One or more materials do not exist.' });
       }
 
-      const updated = await sequelize.transaction(async (transaction) => {
-        const [count] = await Product.update(patch, { where: { id: ids }, transaction });
-        return count;
+      const applyLinks = async (JoinModel, column, attrIds, transaction) => {
+        if (mode === 'replace') {
+          // Wipe the selected products' links for this attribute, then re-add the chosen set.
+          await JoinModel.destroy({ where: { product_id: ids }, transaction });
+          if (attrIds.length) {
+            await JoinModel.bulkCreate(
+              ids.flatMap((pid) => attrIds.map((aid) => ({ product_id: pid, [column]: aid }))),
+              { ignoreDuplicates: true, transaction },
+            );
+          }
+        } else if (mode === 'add') {
+          await JoinModel.bulkCreate(
+            ids.flatMap((pid) => attrIds.map((aid) => ({ product_id: pid, [column]: aid }))),
+            { ignoreDuplicates: true, transaction },
+          );
+        } else { // remove
+          await JoinModel.destroy({ where: { product_id: ids, [column]: attrIds }, transaction });
+        }
+      };
+
+      await sequelize.transaction(async (transaction) => {
+        if (setsVariety) await applyLinks(ProductVariety, 'variety_id', varIds, transaction);
+        if (setsMaterial) await applyLinks(ProductMaterial, 'material_id', matIds, transaction);
       });
 
-      // Note: the catalogue endpoints carry a 120s Cache-Control (middleware/cacheHeaders),
-      // so a browser or CDN may serve the old variety for up to two minutes after this. There
-      // is no server-side store to purge — it is purely an HTTP TTL.
-
-      return res.status(200).json({
-        success: true,
-        updated,
-        applied: {
-          ...(setsVariety ? { variety_id: patch.variety_id } : {}),
-          ...(setsMaterial ? { material_id: patch.material_id } : {}),
-        },
-      });
+      // Note: catalogue endpoints carry a 120s Cache-Control (middleware/cacheHeaders), so a
+      // browser or CDN may serve the old attributes for up to two minutes. There is no
+      // server-side store to purge — it is purely an HTTP TTL.
+      return res.status(200).json({ success: true, updated: ids.length, mode });
     } catch (error) {
       logServerError('bulkSetAttributes', error);
       return res.status(500).json({ message: 'Failed to update products.' });

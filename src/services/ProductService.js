@@ -8,8 +8,39 @@ const { Op, fn, col, literal } = require("sequelize");
 const { sequelize } = require("../config/db");
 const { formatProductCode, formatVariantItemCode } = require("../utils/codes");
 const ProductOccasion = require("../models/ProductOccasion");
+// Required for their belongsToMany associations to register — same reason ProductOccasion is
+// imported here. Without this, `include: [{ model: Variety }]` would find no association.
+require("../models/ProductVariety");
+require("../models/ProductMaterial");
 const { deleteS3Object } = require("../config/s3");
 const { destroyCloudinaryImage } = require("../config/cloudinary");
+
+// A clean, de-duped list of positive integer ids from an array.
+const parseIdList = (value) => [...new Set(
+  (Array.isArray(value) ? value : [])
+    .map(Number)
+    .filter((n) => Number.isInteger(n) && n > 0),
+)];
+
+/**
+ * The ids for a many-to-many attribute, accepting both shapes.
+ *
+ * `variety_ids` is the array form the updated client sends. `variety_id` (singular) is the
+ * legacy single value — a form or an API caller not yet migrated still works, its one value
+ * becoming a one-element set. Passing both is fine; they merge.
+ */
+const parseAttributeIds = (arrayValue, singleValue) => {
+  const ids = parseIdList(arrayValue);
+  const single = Number(singleValue);
+  if (Number.isInteger(single) && single > 0 && !ids.includes(single)) ids.push(single);
+  return ids;
+};
+
+// Did this update payload say anything about `variety`/`material` at all? A partial update
+// that mentions neither must not touch the existing links. Both the array and the legacy
+// singular count as "mentioned".
+const mentionsAttribute = (data, name) =>
+  Object.hasOwn(data, `${name}_ids`) || Object.hasOwn(data, `${name}_id`);
 
 // Pull the url strings out of a JSONB media array ([{ url, ... }]).
 const mediaUrls = (arr) =>
@@ -21,9 +52,12 @@ const cleanupOrphanedMedia = ({ videos = [], images = [] }) => {
   images.forEach((url) => { destroyCloudinaryImage(url); });
 };
 
+// Material and Variety are many-to-many now, so they carry `through` just like Occasion —
+// each yields an array (product.Materials, product.Varieties) that toClient flattens to
+// material_ids / variety_ids.
 const productIncludes = [
-  { model: Material, attributes: ["id", "name", "slug"] },
-  { model: Variety, attributes: ["id", "name", "slug"] },
+  { model: Material, attributes: ["id", "name", "slug"], through: { attributes: [] } },
+  { model: Variety, attributes: ["id", "name", "slug"], through: { attributes: [] } },
   { model: Occasion, attributes: ["id", "name", "slug"], through: { attributes: [] } },
 ];
 const HOME_PRODUCT_ATTRIBUTES = [
@@ -172,9 +206,29 @@ const normalizeProduct = (product) => {
   const plain = typeof product?.toJSON === "function" ? product.toJSON() : product;
   if (!plain) return plain;
   const images = normalizeImages(plain.images || []);
+
+  // The associations come back as arrays of rows; the client wants id arrays plus the named
+  // list for display. `variety_ids` / `material_ids` mirror `occasion_ids`, and the singular
+  // `variety_id` / `material_id` are kept populated with the FIRST of each so any consumer not
+  // yet updated still reads a sensible value rather than null.
+  const varieties = (plain.Varieties || []).map((v) => ({ id: v.id, name: v.name, slug: v.slug }));
+  const materials = (plain.Materials || []).map((m) => ({ id: m.id, name: m.name, slug: m.slug }));
   const occasion_ids = (plain.Occasions || []).map((o) => o.id);
-  const result = { ...plain, images, occasion_ids };
+
+  const result = {
+    ...plain,
+    images,
+    occasion_ids,
+    varieties,
+    materials,
+    variety_ids: varieties.map((v) => v.id),
+    material_ids: materials.map((m) => m.id),
+    variety_id: varieties[0]?.id ?? plain.variety_id ?? null,
+    material_id: materials[0]?.id ?? plain.material_id ?? null,
+  };
   delete result.Occasions;
+  delete result.Varieties;
+  delete result.Materials;
   return result;
 };
 
@@ -290,12 +344,19 @@ const getPositiveColorIds = (colorStocks = {}) =>
     .filter(([, qty]) => toIntOrZero(qty) > 0)
     .map(([colorId]) => String(colorId));
 
+// Any shared variety/material/occasion counts — a Silk+Zari saree relates to another Silk one
+// even if the rest differs. `source` and `candidate` are both normalized, so each carries
+// variety_ids / material_ids / occasion_ids arrays.
+const sharesAny = (a = [], b = []) => {
+  const set = new Set(a);
+  return b.some((id) => set.has(id));
+};
+
 const scoreRelatedProduct = (source, candidate) => {
   let score = 0;
-  if (source.variety_id && source.variety_id === candidate.variety_id) score += 5;
-  if (source.material_id && source.material_id === candidate.material_id) score += 4;
-  const srcOccasionIds = new Set((source.Occasions || []).map((o) => o.id));
-  if (srcOccasionIds.size && (candidate.Occasions || []).some((o) => srcOccasionIds.has(o.id))) score += 3;
+  if (sharesAny(source.variety_ids, candidate.variety_ids)) score += 5;
+  if (sharesAny(source.material_ids, candidate.material_ids)) score += 4;
+  if (sharesAny(source.occasion_ids, candidate.occasion_ids)) score += 3;
   if (source.special_collection && source.special_collection === candidate.special_collection) score += 1;
 
   const sourceColors = new Set(getPositiveColorIds(source.color_stocks));
@@ -343,8 +404,9 @@ const sanitizeProductPayload = (data = {}) => {
     stock_quantity: totalStock,
     low_stock_threshold: toIntOrZero(data.low_stock_threshold),
     processing_days: toIntOrNull(data.processing_days),
-    material_id: toIntOrNull(data.material_id),
-    variety_id: toIntOrNull(data.variety_id),
+    // variety_id / material_id are NOT written here any more — they are many-to-many, set via
+    // product.setVarieties/setMaterials in create/update. The read path derives the singular
+    // fallback from the join table, so the physical columns can simply go stale.
     color_stocks,
     variant_skus: data.variant_skus && typeof data.variant_skus === "object" ? data.variant_skus : {},
     images,
@@ -378,9 +440,17 @@ const sanitizeProductPayload = (data = {}) => {
   delete sanitized.id;
   delete sanitized.Material;
   delete sanitized.Variety;
+  delete sanitized.Materials;
+  delete sanitized.Varieties;
   delete sanitized.Occasions;
   delete sanitized.occasion_id;
   delete sanitized.occasion_ids;
+  // Association ids arrive on the same payload but are applied via set*(); they are not
+  // columns and must not reach Product.update, or Sequelize throws on an unknown field.
+  delete sanitized.variety_ids;
+  delete sanitized.material_ids;
+  delete sanitized.varieties;
+  delete sanitized.materials;
   delete sanitized.productImages;
   delete sanitized.product_images;
   delete sanitized.createdAt;
@@ -467,22 +537,23 @@ class ProductService {
       queryOptions.order.push(["id", "DESC"]);
     } else queryOptions.order.push(["id", "DESC"]);
 
-    const materials = this.parseCommaSeparated(material);
-    if (materials) queryOptions.where.material_id = { [Op.in]: materials };
-
-    const varieties = this.parseCommaSeparated(variety);
-    if (varieties) queryOptions.where.variety_id = { [Op.in]: varieties };
-
-    const occasions = this.parseCommaSeparated(occasion);
-    if (occasions) {
-      const poSchema = sequelize.options?.define?.schema;
-      const poTable = poSchema ? `"${poSchema}"."product_occasions"` : '"product_occasions"';
-      const idList = occasions.join(", ");
+    // Variety, material and occasion are all many-to-many, so each filters with an EXISTS
+    // subquery against its join table rather than a column comparison. A product matches if
+    // ANY of its links is in the requested set — the intuitive "show me Silk sarees" even for
+    // a Silk+Zari blend. Factored into one helper so the three read identically.
+    const schemaPrefix = sequelize.options?.define?.schema
+      ? `"${sequelize.options.define.schema}".` : '';
+    const addLinkFilter = (rawValue, table, column) => {
+      const ids = this.parseCommaSeparated(rawValue);
+      if (!ids) return;
       queryOptions.where[Op.and] = [
         ...(Array.isArray(queryOptions.where[Op.and]) ? queryOptions.where[Op.and] : []),
-        literal(`EXISTS (SELECT 1 FROM ${poTable} po WHERE po.product_id = "Product"."id" AND po.occasion_id IN (${idList}))`),
+        literal(`EXISTS (SELECT 1 FROM ${schemaPrefix}"${table}" j WHERE j.product_id = "Product"."id" AND j.${column} IN (${ids.join(', ')}))`),
       ];
-    }
+    };
+    addLinkFilter(material, 'product_materials', 'material_id');
+    addLinkFilter(variety, 'product_varieties', 'variety_id');
+    addLinkFilter(occasion, 'product_occasions', 'occasion_id');
 
     if (minPrice || maxPrice) {
       const priceFilter = {};
@@ -757,12 +828,17 @@ class ProductService {
         "special_collection",
       ]),
     ];
-    const occasionInclude = { model: Occasion, attributes: ["id"], through: { attributes: [] } };
+    // All three link models, so the source and the candidates carry their id arrays.
+    const linkIncludes = [
+      { model: Occasion, attributes: ["id"], through: { attributes: [] } },
+      { model: Variety, attributes: ["id"], through: { attributes: [] } },
+      { model: Material, attributes: ["id"], through: { attributes: [] } },
+    ];
 
     const source = normalizeProduct(await Product.findOne({
       where: { slug },
-      attributes: ["id", "slug", "material_id", "variety_id", "special_collection", "color_stocks"],
-      include: [occasionInclude],
+      attributes: ["id", "slug", "special_collection", "color_stocks"],
+      include: linkIncludes,
     }));
 
     if (!source) return null;
@@ -770,14 +846,19 @@ class ProductService {
     const sourceColorIds = getPositiveColorIds(source.color_stocks);
     const relationConditions = [];
 
-    if (source.variety_id) relationConditions.push({ variety_id: source.variety_id });
-    if (source.material_id) relationConditions.push({ material_id: source.material_id });
-    const sourceOccasionIds = (source.Occasions || []).map((o) => o.id);
-    if (sourceOccasionIds.length) {
-      const poSchema = sequelize.options?.define?.schema;
-      const poTable = poSchema ? `"${poSchema}"."product_occasions"` : '"product_occasions"';
-      relationConditions.push(literal(`EXISTS (SELECT 1 FROM ${poTable} po WHERE po.product_id = "Product"."id" AND po.occasion_id IN (${sourceOccasionIds.join(", ")}))`));
-    }
+    // Each relation is an EXISTS against its join table, matching a product that shares ANY of
+    // the source's varieties/materials/occasions.
+    const schemaPrefix = sequelize.options?.define?.schema
+      ? `"${sequelize.options.define.schema}".` : '';
+    const existsAny = (ids, table, column) => {
+      if (!ids?.length) return;
+      relationConditions.push(literal(
+        `EXISTS (SELECT 1 FROM ${schemaPrefix}"${table}" j WHERE j.product_id = "Product"."id" AND j.${column} IN (${ids.join(", ")}))`,
+      ));
+    };
+    existsAny(source.variety_ids, 'product_varieties', 'variety_id');
+    existsAny(source.material_ids, 'product_materials', 'material_id');
+    existsAny(source.occasion_ids, 'product_occasions', 'occasion_id');
     if (source.special_collection) relationConditions.push({ special_collection: true });
     if (sourceColorIds.length) {
       const colorList = sourceColorIds.map((colorId) => sequelize.escape(colorId)).join(", ");
@@ -792,7 +873,7 @@ class ProductService {
     const relatedRows = relationConditions.length
       ? await Product.findAll({
           attributes: relatedAttributes,
-          include: [occasionInclude],
+          include: linkIncludes,
           where: {
             ...baseWhere,
             [Op.or]: relationConditions,
@@ -833,22 +914,31 @@ class ProductService {
   }
 
   async createProduct(data) {
-    const occasionIds = Array.isArray(data.occasion_ids)
-      ? data.occasion_ids.map(Number).filter((n) => !Number.isNaN(n) && n > 0)
-      : [];
+    const occasionIds = parseIdList(data.occasion_ids);
+    const varietyIds = parseAttributeIds(data.variety_ids, data.variety_id);
+    const materialIds = parseAttributeIds(data.material_ids, data.material_id);
     const product = await Product.create(sanitizeProductPayload(data));
     await product.update({
       sku: formatProductCode(product.id),
       variant_skus: await buildVariantSkus(product.id, product.color_stocks || {}),
     });
-    await product.setOccasions(occasionIds);
+    await Promise.all([
+      product.setOccasions(occasionIds),
+      product.setVarieties(varietyIds),
+      product.setMaterials(materialIds),
+    ]);
     return this.getProductById(product.id);
   }
 
   async updateProduct(id, data) {
-    const occasionIds = Array.isArray(data.occasion_ids)
-      ? data.occasion_ids.map(Number).filter((n) => !Number.isNaN(n) && n > 0)
-      : [];
+    const occasionIds = parseIdList(data.occasion_ids);
+    // Only reset an attribute the request actually mentioned — a partial update (a status
+    // toggle) that names neither must leave both link sets exactly as they were, never wipe
+    // them. `undefined` is "not mentioned"; an empty array is a deliberate "clear all".
+    const varietyIds = mentionsAttribute(data, 'variety')
+      ? parseAttributeIds(data.variety_ids, data.variety_id) : undefined;
+    const materialIds = mentionsAttribute(data, 'material')
+      ? parseAttributeIds(data.material_ids, data.material_id) : undefined;
     const product = await Product.findByPk(id);
     if (!product) throw new Error("Product not found");
 
@@ -861,6 +951,8 @@ class ProductService {
     payload.variant_skus = await buildVariantSkus(product.id, payload.color_stocks || {});
     await product.update(payload);
     await product.setOccasions(occasionIds);
+    if (varietyIds !== undefined) await product.setVarieties(varietyIds);
+    if (materialIds !== undefined) await product.setMaterials(materialIds);
 
     // Delete any video/image that is no longer referenced by the product.
     // Only diff a media type when the request actually supplied it, so that

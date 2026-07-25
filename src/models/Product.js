@@ -185,8 +185,15 @@ const Product = sequelize.define(
   },
 );
 
-// Associations
-Product.belongsTo(Material, { foreignKey: "material_id" });
-Product.belongsTo(Variety, { foreignKey: "variety_id" });
+/**
+ * Variety and material are many-to-many now, defined as belongsToMany in
+ * models/ProductVariety and models/ProductMaterial (mirroring ProductOccasion). The old
+ * single-value belongsTo lived here; it is gone because a product can carry several of each,
+ * and keeping both a belongsTo and a belongsToMany to the same model makes every
+ * `include: [{ model: Variety }]` ambiguous.
+ *
+ * The `variety_id` / `material_id` columns still exist on the table as a temporary fallback,
+ * but nothing associates through them any more.
+ */
 
 module.exports = Product;
