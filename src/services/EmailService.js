@@ -26,13 +26,17 @@ const pickOrderItemImage = (product, colorId) => {
 /**
  * The logo, on the CDN rather than the storefront.
  *
+ * This is the exact lockup the storefront header shows — the BK monogram, the BANARASI KALA
+ * wordmark and the "handcrafted with love" line, all in one image. Because the name is baked
+ * into the artwork, the header sets no separate wordmark beneath it.
+ *
  * An email is opened outside our network, often months later, so the image URL has to be
  * absolute, public and permanent. `config.frontendUrl` is neither in development (localhost,
  * which resolves to the reader's own machine) nor reliably cached in production, and an
  * attachment would show as a paperclip on every receipt. Cloudinary is already the image
  * host for everything else here.
  */
-const BRAND_LOGO_URL = 'https://res.cloudinary.com/drvmplgnr/image/upload/v1784809969/vns-saree/brand/email-logo.png';
+const BRAND_LOGO_URL = 'https://res.cloudinary.com/drvmplgnr/image/upload/v1784972306/vns-saree/brand/header-logo.png';
 
 // Interpolated straight into email HTML, so it has to be escaped: a support message is
 // attacker-controlled text, and an unescaped </div><script> in one would run in whichever
@@ -123,8 +127,8 @@ const emailShell = ({
   @media only screen and (max-width:600px) {
     .m-wrap  { width:100% !important; padding:0 16px !important; }
     .m-stack { display:block !important; width:100% !important; padding-right:0 !important; }
-    .m-h1    { font-size:19px !important; }
-    .m-logo  { width:112px !important; height:auto !important; }
+    .m-h1    { font-size:20px !important; }
+    .m-logo  { width:130px !important; height:auto !important; }
     .brand-name { font-size:19px !important; letter-spacing:0.1em !important; }
     .m-btn   { display:block !important; text-align:center !important; }
   }
@@ -139,35 +143,27 @@ const emailShell = ({
         <tr>
           <td style="padding:30px 32px 0;">
 
-            <!-- Brand block: monogram, wordmark beneath, centred. Stacked rather than side by
-                 side so the mark can be given real size — beside text it shrinks to the cap
-                 height of the name, which is what made it read as a favicon. -->
+            <!-- Brand block: the header lockup on the left, the order reference on the right,
+                 on one row. The wordmark is part of the artwork, so no name is set beneath it. -->
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
               <tr>
-                <td align="center" style="padding-bottom:6px;">
-                  <img class="m-logo" src="${BRAND_LOGO_URL}" width="132" alt="Banarasi Kala" style="display:block;width:132px;max-width:132px;height:auto;border:0;margin:0 auto;" />
+                <td valign="middle" style="padding-bottom:22px;">
+                  <img class="m-logo" src="${BRAND_LOGO_URL}" width="160" alt="Banarasi Kala" style="display:block;width:160px;max-width:160px;height:auto;border:0;" />
                 </td>
+                ${orderNumber ? `<td valign="middle" align="right" style="padding-bottom:22px;text-align:right;font-size:12px;color:#9aa0a6;letter-spacing:0.08em;text-transform:uppercase;">
+                  ORDER ${orderNumber}${placedLabel ? `<br /><span style="font-size:11px;letter-spacing:0.04em;">${placedLabel}</span>` : ''}
+                </td>` : ''}
               </tr>
-              <tr>
-                <td align="center" class="brand-name" style="font-family:'Cinzel',Georgia,'Times New Roman',serif;font-size:23px;font-weight:700;letter-spacing:0.14em;color:#800020;text-transform:uppercase;padding-bottom:14px;">
-                  Banarasi&nbsp;Kala
-                </td>
-              </tr>
-              ${orderNumber ? `<tr>
-                <td align="center" style="border-top:1px solid #e8e8e6;padding-top:12px;font-size:11px;color:#6b7177;letter-spacing:0.05em;">
-                  ORDER ${orderNumber}${placedLabel ? ` &middot; ${placedLabel}` : ''}
-                </td>
-              </tr>` : ''}
             </table>
 
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
               <tr>
-                <td align="center" style="text-align:center;">
+                <td align="left" style="text-align:left;">
                   ${banner}
-                  <div class="m-h1" style="font-size:22px;font-weight:700;color:#222;padding:${banner ? '6px' : '28px'} 0 8px;text-align:center;">${heading}</div>
-                  <div style="font-size:14px;color:#6b7177;line-height:1.6;padding-bottom:24px;text-align:center;">${intro}</div>
+                  <div class="m-h1" style="font-size:24px;font-weight:700;color:#222;padding:${banner ? '6px' : '18px'} 0 8px;text-align:left;">${heading}</div>
+                  <div style="font-size:14px;color:#6b7177;line-height:1.6;padding-bottom:24px;text-align:left;">${intro}</div>
                   ${ctaLabel ? `<a class="m-btn" href="${ctaUrl}" style="display:inline-block;background:#800020;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:14px 28px;border-radius:6px;">${ctaLabel}</a>` : ''}
-                  <div style="font-size:13px;color:#6b7177;padding:12px 0 28px;text-align:center;">
+                  <div style="font-size:13px;color:#6b7177;padding:14px 0 28px;text-align:left;">
                     or <a href="${storeUrl}" style="color:#800020;">Visit our store</a>
                   </div>
                 </td>
@@ -538,8 +534,8 @@ class EmailService {
       replyTo: supportEmail,
       subject: 'Verify your email address | Banarasi Kala',
       html: emailShell({
-        // The shell shows this line under the wordmark. On an order it is the order number;
-        // here there is no order, so it names what the mail is instead of printing "ORDER".
+        // The shell prints this as the order reference to the right of the logo. There is no
+        // order here, so it is left empty and that corner simply stays blank.
         orderNumber: '',
         heading: 'Verify your email address',
         intro: `Hi ${esc(name || 'there')}, thank you for registering with us. Confirm your address to finish setting up your account.`,
