@@ -854,6 +854,7 @@ class ShipRocketController {
           'RTO Delivered': SHIPMENT_STATUS.RTO,
         };
         if (forwardShipment) {
+          console.log(`[ShipRocket] Webhook '${nextStatus}' for shipment #${forwardShipment.id} (order #${order.id})`);
           const shipUpdate = {};
           if (shipStatusMap[nextStatus]) shipUpdate.status = shipStatusMap[nextStatus];
           if (awb && !forwardShipment.awb_number) shipUpdate.awb_number = String(awb);
@@ -865,6 +866,7 @@ class ShipRocketController {
             shipUpdate.courier = String(payload.courier_name);
           }
           if (nextStatus === 'AWB Assigned') {
+            console.log(`[ShipRocket] Webhook AWB Assigned for shipment #${forwardShipment.id} — courier: ${payload.courier_name}, awb: ${awb}`);
             shipUpdate.selected_courier_data = {
               ...(forwardShipment.selected_courier_data || {}),
               courier_name: payload.courier_name || forwardShipment.selected_courier_data?.courier_name || null,
@@ -874,6 +876,7 @@ class ShipRocketController {
               awb_assigned_date: payload.awb_assigned_date || payload.current_timestamp || null,
             };
           }
+          console.log(`[ShipRocket] Webhook '${nextStatus}' for shipment #${forwardShipment.id} (order #${order.id})`);
           if (nextStatus === 'Delivered' && !forwardShipment.delivered_at) shipUpdate.delivered_at = new Date();
           if (['RTO Initiated', 'RTO In Transit', 'RTO Delivered'].includes(nextStatus) && !forwardShipment.rto_at) shipUpdate.rto_at = new Date();
           if (Object.keys(shipUpdate).length) await forwardShipment.update(shipUpdate, { transaction });
