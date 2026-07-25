@@ -538,6 +538,7 @@ class ShipRocketController {
         return res.status(401).json({ message: 'Invalid webhook secret' });
       }
       const payload = req.body || {};
+      console.log("Webhook payload:", JSON.stringify(payload, null, 2));
       const awb = payload.awb || payload.awb_code || payload.awb_number || payload.shipment?.awb || payload.shipment_track?.awb_code;
       // ShipRocket is inconsistent about ids across webhook variants: order_id
       // may be their internal id OR the channel id (our order_number), with
