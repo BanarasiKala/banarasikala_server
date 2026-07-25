@@ -23,7 +23,7 @@ const userFacingMessage = (error, fallback) => {
   const raw = error.message || "";
 
   if (raw.includes("must have at least 1 image")) return raw;
-  if (raw.includes("maximum 6 images")) return raw;
+  if (raw.includes("maximum 8 images")) return raw;
   if (raw.includes("At least one product color is required")) return raw;
   if (raw.includes("At least one product image is required")) return raw;
   if (raw.includes("can have maximum 3 videos")) return raw;
@@ -48,7 +48,7 @@ const buildProductPayload = (body) => {
 
   selectedColorIds.forEach((colorId) => {
     const colorImages = images.filter((img) => parseInt(img.color_id, 10) === colorId);
-    if (colorImages.length > 6) throw new Error("Each color can have maximum 6 images");
+    if (colorImages.length > 8) throw new Error("Each color can have maximum 8 images");
     if (colorImages.length < 1) throw new Error(`Color ${colorId} must have at least 1 image`);
     const videoCount = videos.filter((v) => parseInt(v.color_id, 10) === colorId).length;
     if (videoCount > 3) throw new Error(`Color ${colorId} can have maximum 3 videos`);

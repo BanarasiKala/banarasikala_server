@@ -175,7 +175,7 @@ const validateColorMedia = (colorStocks = {}, images = []) => {
   selectedColorIds.forEach((colorId) => {
     const count = images.filter((image) => image.color_id === colorId).length;
     if (count < 1) throw new Error(`Color ${colorId} must have at least 1 image`);
-    if (count > 6) throw new Error("Each color can have maximum 6 images");
+    if (count > 8) throw new Error("Each color can have maximum 8 images");
   });
 };
 
