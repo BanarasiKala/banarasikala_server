@@ -589,11 +589,20 @@ class ProductService {
     addLinkFilter(variety, 'product_varieties', 'variety_id');
     addLinkFilter(occasion, 'product_occasions', 'occasion_id');
 
-    if (minPrice || maxPrice) {
+    // Op.gte/Op.lte are Symbols, so the bounds have to be counted explicitly — Object.keys()
+    // skips symbol keys and would report an empty filter for every request.
+    const parsePriceBound = (value) => {
+      if (value === undefined || value === null || String(value).trim() === "") return null;
+      const parsed = Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    };
+    const minPriceValue = parsePriceBound(minPrice);
+    const maxPriceValue = parsePriceBound(maxPrice);
+    if (minPriceValue !== null || maxPriceValue !== null) {
       const priceFilter = {};
-      if (minPrice && !Number.isNaN(parseInt(minPrice, 10))) priceFilter[Op.gte] = parseInt(minPrice, 10);
-      if (maxPrice && !Number.isNaN(parseInt(maxPrice, 10))) priceFilter[Op.lte] = parseInt(maxPrice, 10);
-      if (Object.keys(priceFilter).length) queryOptions.where.selling_price = priceFilter;
+      if (minPriceValue !== null) priceFilter[Op.gte] = minPriceValue;
+      if (maxPriceValue !== null) priceFilter[Op.lte] = maxPriceValue;
+      queryOptions.where.selling_price = priceFilter;
     }
 
     if (status && ["active", "inactive"].includes(String(status))) queryOptions.where.status = String(status);
@@ -718,6 +727,23 @@ class ProductService {
         currentPageCount: pagedItems.length,
       },
       summary,
+    };
+  }
+
+  // Bounds for the storefront price slider. Read from the live catalogue so the filter's
+  // ceiling always covers the priciest saree on sale instead of a hardcoded guess.
+  async getPriceRange() {
+    const row = await Product.findOne({
+      attributes: [
+        [fn("MIN", col("selling_price")), "minPrice"],
+        [fn("MAX", col("selling_price")), "maxPrice"],
+      ],
+      where: { status: "active", selling_price: { [Op.gt]: 0 } },
+      raw: true,
+    });
+    return {
+      minPrice: Math.max(0, Math.floor(Number(row?.minPrice) || 0)),
+      maxPrice: Math.max(0, Math.ceil(Number(row?.maxPrice) || 0)),
     };
   }
 

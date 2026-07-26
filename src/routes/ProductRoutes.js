@@ -6,6 +6,8 @@ const { catalogCache } = require('../middleware/cacheHeaders');
 
 // Public routes
 router.get('/', catalogCache, ProductController.getAll);
+// Declared before '/:slug' so "price-range" is never read as a product slug.
+router.get('/price-range', catalogCache, ProductController.getPriceRange);
 router.get('/summary', authMiddleware, adminMiddleware, ProductController.getSummary);
 // Bulk variety/material assignment. Declared before '/:slug' so "attribute-board" is never
 // read as a product slug.

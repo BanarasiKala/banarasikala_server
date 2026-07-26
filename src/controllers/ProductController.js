@@ -96,6 +96,16 @@ class ProductController {
     }
   }
 
+  async getPriceRange(req, res) {
+    try {
+      const range = await ProductService.getPriceRange();
+      res.status(200).json(range);
+    } catch (error) {
+      logServerError("getPriceRange", error);
+      res.status(500).json({ message: "Failed to load price range." });
+    }
+  }
+
   async getSummary(req, res) {
     try {
       const summary = await ProductService.getProductSummary();
