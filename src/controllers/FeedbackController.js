@@ -9,6 +9,7 @@ const AdminReviewController = require('./AdminReviewController');
 const { generateUploadSignature, uploadBufferToCloudinary } = require('../config/cloudinary');
 const { ensureFeedbackColumns } = require('../utils/dbConstraints');
 const { exchangeTargetsOf } = require('../utils/exchangeTargets');
+const { getSiteReviewFallback } = require('../utils/siteReviewFallback');
 
 const toInt = (value) => {
   const next = Number(value);
@@ -227,6 +228,11 @@ exports.submitGeneralFeedback = async (req, res) => {
   }
 };
 
+// `?fallback=1` opts into the curated site reviews when no real one has been approved yet.
+// Opt-in rather than default because the admin panel reads this same endpoint to manage the
+// approved list — seeded rows there would be undeletable noise.
+const wantsFallback = (req) => ['1', 'true', 'yes'].includes(String(req.query.fallback || '').toLowerCase());
+
 exports.getApprovedFeedback = async (req, res) => {
   try {
     await ensureFeedbackColumns();
@@ -240,9 +246,19 @@ exports.getApprovedFeedback = async (req, res) => {
     });
 
     const general = feedbacks.filter((f) => f.product_id == null && f.order_id == null);
+
+    // Real feedback always wins; the curated list only stands in while there is none at all.
+    if (!general.length && wantsFallback(req)) {
+      return res.status(200).json({ success: true, data: getSiteReviewFallback(), is_seed: true });
+    }
+
     res.status(200).json({ success: true, data: general });
   } catch (error) {
     console.error('Get feedback error:', error);
+    // The home page should still show something if the reviews table is unreachable.
+    if (wantsFallback(req)) {
+      return res.status(200).json({ success: true, data: getSiteReviewFallback(), is_seed: true });
+    }
     res.status(500).json({ success: false, message: 'Failed to fetch feedback' });
   }
 };
