@@ -106,6 +106,16 @@ const COLLECTION_PRODUCT_ATTRIBUTES = [
   "processing_days",
 ];
 
+// The storefront card prints MRP for anything out of stock and the selling price otherwise
+// (see renderProductCard in Collection.jsx). Price filtering and the price sorts run off this
+// same expression, so the grid can never show a card labelled above the shopper's cap —
+// e.g. a ₹4,299 saree that renders as "MRP ₹5,999" must not survive a ₹5,300 filter.
+const DISPLAY_PRICE_SQL = `(CASE
+    WHEN COALESCE("Product"."stock_quantity", 0) <= 0 OR "Product"."status" <> 'active'
+    THEN COALESCE(NULLIF("Product"."mrp_price", 0), "Product"."selling_price")
+    ELSE "Product"."selling_price"
+  END)`;
+
 const toIntOrNull = (value) => {
   if (value === "" || value === null || value === undefined) return null;
   const num = parseInt(value, 10);
@@ -558,10 +568,10 @@ class ProductService {
     }
 
     if (sortBy === "price_asc") {
-      queryOptions.order.push(["selling_price", "ASC"]);
+      queryOptions.order.push(literal(`${DISPLAY_PRICE_SQL} ASC`));
       queryOptions.order.push(["id", "DESC"]);
     } else if (sortBy === "price_desc") {
-      queryOptions.order.push(["selling_price", "DESC"]);
+      queryOptions.order.push(literal(`${DISPLAY_PRICE_SQL} DESC`));
       queryOptions.order.push(["id", "DESC"]);
     } else if (sortBy === "special") {
       queryOptions.order.push(["special_collection", "DESC"]);
@@ -598,12 +608,15 @@ class ProductService {
     };
     const minPriceValue = parsePriceBound(minPrice);
     const maxPriceValue = parsePriceBound(maxPrice);
-    if (minPriceValue !== null || maxPriceValue !== null) {
-      const priceFilter = {};
-      if (minPriceValue !== null) priceFilter[Op.gte] = minPriceValue;
-      if (maxPriceValue !== null) priceFilter[Op.lte] = maxPriceValue;
-      queryOptions.where.selling_price = priceFilter;
-    }
+    const addPriceBound = (value, operator) => {
+      if (value === null) return;
+      queryOptions.where[Op.and] = [
+        ...(Array.isArray(queryOptions.where[Op.and]) ? queryOptions.where[Op.and] : []),
+        literal(`${DISPLAY_PRICE_SQL} ${operator} ${sequelize.escape(value)}`),
+      ];
+    };
+    addPriceBound(minPriceValue, ">=");
+    addPriceBound(maxPriceValue, "<=");
 
     if (status && ["active", "inactive"].includes(String(status))) queryOptions.where.status = String(status);
     if (specialCollection === "true") {
@@ -731,12 +744,14 @@ class ProductService {
   }
 
   // Bounds for the storefront price slider. Read from the live catalogue so the filter's
-  // ceiling always covers the priciest saree on sale instead of a hardcoded guess.
+  // ceiling always covers the priciest saree on sale instead of a hardcoded guess. Uses the
+  // displayed-price expression the filter itself uses, so dragging the slider fully right
+  // can never exclude a card whose printed MRP sits above the highest selling price.
   async getPriceRange() {
     const row = await Product.findOne({
       attributes: [
-        [fn("MIN", col("selling_price")), "minPrice"],
-        [fn("MAX", col("selling_price")), "maxPrice"],
+        [literal(`MIN(${DISPLAY_PRICE_SQL})`), "minPrice"],
+        [literal(`MAX(${DISPLAY_PRICE_SQL})`), "maxPrice"],
       ],
       where: { status: "active", selling_price: { [Op.gt]: 0 } },
       raw: true,
