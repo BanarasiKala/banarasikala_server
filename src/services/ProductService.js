@@ -4,6 +4,7 @@ const Variety = require("../models/Variety");
 const Occasion = require("../models/Occasion");
 const Color = require("../models/Color");
 const Feedback = require("../models/Feedback");
+const AdminReview = require("../models/AdminReview");
 const { Op, fn, col, literal } = require("sequelize");
 const { sequelize } = require("../config/db");
 const { formatProductCode, formatVariantItemCode } = require("../utils/codes");
@@ -257,8 +258,39 @@ const attachReviewSummaries = async (products = []) => {
       return [Number(row.product_id), { average, count }];
     }));
 
+    // Same fallback as the product page: a product with no real reviews borrows its rating
+    // badge from the admin's seed reviews, so the card and the detail page agree. Only queried
+    // for the products that actually have zero real reviews.
+    const zeroIds = ids.filter((id) => !(summaries.get(Number(id))?.count));
+    let seedSummaries = new Map();
+    if (zeroIds.length) {
+      try {
+        await AdminReview.sync({ force: false });
+        const seedRows = await AdminReview.findAll({
+          attributes: [
+            "product_id",
+            [fn("COUNT", col("id")), "review_count"],
+            [fn("AVG", col("rating")), "average_rating"],
+          ],
+          where: { product_id: { [Op.in]: zeroIds }, is_active: true },
+          group: ["product_id"],
+          raw: true,
+        });
+        seedSummaries = new Map(seedRows.map((row) => {
+          const count = Number(row.review_count || 0);
+          const average = count ? Math.round(Number(row.average_rating || 0) * 10) / 10 : 0;
+          return [Number(row.product_id), { average, count }];
+        }));
+      } catch (seedError) {
+        console.error("[ProductService] seed review summary warning:", seedError.message);
+      }
+    }
+
     return products.map((product) => {
-      const summary = summaries.get(Number(product.id)) || { average: 0, count: 0 };
+      const real = summaries.get(Number(product.id));
+      const summary = real?.count
+        ? real
+        : (seedSummaries.get(Number(product.id)) || { average: 0, count: 0 });
       return {
         ...product,
         review_summary: summary,

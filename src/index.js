@@ -21,6 +21,7 @@ const AuthRoutes = require("./routes/AuthRoutes");
 const CartRoutes = require("./routes/CartRoutes");
 const WishlistRoutes = require("./routes/WishlistRoutes");
 const FeedbackRoutes = require("./routes/FeedbackRoutes");
+const AdminReviewRoutes = require("./routes/AdminReviewRoutes");
 const ShipRocketRoutes = require("./routes/ShipRocketRoutes");
 const WalletRoutes = require("./routes/WalletRoutes");
 const ReferralRoutes = require("./routes/ReferralRoutes");
@@ -226,6 +227,7 @@ app.use("/api/box-sections", BoxSectionRoutes);
 // Feedback APIs.
 // Public: approved feedback list. Customer: submit feedback. Admin: moderation.
 app.use("/api/feedback", FeedbackRoutes);
+app.use("/api/admin-reviews", AdminReviewRoutes);
 
 // Checkout APIs.
 // Public from the backend perspective; checkout pages control customer access in the frontend.

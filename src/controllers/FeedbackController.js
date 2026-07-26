@@ -5,6 +5,7 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const OrderItemAction = require('../models/OrderItemAction');
+const AdminReviewController = require('./AdminReviewController');
 const { generateUploadSignature, uploadBufferToCloudinary } = require('../config/cloudinary');
 const { ensureFeedbackColumns } = require('../utils/dbConstraints');
 const { exchangeTargetsOf } = require('../utils/exchangeTargets');
@@ -260,11 +261,23 @@ exports.getProductFeedback = async (req, res) => {
       order: [['created_at', 'DESC']],
     });
 
-    res.status(200).json({
+    // Real customer reviews always win. Only when a product has none do the admin's seed
+    // reviews stand in — and if there are no seed reviews either, the arrays are simply empty.
+    if (feedbacks.length) {
+      return res.status(200).json({
+        success: true,
+        data: { summary: serializeSummary(feedbacks), reviews: feedbacks },
+      });
+    }
+
+    const seedRows = await AdminReviewController.getActiveForProduct(productId);
+    const seedReviews = seedRows.map(AdminReviewController.toPublicReview);
+    return res.status(200).json({
       success: true,
       data: {
-        summary: serializeSummary(feedbacks),
-        reviews: feedbacks,
+        summary: serializeSummary(seedReviews),
+        reviews: seedReviews,
+        is_seed: seedReviews.length > 0,
       },
     });
   } catch (error) {
