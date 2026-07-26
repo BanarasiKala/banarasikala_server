@@ -312,7 +312,7 @@ const attachExchangeSwaps = async (serializedOrders = []) => {
   const productIds = [...new Set(swapsByItem.flatMap(({ targets }) => targets.map((t) => t.product_id)))];
   const products = await Product.findAll({
     where: { id: productIds },
-    attributes: ['id', 'name', 'slug', 'images'],
+    attributes: ['id', 'name', 'slug', 'images', 'status'],
   });
   const productById = new Map(products.map((p) => [Number(p.id), p]));
 
@@ -332,6 +332,7 @@ const attachExchangeSwaps = async (serializedOrders = []) => {
           product_id: target.product_id,
           product_name: product?.name || target.product_name || `Product #${target.product_id}`,
           product_slug: product?.slug || null,
+          product_active: product ? product.status === 'active' : false,
           color_name: target.color_name || null,
           quantity: target.quantity,
           image_url: pickOrderItemImage(product, target.color_id),
@@ -377,6 +378,9 @@ const serializeOrder = (order, feedbackRows = [], actionRows = []) => {
     color_hex: item.Color?.hex_code || null,
     image_url: pickOrderItemImage(item.Product, item.colorId || item.color_id),
     product_slug: item.Product?.slug || null,
+    // Only an active product is browsable — an inactive one still shows its image and name in
+    // order history, but the storefront hides it, so the client makes it non-clickable.
+    product_active: item.Product ? item.Product.status === 'active' : false,
     shipping_meta: item.shipping_meta || null,
     status: item.status || 'Active',
     // Counters derived from action rows (the columns were dropped in V2).
@@ -1132,7 +1136,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price', 'status'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
               { model: OrderItemAction, separate: true },
             ],
@@ -1267,7 +1271,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price', 'status'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
               { model: OrderItemAction, separate: true },
             ],
@@ -1446,7 +1450,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price', 'status'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
               { model: OrderItemAction, separate: true },
             ],
@@ -1500,7 +1504,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price', 'status'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
               { model: OrderItemAction, separate: true },
             ],
@@ -1546,7 +1550,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price', 'status'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
             ],
           },
@@ -1813,7 +1817,7 @@ class OrderController {
           {
             model: OrderItem,
             include: [
-              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price'] },
+              { model: Product, attributes: ['id', 'name', 'slug', 'images', 'mrp_price', 'status'] },
               { model: Color, attributes: ['id', 'name', 'slug', 'hex_code'] },
             ],
           },
