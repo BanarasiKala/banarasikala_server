@@ -640,10 +640,13 @@ class ProductService {
           { name: { [Op.iLike]: `%${word}%` } },
           { short_description: { [Op.iLike]: `%${word}%` } },
           { description: { [Op.iLike]: `%${word}%` } },
-          { "$Material.name$": { [Op.iLike]: `%${word}%` } },
-          { "$Material.description$": { [Op.iLike]: `%${word}%` } },
-          { "$Variety.name$": { [Op.iLike]: `%${word}%` } },
-          { "$Variety.description$": { [Op.iLike]: `%${word}%` } },
+          // Material/Variety are belongsToMany with no `as`, so the joined aliases Sequelize
+          // emits are the PLURALS. Referencing "Material"/"Variety" here produced a
+          // "missing FROM-clause entry" error on every search request.
+          { "$Materials.name$": { [Op.iLike]: `%${word}%` } },
+          { "$Materials.description$": { [Op.iLike]: `%${word}%` } },
+          { "$Varieties.name$": { [Op.iLike]: `%${word}%` } },
+          { "$Varieties.description$": { [Op.iLike]: `%${word}%` } },
           literal(`similarity("Product"."name", ${safeWord}) > 0.1`),
           literal(`similarity("Product"."short_description", ${safeWord}) > 0.1`),
           literal(`EXISTS (SELECT 1 FROM ${colorTable} WHERE id::text IN (SELECT jsonb_object_keys("Product"."color_stocks")) AND (name ILIKE ${safeLike} OR description ILIKE ${safeLike}))`),
