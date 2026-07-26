@@ -30,6 +30,13 @@ const userFacingMessage = (error, fallback) => {
   if (raw.includes("Choose at least one payment option")) return raw;
   if (raw.includes("Choose at least one return/exchange option")) return raw;
   if (raw.includes("Product not found")) return "Product not found.";
+  // Descriptive delete blockers (product referenced by orders / carts) pass through verbatim.
+  if (raw.includes("can't be deleted because")) return raw;
+  // Safety net: any other foreign-key violation on delete gets an honest reason, not the
+  // generic fallback.
+  if (error.name === "SequelizeForeignKeyConstraintError") {
+    return "This product can't be deleted because other records still reference it (for example past orders or a customer's cart). Set it to Inactive instead to hide it from the store.";
+  }
 
   return fallback;
 };

@@ -5,6 +5,8 @@ const Occasion = require("../models/Occasion");
 const Color = require("../models/Color");
 const Feedback = require("../models/Feedback");
 const AdminReview = require("../models/AdminReview");
+const OrderItem = require("../models/OrderItem");
+const Cart = require("../models/Cart");
 const { Op, fn, col, literal } = require("sequelize");
 const { sequelize } = require("../config/db");
 const { formatProductCode, formatVariantItemCode } = require("../utils/codes");
@@ -1036,6 +1038,31 @@ class ProductService {
   async deleteProduct(id) {
     const product = await Product.findByPk(id);
     if (!product) throw new Error("Product not found");
+
+    // A product that appears in any order can't be hard-deleted: order_items.product_id is
+    // ON DELETE NO ACTION, so Postgres would reject the DELETE, and forcing it would orphan
+    // order history and invoices. We check the real blockers up front so the admin sees exactly
+    // why — a raw FK violation would otherwise surface as a generic "Could not delete product".
+    const orderedCount = await OrderItem.count({ where: { product_id: id } });
+    if (orderedCount > 0) {
+      throw new Error(
+        `"${product.name}" can't be deleted because it appears in ${orderedCount} past order `
+        + `line${orderedCount === 1 ? "" : "s"}. Deleting it would break those orders and their `
+        + `invoices. Set the product to Inactive instead — it disappears from the store while the `
+        + `order history stays intact.`,
+      );
+    }
+
+    // The cart FK is NO ACTION too, so a product sitting in a live cart also blocks deletion.
+    const cartCount = await Cart.count({ where: { productId: id } });
+    if (cartCount > 0) {
+      throw new Error(
+        `"${product.name}" can't be deleted because it's currently in ${cartCount} customer `
+        + `cart${cartCount === 1 ? "" : "s"}. It can be deleted once those carts are cleared, or `
+        + `set it to Inactive to hide it from the store now.`,
+      );
+    }
+
     // Remove all associated media from S3 / Cloudinary before deleting the row.
     cleanupOrphanedMedia({
       videos: mediaUrls(product.videos),
