@@ -601,6 +601,65 @@ class EmailService {
       console.error('Error sending OTP email:', error);
     }
   }
+
+  /**
+   * "It's back in stock" — sent to a customer who asked to be notified, when the admin restocks
+   * the product and triggers the send from the Products screen.
+   */
+  async sendBackInStock(toEmail, name, product) {
+    if (!toEmail) return;
+    const supportEmail = config.supportEmail || config.emailUser;
+    const storeUrl = (config.frontendUrl || 'https://banarasikala.com').replace(/\/$/, '');
+    const productUrl = product?.slug ? `${storeUrl}/product/${product.slug}` : `${storeUrl}/collection`;
+
+    const images = Array.isArray(product?.images) ? product.images : [];
+    const cover = images.find((i) => i.is_cover) || images[0] || null;
+    const imageUrl = cover?.url || cover?.image_url || '';
+    const sell = Number(product?.selling_price || 0);
+    const mrp = Number(product?.mrp_price || 0);
+
+    const body = `
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e8e8e6;margin-top:8px;">
+              <tr><td style="padding-top:22px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    ${imageUrl ? `<td width="96" valign="top" style="padding-right:16px;">
+                      <img src="${esc(imageUrl)}" width="96" alt="${esc(product?.name || '')}" style="display:block;width:96px;height:auto;border-radius:8px;border:1px solid #eee;" />
+                    </td>` : ''}
+                    <td valign="top">
+                      <div style="font-size:15px;font-weight:700;color:#222;line-height:1.4;">${esc(product?.name || 'Your saree')}</div>
+                      ${sell > 0 ? `<div style="font-size:14px;color:#800020;font-weight:700;padding-top:6px;">${money(sell)}${mrp > sell ? ` <span style="color:#9aa0a6;font-weight:400;text-decoration:line-through;">${money(mrp)}</span>` : ''}</div>` : ''}
+                    </td>
+                  </tr>
+                </table>
+              </td></tr>
+            </table>`;
+
+    const mailOptions = {
+      from: `"Banarasi Kala" <${config.emailUser}>`,
+      to: toEmail,
+      replyTo: supportEmail,
+      subject: `Back in stock: ${product?.name || 'the saree you wanted'} | Banarasi Kala`,
+      html: emailShell({
+        orderNumber: '',
+        heading: 'It’s back in stock!',
+        intro: `Hi ${esc(name || 'there')}, good news — <strong>${esc(product?.name || 'the piece you wanted')}</strong> is available again. Our handwoven pieces are limited, so we’d hate for you to miss it a second time.`,
+        ctaLabel: 'Shop it now',
+        ctaUrl: esc(productUrl),
+        body,
+        supportEmail: esc(supportEmail),
+        storeUrl: esc(storeUrl),
+        preheader: `${product?.name || 'The saree you wanted'} is back in stock.`,
+      }),
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+      console.log(`Back-in-stock email sent to ${toEmail}`);
+    } catch (error) {
+      console.error('Error sending back-in-stock email:', error);
+    }
+  }
 }
 
 module.exports = new EmailService();
