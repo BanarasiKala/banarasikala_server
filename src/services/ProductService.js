@@ -550,15 +550,19 @@ class ProductService {
     if (view === "collection") queryOptions.attributes = COLLECTION_PRODUCT_ATTRIBUTES;
 
     // Manual storefront arrangement takes precedence on the surfaces that support it.
-    // New Arrivals -> new_arrival_order, Exclusive Picks (home) -> exclusive_order,
+    // New Arrivals -> new_arrival_order, Exclusive Picks -> exclusive_order,
     // Collection default sort -> collection_order. The collection page sends an empty
     // sortBy by default, which resolves to "newest" here; explicit price/special sorts
     // chosen by the shopper bypass the manual order. Null positions fall back to the
     // default ordering applied below.
+    //
+    // Both curated sets key off the FILTER, not the view, so the collection page reached from
+    // a home rail's "View All" repeats that rail's arrangement instead of falling through to
+    // collection_order and reshuffling the same sarees.
     const manualOrderColumn =
       newArrival === "true"
         ? "new_arrival_order"
-        : view === "home"
+        : specialCollection === "true" || view === "home"
           ? "exclusive_order"
           : view === "collection" && sortBy === "newest"
             ? "collection_order"
