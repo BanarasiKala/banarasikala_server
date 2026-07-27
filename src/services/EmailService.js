@@ -1,6 +1,7 @@
 const nodemailer = require('nodemailer');
 const dns = require('dns');
 const { config } = require('../config/env');
+const { buildPreferenceUrl } = require('../utils/emailPreferenceToken');
 const OrderItem = require('../models/OrderItem');
 const Product = require('../models/Product');
 
@@ -108,6 +109,11 @@ const emailShell = ({
   orderNumber = '', placedLabel = '', heading = '', intro = '',
   ctaLabel = '', ctaUrl = '', banner = '', body = '',
   supportEmail = '', storeUrl = '', preheader = '',
+  // Set ONLY on optional mail — newsletters and back-in-stock alerts. Transactional mail
+  // (order confirmations, verification, OTPs) deliberately omits it: those are part of a
+  // purchase the customer asked for, and offering to switch them off would be a promise we
+  // could not keep while an order is live.
+  unsubscribeUrl = '',
 }) => `<!doctype html>
 <html>
 <head>
@@ -186,12 +192,29 @@ const emailShell = ({
       </table>
       <div style="font-size:11px;color:#9aa0a6;padding:16px 10px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
         &copy; ${new Date().getFullYear()} <span class="brand-name" style="font-family:'Cinzel',Georgia,serif;letter-spacing:0.04em;">Banarasi Kala</span> &middot; Handwoven in Varanasi
+        ${unsubscribeUrl ? `<br /><span style="display:inline-block;padding-top:8px;">You are receiving this because you asked us to email you.<br />
+        <a href="${unsubscribeUrl}" style="color:#6b7177;text-decoration:underline;">Unsubscribe or manage your email preferences</a></span>` : ''}
       </div>
     </td>
   </tr>
 </table>
 </body>
 </html>`;
+
+/**
+ * RFC 8058 / RFC 2369 headers. Gmail and Outlook render their own "Unsubscribe" control next
+ * to the sender when these are present, which is both what subscribers reach for first and
+ * what the mailbox providers grade sender reputation on — a visible unsubscribe is what stops
+ * people reporting the mail as spam instead.
+ */
+const listUnsubscribeHeaders = (toEmail) => {
+  const url = buildPreferenceUrl(toEmail);
+  if (!url) return undefined;
+  return {
+    'List-Unsubscribe': `<${url}>`,
+    'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+  };
+};
 
 /** Rupees, always two decimals. A blank cell on a receipt reads as "we don't know". */
 const money = (value) => `Rs. ${Number(value || 0).toLocaleString('en-IN', {
@@ -650,7 +673,9 @@ class EmailService {
         supportEmail: esc(supportEmail),
         storeUrl: esc(storeUrl),
         preheader: `${product?.name || 'The saree you wanted'} is back in stock.`,
+        unsubscribeUrl: esc(buildPreferenceUrl(toEmail) || ''),
       }),
+      headers: listUnsubscribeHeaders(toEmail),
     };
 
     try {
@@ -658,6 +683,86 @@ class EmailService {
       console.log(`Back-in-stock email sent to ${toEmail}`);
     } catch (error) {
       console.error('Error sending back-in-stock email:', error);
+    }
+  }
+
+  /**
+   * One campaign email to one subscriber. Throws on failure rather than swallowing it, because
+   * the caller counts successes and failures across the batch — a silent catch here would
+   * report every send as delivered.
+   */
+  async sendNewsletterCampaign(toEmail, campaign) {
+    if (!toEmail) throw new Error('No recipient');
+    const supportEmail = config.supportEmail || config.emailUser;
+    const storeUrl = (config.frontendUrl || 'https://banarasikala.com').replace(/\/$/, '');
+
+    // Author-written copy, so newlines become paragraphs and everything is escaped — a stray
+    // angle bracket in the intro must never be able to break the surrounding markup.
+    const paragraphs = String(campaign.body || '')
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean)
+      .map((block) => `<p style="margin:0 0 14px;font-size:14px;color:#3a241b;line-height:1.7;">${esc(block).replace(/\n/g, '<br />')}</p>`)
+      .join('');
+
+    const body = paragraphs
+      ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e8e8e6;margin-top:8px;">
+           <tr><td style="padding-top:22px;">${paragraphs}</td></tr>
+         </table>`
+      : '';
+
+    await transporter.sendMail({
+      from: `"Banarasi Kala" <${config.emailUser}>`,
+      to: toEmail,
+      replyTo: supportEmail,
+      subject: campaign.subject,
+      html: emailShell({
+        heading: esc(campaign.heading),
+        intro: esc(campaign.intro).replace(/\n/g, '<br />'),
+        ctaLabel: campaign.cta_label ? esc(campaign.cta_label) : '',
+        ctaUrl: campaign.cta_url ? esc(campaign.cta_url) : '',
+        body,
+        supportEmail: esc(supportEmail),
+        storeUrl: esc(storeUrl),
+        preheader: esc(campaign.intro).slice(0, 140),
+        unsubscribeUrl: esc(buildPreferenceUrl(toEmail) || ''),
+      }),
+      headers: listUnsubscribeHeaders(toEmail),
+    });
+  }
+
+  /**
+   * Confirms a newsletter signup — and is the vehicle that puts a working unsubscribe link in
+   * the subscriber's hands immediately, rather than making them wait for the first campaign.
+   */
+  async sendNewsletterWelcome(toEmail) {
+    if (!toEmail) return;
+    const supportEmail = config.supportEmail || config.emailUser;
+    const storeUrl = (config.frontendUrl || 'https://banarasikala.com').replace(/\/$/, '');
+
+    const mailOptions = {
+      from: `"Banarasi Kala" <${config.emailUser}>`,
+      to: toEmail,
+      replyTo: supportEmail,
+      subject: 'You are on the list | Banarasi Kala',
+      html: emailShell({
+        heading: 'Welcome to Banarasi Kala',
+        intro: 'Thank you for subscribing. You will be among the first to hear about new arrivals, exclusive pieces and offers — and we will only write when there is something worth your time.',
+        ctaLabel: 'Explore the collection',
+        ctaUrl: esc(`${storeUrl}/collection`),
+        supportEmail: esc(supportEmail),
+        storeUrl: esc(storeUrl),
+        preheader: 'You are subscribed to Banarasi Kala.',
+        unsubscribeUrl: esc(buildPreferenceUrl(toEmail) || ''),
+      }),
+      headers: listUnsubscribeHeaders(toEmail),
+    };
+
+    try {
+      await transporter.sendMail(mailOptions);
+      console.log(`Newsletter welcome email sent to ${toEmail}`);
+    } catch (error) {
+      console.error('Error sending newsletter welcome email:', error);
     }
   }
 }

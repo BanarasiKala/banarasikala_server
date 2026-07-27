@@ -9,4 +9,10 @@ router.post('/subscribe', NewsletterController.subscribe);
 // Admin only — view all subscribers
 router.get('/subscribers', authMiddleware, adminMiddleware, NewsletterController.getAll);
 
+// Admin only — compose and send campaigns. `test` exists so the real email can be checked in
+// a real inbox before it goes to the whole list; there is no recalling a send.
+router.get('/campaigns', authMiddleware, adminMiddleware, NewsletterController.listCampaigns);
+router.post('/campaigns/test', authMiddleware, adminMiddleware, NewsletterController.sendTest);
+router.post('/campaigns/send', authMiddleware, adminMiddleware, NewsletterController.sendCampaign);
+
 module.exports = router;

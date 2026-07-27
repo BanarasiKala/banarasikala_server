@@ -31,6 +31,7 @@ const CustomerAddressRoutes = require("./routes/CustomerAddressRoutes");
 const ContactRoutes = require("./routes/ContactRoutes");
 const SupportRoutes = require("./routes/SupportRoutes");
 const NewsletterRoutes = require("./routes/NewsletterRoutes");
+const EmailPreferenceRoutes = require("./routes/EmailPreferenceRoutes");
 const ChatBotRoutes = require("./routes/ChatBotRoutes");
 const ReelRoutes = require("./routes/ReelRoutes");
 const StatsRoutes = require("./routes/StatsRoutes");
@@ -259,6 +260,10 @@ app.use("/api/support", SupportRoutes);
 
 // Newsletter subscription — public subscribe, admin list
 app.use("/api/newsletter", NewsletterRoutes);
+
+// Email preference centre — reached from the unsubscribe link in a marketing email, so it is
+// public and authorised by the signed token in the link rather than by a session.
+app.use("/api/email-preferences", EmailPreferenceRoutes);
 
 // ChatBot — public, no auth required
 app.use("/api/chatbot", ChatBotRoutes);
