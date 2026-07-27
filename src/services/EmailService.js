@@ -705,9 +705,19 @@ class EmailService {
       .map((block) => `<p style="margin:0 0 14px;font-size:14px;color:#3a241b;line-height:1.7;">${esc(block).replace(/\n/g, '<br />')}</p>`)
       .join('');
 
-    const body = paragraphs
+    // A feature mail (exclusive pick / new arrival) carries the saree's photograph; a coupon
+    // or manual campaign has none and simply omits the block.
+    const hero = campaign.image_url
+      ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+           <tr><td style="padding-top:22px;">
+             <img src="${esc(campaign.image_url)}" width="536" alt="${esc(campaign.heading || '')}" style="display:block;width:100%;max-width:536px;height:auto;border-radius:10px;border:1px solid #eee;" />
+           </td></tr>
+         </table>`
+      : '';
+
+    const body = (hero || paragraphs)
       ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e8e8e6;margin-top:8px;">
-           <tr><td style="padding-top:22px;">${paragraphs}</td></tr>
+           <tr><td style="padding-top:${hero ? '0' : '22px'};">${hero}${paragraphs ? `<div style="padding-top:22px;">${paragraphs}</div>` : ''}</td></tr>
          </table>`
       : '';
 
