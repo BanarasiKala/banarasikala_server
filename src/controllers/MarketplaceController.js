@@ -21,6 +21,19 @@ const MarketplaceController = {
     }
   },
 
+  // Everything the single /marketplace page renders: every channel, plus every product
+  // that is listed on at least one of them carrying all of its badges.
+  async showcase(req, res) {
+    try {
+      const limit = Math.min(Math.max(toInt(req.query.limit, 60), 1), 100);
+      const offset = Math.max(toInt(req.query.offset, 0), 0);
+      res.json(await MarketplaceService.getShowcase({ limit, offset }));
+    } catch (error) {
+      logError('showcase', error);
+      res.status(500).json({ message: 'Could not load the marketplace page.' });
+    }
+  },
+
   async getPage(req, res) {
     try {
       const limit = Math.min(Math.max(toInt(req.query.limit, 60), 1), 100);

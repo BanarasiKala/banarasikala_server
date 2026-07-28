@@ -20,6 +20,8 @@ router.put("/admin/product/:productId/links", ...admin, MarketplaceController.sa
 
 // ─── Public ──────────────────────────────────────────────────────────────────
 router.get("/", MarketplaceController.list);
+// One page for every channel — must sit above /:slug so it is not read as a slug.
+router.get("/showcase", MarketplaceController.showcase);
 // Two segments, so it cannot be swallowed by the one-segment /:slug below.
 router.get("/product/:productId", MarketplaceController.linksForProduct);
 router.get("/:slug", MarketplaceController.getPage);

@@ -104,6 +104,95 @@ const getMarketplacePage = async (slug, { limit = 60, offset = 0 } = {}) => {
   };
 };
 
+/**
+ * Everything the single /marketplace page needs, in one request.
+ *
+ * The storefront used to be a page per channel; it is now one page listing every channel
+ * and every product beneath them, so a product appears ONCE carrying the badges of all the
+ * marketplaces it is on rather than being repeated per channel.
+ *
+ * One query for the links with both parents joined, then grouped in memory — the
+ * alternative is a query per product, and this page shows the whole catalogue.
+ */
+const getShowcase = async ({ limit = 60, offset = 0 } = {}) => {
+  const marketplaces = await Marketplace.findAll({
+    where: { status: { [Op.in]: ["live", "coming_soon"] } },
+    order: [["display_order", "ASC"], ["name", "ASC"]],
+  });
+
+  const liveIds = marketplaces.filter((m) => m.status === "live").map((m) => m.id);
+  if (liveIds.length === 0) {
+    return { marketplaces: marketplaces.map(serializeMarketplace), products: [], total: 0, hasMore: false };
+  }
+
+  // Distinct products first, so paging counts products rather than links — a saree on
+  // both Amazon and Flipkart is one card, not two.
+  const { rows: pageRows, count } = await Product.findAndCountAll({
+    where: { status: "active" },
+    attributes: PRODUCT_CARD_ATTRIBUTES,
+    include: [
+      {
+        model: ProductMarketplaceLink,
+        attributes: [],
+        where: { is_active: true, marketplace_id: { [Op.in]: liveIds } },
+        required: true,
+      },
+    ],
+    group: ["Product.id"],
+    order: [["id", "DESC"]],
+    limit,
+    offset,
+    subQuery: false,
+  });
+
+  const productIds = pageRows.map((p) => p.id);
+  const links = productIds.length
+    ? await ProductMarketplaceLink.findAll({
+        where: { product_id: { [Op.in]: productIds }, is_active: true, marketplace_id: { [Op.in]: liveIds } },
+        include: [{ model: Marketplace, attributes: ["id", "slug", "name", "icon", "accent_color"] }],
+      })
+    : [];
+
+  const linksByProduct = new Map();
+  for (const row of links) {
+    const plain = row.get({ plain: true });
+    const bucket = linksByProduct.get(plain.product_id) || [];
+    bucket.push({
+      slug: plain.Marketplace.slug,
+      name: plain.Marketplace.name,
+      icon: plain.Marketplace.icon,
+      accent_color: plain.Marketplace.accent_color,
+      url: plain.url,
+    });
+    linksByProduct.set(plain.product_id, bucket);
+  }
+
+  const products = pageRows.map((row) => {
+    const plain = row.get({ plain: true });
+    const images = Array.isArray(plain.images) ? plain.images : [];
+    const cover = images.find((img) => img.is_cover) || images[0] || null;
+    return {
+      id: plain.id,
+      name: plain.name,
+      slug: plain.slug,
+      selling_price: plain.selling_price,
+      mrp_price: plain.mrp_price,
+      discount_percent: plain.discount_percent,
+      image: cover?.url || null,
+      links: linksByProduct.get(plain.id) || [],
+    };
+  });
+
+  // findAndCountAll with a GROUP BY returns one count row per group.
+  const total = Array.isArray(count) ? count.length : count;
+  return {
+    marketplaces: marketplaces.map(serializeMarketplace),
+    products,
+    total,
+    hasMore: offset + products.length < total,
+  };
+};
+
 // Channels a single product is listed on — powers "also available on" wherever it is
 // wanted. Only live channels, since a coming_soon one has no listing to point at.
 const listLinksForProduct = async (productId) => {
@@ -399,6 +488,7 @@ const bulkAttach = async (marketplaceId, rows = []) => {
 module.exports = {
   listPublicMarketplaces,
   getMarketplacePage,
+  getShowcase,
   listLinksForProduct,
   listAllMarketplaces,
   createMarketplace,
