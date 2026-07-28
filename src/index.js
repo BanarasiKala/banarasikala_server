@@ -37,6 +37,7 @@ const ReelRoutes = require("./routes/ReelRoutes");
 const StatsRoutes = require("./routes/StatsRoutes");
 const BanarasRoyaleRoutes = require("./routes/BanarasRoyaleRoutes");
 const BoxSectionRoutes = require("./routes/BoxSectionRoutes");
+const MarketplaceRoutes = require("./routes/MarketplaceRoutes");
 
 const app = express();
 
@@ -225,6 +226,7 @@ app.use("/api/occasions", OccasionRoutes);
 app.use("/api/coupons", CouponRoutes);
 app.use("/api/royale", BanarasRoyaleRoutes);
 app.use("/api/box-sections", BoxSectionRoutes);
+app.use("/api/marketplaces", MarketplaceRoutes);
 
 // Feedback APIs.
 // Public: approved feedback list. Customer: submit feedback. Admin: moderation.
