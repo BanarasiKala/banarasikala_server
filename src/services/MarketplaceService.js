@@ -282,6 +282,59 @@ const getProductLinks = async (productId) => {
 };
 
 /**
+ * Products for the admin's attach picker, with whatever is already linked to this channel.
+ *
+ * Searched server-side rather than shipping the whole catalogue to the browser and
+ * filtering there — that stops working the moment the shop has a few thousand products,
+ * and it is the same trade the products table already makes.
+ *
+ * `url` comes back on every row so the picker can show, before anything is typed, which
+ * products are already on this channel — otherwise the admin re-pastes links that are
+ * already there and cannot tell which are missing.
+ */
+const listProductsForPicker = async (marketplaceId, { search = "", limit = 30 } = {}) => {
+  const term = String(search || "").trim();
+  const where = { status: "active" };
+  if (term) {
+    where[Op.or] = [
+      { name: { [Op.iLike]: `%${term}%` } },
+      { sku: { [Op.iLike]: `%${term}%` } },
+    ];
+  }
+
+  const products = await Product.findAll({
+    where,
+    attributes: ["id", "name", "sku", "images"],
+    order: [["id", "DESC"]],
+    limit: Math.min(Math.max(Number(limit) || 30, 1), 50),
+  });
+  if (products.length === 0) return [];
+
+  const links = await ProductMarketplaceLink.findAll({
+    where: {
+      marketplace_id: marketplaceId,
+      product_id: { [Op.in]: products.map((p) => p.id) },
+    },
+    attributes: ["product_id", "url"],
+    raw: true,
+  });
+  const urlByProduct = new Map(links.map((l) => [Number(l.product_id), l.url]));
+
+  return products.map((product) => {
+    const plain = product.get({ plain: true });
+    const images = Array.isArray(plain.images) ? plain.images : [];
+    const cover = images.find((img) => img.is_cover) || images[0] || null;
+    return {
+      id: plain.id,
+      name: plain.name,
+      sku: plain.sku,
+      image: cover?.url || null,
+      url: urlByProduct.get(plain.id) || "",
+    };
+  });
+};
+
+/**
  * Bulk attach: pairs of SKU (or slug, or id) and URL, for one channel.
  *
  * Built because the alternative is opening several hundred product modals to paste one
@@ -350,5 +403,6 @@ module.exports = {
   deleteMarketplace,
   setProductLinks,
   getProductLinks,
+  listProductsForPicker,
   bulkAttach,
 };

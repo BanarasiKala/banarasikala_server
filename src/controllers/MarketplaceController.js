@@ -108,6 +108,21 @@ const MarketplaceController = {
     }
   },
 
+  // Feeds the attach picker: products matching a search, each carrying whatever is
+  // already linked to this channel.
+  async pickerProducts(req, res) {
+    try {
+      const products = await MarketplaceService.listProductsForPicker(req.params.id, {
+        search: req.query.search,
+        limit: req.query.limit,
+      });
+      res.json({ products });
+    } catch (error) {
+      logError("pickerProducts", error);
+      res.status(500).json({ message: "Could not search products." });
+    }
+  },
+
   // Partial success is the normal outcome here, so this answers 200 with a per-row
   // report rather than failing the whole paste because one line was wrong.
   async bulkAttach(req, res) {

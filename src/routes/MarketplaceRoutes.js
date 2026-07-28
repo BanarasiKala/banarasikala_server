@@ -10,7 +10,9 @@ router.get("/admin/all", ...admin, MarketplaceController.adminList);
 router.post("/admin", ...admin, MarketplaceController.create);
 router.put("/admin/:id", ...admin, MarketplaceController.update);
 router.delete("/admin/:id", ...admin, MarketplaceController.remove);
-// Paste a batch of SKU/URL pairs against one channel.
+// Search products to attach, each with its current link on this channel.
+router.get("/admin/:id/products", ...admin, MarketplaceController.pickerProducts);
+// Attach a batch of product/URL pairs against one channel.
 router.post("/admin/:id/bulk", ...admin, MarketplaceController.bulkAttach);
 // A single product's links, for the product modal.
 router.get("/admin/product/:productId/links", ...admin, MarketplaceController.productLinks);
