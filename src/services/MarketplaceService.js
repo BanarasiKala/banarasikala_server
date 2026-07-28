@@ -292,7 +292,7 @@ const getProductLinks = async (productId) => {
  * products are already on this channel — otherwise the admin re-pastes links that are
  * already there and cannot tell which are missing.
  */
-const listProductsForPicker = async (marketplaceId, { search = "", limit = 30 } = {}) => {
+const listProductsForPicker = async (marketplaceId, { search = "", limit = 1000 } = {}) => {
   const term = String(search || "").trim();
   const where = { status: "active" };
   if (term) {
@@ -306,7 +306,10 @@ const listProductsForPicker = async (marketplaceId, { search = "", limit = 30 } 
     where,
     attributes: ["id", "name", "sku", "images"],
     order: [["id", "DESC"]],
-    limit: Math.min(Math.max(Number(limit) || 30, 1), 50),
+    // The picker opens with the whole catalogue rather than a first page, so the admin
+    // can scroll to a product they cannot name. Capped at 1000 as a backstop — that is
+    // far above the current catalogue and stops a runaway payload if it ever grows.
+    limit: Math.min(Math.max(Number(limit) || 1000, 1), 1000),
   });
   if (products.length === 0) return [];
 
