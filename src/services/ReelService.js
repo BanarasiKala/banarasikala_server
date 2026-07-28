@@ -113,10 +113,29 @@ const serializeReel = (reel, { products = [], commentCount = 0, isLiked = false 
 
 // ─── Public feed ────────────────────────────────────────────────────────────
 
+/**
+ * The /reels feed, shuffled on every request.
+ *
+ * `display_order` still leads, so a reel the admin has pinned keeps its place; RANDOM()
+ * only decides the order WITHIN a tier. Today every reel sits at the default 0, so the
+ * whole feed comes back jumbled — and the moment someone does pin one, pinning still
+ * means something instead of being silently overridden by the shuffle.
+ *
+ * `created_at DESC` is gone as the tiebreak: it was the thing making the feed identical
+ * on every visit, so a viewer met the same reel first every time.
+ *
+ * Only this feed is randomised. The admin list and the product-page reels keep their
+ * deterministic order — a grid you are administering must not move under you, and a
+ * product's own reels are few enough that shuffling them says nothing.
+ *
+ * Note on paging: with RANDOM() an offset-based second page can repeat or miss rows,
+ * since each query re-rolls the order. Harmless as things stand — the client fetches one
+ * page and loops it — but a real "load more" would need a seeded ordering instead.
+ */
 const listPublishedReels = async ({ customerId = null, limit = 20, offset = 0 } = {}) => {
   const { rows, count } = await Reel.findAndCountAll({
     where: { is_published: true },
-    order: [["display_order", "ASC"], ["created_at", "DESC"]],
+    order: [["display_order", "ASC"], sequelize.random()],
     limit,
     offset,
   });
