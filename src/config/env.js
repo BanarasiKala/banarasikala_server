@@ -75,13 +75,19 @@ const config = {
   supportEmail: (process.env.SUPPORT_EMAIL || "").trim()
     || `support@${String(process.env.SMTP_USER || process.env.EMAIL_USER || "banarasikala.com").split("@")[1] || "banarasikala.com"}`,
   // Seller identity printed on the tax invoice.
+  // Printed as "Sold By" on every invoice, so these are the shop's real posted address.
+  // Set them in .env; the defaults here are only a floor so an unconfigured environment
+  // still renders a coherent invoice rather than a blank block.
   invoiceSeller: {
     name: process.env.INVOICE_SELLER_NAME || "Banarasi Kala",
-    address: process.env.INVOICE_SELLER_ADDRESS || "12/4, Vishwanath Gali, Varanasi",
-    cityState: process.env.INVOICE_SELLER_CITY_STATE || "Uttar Pradesh – 221001",
+    address: process.env.INVOICE_SELLER_ADDRESS || "Mahmoorganj, Chhitupur",
+    cityState: process.env.INVOICE_SELLER_CITY_STATE || "Varanasi, Uttar Pradesh – 221010",
     gstin: process.env.INVOICE_SELLER_GSTIN || "",
     email: process.env.INVOICE_SELLER_EMAIL || "support@banarasikala.com",
     website: process.env.INVOICE_SELLER_WEBSITE || "www.banarasikala.com",
+    // Shown in the bottom band beside the name. Derived from cityState by default so the
+    // two cannot drift apart, but overridable when the band wants something shorter.
+    shortLocation: process.env.INVOICE_SELLER_SHORT_LOCATION || "Varanasi, UP",
   },
   // GST is included in the listed price; the invoice only breaks it out.
   invoiceGstPercent: Number(process.env.INVOICE_GST_PERCENT) || 5,

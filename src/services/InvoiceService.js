@@ -1,4 +1,5 @@
 const { config } = require('../config/env');
+const { invoiceLogo, invoiceSignature } = require('../utils/invoiceAssets');
 
 /**
  * Renders a print-ready A4 tax invoice for a delivered order.
@@ -91,6 +92,15 @@ const renderInvoiceHtml = (order) => {
   const sellerGstLine = seller.gstin ? `GSTIN: ${escapeHtml(seller.gstin)}<br />` : '';
   const bandGst = seller.gstin ? ` · GSTIN: ${escapeHtml(seller.gstin)}` : '';
 
+  // Both are data URIs, and both are "" when the file is absent — the header falls back
+  // to the wordmark in type, and the footer to the "Auth / Sign" circle.
+  const logoUri = invoiceLogo();
+  const signatureUri = invoiceSignature();
+  // A signed invoice must not also claim it needs no signature.
+  const signatureNote = signatureUri
+    ? 'Digitally signed by the seller; no physical signature is required.'
+    : 'This is a computer-generated invoice and does not require a physical signature.';
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -130,6 +140,19 @@ const renderInvoiceHtml = (order) => {
       justify-content: space-between;
       gap: 24px;
       flex-shrink: 0;
+    }
+
+    /* The logo is maroon lettering on gold, and the header band behind it is maroon, so
+       the wordmark would sink into it. The cream plaque is what keeps it readable — and
+       reads as a letterhead rather than a sticker. */
+    .inv-brand-logo {
+      display: block;
+      width: 156px;
+      height: auto;
+      padding: 9px 13px;
+      border-radius: 12px;
+      background: #fffaf2;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.18);
     }
 
     .inv-brand-name {
@@ -363,6 +386,45 @@ const renderInvoiceHtml = (order) => {
     .inv-thank-text { font-size: 13px; font-weight: 600; }
     .inv-thank-sub { font-size: 10px; color: #b47a40; margin-top: 3px; }
 
+    /* Signature block. Replaces the "Auth / Sign" circle whenever a signature image has
+       been supplied (src/assets/invoice-signature.*). mix-blend-mode: multiply drops the
+       white background of a scanned signature onto the paper, so a photographed or
+       flatbed-scanned sheet does not print as a grey rectangle. */
+    .inv-sign {
+      margin-left: auto;
+      margin-top: 4px;
+      width: 168px;
+      text-align: center;
+    }
+
+    .inv-sign-img {
+      display: block;
+      width: 100%;
+      max-height: 58px;
+      object-fit: contain;
+      margin: 0 auto 2px;
+      mix-blend-mode: multiply;
+    }
+
+    .inv-sign-rule {
+      border-bottom: 1px solid #c8892a;
+      margin-bottom: 5px;
+    }
+
+    .inv-sign-label {
+      font-size: 8px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #6b0018;
+    }
+
+    .inv-sign-for {
+      font-size: 8px;
+      color: #9a7b57;
+      margin-top: 1px;
+    }
+
     .inv-seal {
       width: 56px;
       height: 56px;
@@ -441,8 +503,10 @@ const renderInvoiceHtml = (order) => {
 
     <div class="inv-header">
       <div class="inv-brand">
-        <div class="inv-brand-name">${escapeHtml(seller.name)}</div>
-        <div class="inv-brand-tagline">The Art of Banarasi Weaving</div>
+        ${logoUri
+          ? `<img class="inv-brand-logo" src="${logoUri}" alt="${escapeHtml(seller.name)}" />`
+          : `<div class="inv-brand-name">${escapeHtml(seller.name)}</div>
+        <div class="inv-brand-tagline">The Art of Banarasi Weaving</div>`}
       </div>
       <div class="inv-badge">
         <div class="inv-badge-label">Tax Invoice</div>
@@ -523,20 +587,27 @@ const renderInvoiceHtml = (order) => {
         <div class="inv-note">
           <strong>Terms &amp; Conditions</strong>
           Returns accepted within 7 days of delivery as per our return policy.<br />
-          This is a computer-generated invoice and does not require a physical signature.<br />
+          ${signatureNote}<br />
           For queries: ${escapeHtml(seller.email)}
         </div>
         <div class="inv-thank">
           <div class="inv-thank-text">Thank you for your purchase!</div>
           <div class="inv-thank-sub">Banarasi Kala — Weaving Heritage Since 2020</div>
-          <div class="inv-seal">Auth<br/>Sign</div>
+          ${signatureUri
+            ? `<div class="inv-sign">
+            <img class="inv-sign-img" src="${signatureUri}" alt="" />
+            <div class="inv-sign-rule"></div>
+            <div class="inv-sign-label">Authorised Signatory</div>
+            <div class="inv-sign-for">for ${escapeHtml(seller.name)}</div>
+          </div>`
+            : `<div class="inv-seal">Auth<br/>Sign</div>`}
         </div>
       </div>
 
     </div>
 
     <div class="inv-bottom-band">
-      <span>${escapeHtml(seller.name)} · Varanasi, UP${bandGst}</span>
+      <span>${escapeHtml(seller.name)} · ${escapeHtml(seller.shortLocation)}${bandGst}</span>
       <a href="https://${escapeHtml(seller.website)}">${escapeHtml(seller.website)}</a>
     </div>
 

@@ -239,7 +239,7 @@ exports.getApprovedFeedback = async (req, res) => {
     const feedbacks = await Feedback.findAll({
       where: { is_approved: true, product_id: { [Op.is]: null }, order_id: { [Op.is]: null } },
       include: [
-        { model: Customer, attributes: ['name'] },
+        { model: Customer, attributes: ['name', 'avatar_url'] },
         { model: Product, attributes: ['id', 'name', 'slug'] },
       ],
       order: [['created_at', 'DESC']],
@@ -273,7 +273,7 @@ exports.getProductFeedback = async (req, res) => {
 
     const feedbacks = await Feedback.findAll({
       where: { product_id: productId, is_approved: true },
-      include: [{ model: Customer, attributes: ['name'] }],
+      include: [{ model: Customer, attributes: ['name', 'avatar_url'] }],
       order: [['created_at', 'DESC']],
     });
 
