@@ -49,7 +49,7 @@ const ReelController = {
 
   async getComments(req, res) {
     try {
-      const comments = await ReelService.listApprovedComments(req.params.id);
+      const comments = await ReelService.listComments(req.params.id);
       res.json({ comments });
     } catch (error) {
       logError("getComments", error);
@@ -78,16 +78,33 @@ const ReelController = {
     }
   },
 
+  // Live on write — the response carries the finished comment so the client can put it
+  // straight into the open thread. `parent_id` makes it a reply; omit it for a new thread.
   async addComment(req, res) {
     try {
-      const result = await ReelService.addComment(req.params.id, req.user.id, req.body.comment);
-      res.status(201).json({
-        ...result,
-        message: "Comment submitted and awaiting approval.",
-      });
+      const comment = await ReelService.addComment(
+        req.params.id,
+        req.user.id,
+        req.body.comment,
+        req.body.parent_id
+      );
+      res.status(201).json({ comment });
     } catch (error) {
       logError("addComment", error);
-      res.status(400).json({ message: error.message || "Could not submit comment." });
+      res.status(400).json({ message: error.message || "Could not post comment." });
+    }
+  },
+
+  // Removing your own comment. 403 rather than 404 when it belongs to someone else:
+  // the row exists, the caller simply may not touch it.
+  async deleteOwnComment(req, res) {
+    try {
+      const result = await ReelService.deleteOwnComment(req.params.commentId, req.user.id);
+      res.json(result);
+    } catch (error) {
+      const forbidden = /only delete your own/i.test(error.message || "");
+      logError("deleteOwnComment", error);
+      res.status(forbidden ? 403 : 400).json({ message: error.message || "Could not delete comment." });
     }
   },
 
@@ -143,23 +160,13 @@ const ReelController = {
     }
   },
 
-  async pendingComments(req, res) {
+  async listComments(req, res) {
     try {
-      const comments = await ReelService.listPendingComments();
+      const comments = await ReelService.listAllComments({ limit: req.query.limit });
       res.json({ comments });
     } catch (error) {
-      logError("pendingComments", error);
-      res.status(500).json({ message: "Could not load pending comments." });
-    }
-  },
-
-  async approveComment(req, res) {
-    try {
-      const result = await ReelService.approveComment(req.params.commentId);
-      res.json(result);
-    } catch (error) {
-      logError("approveComment", error);
-      res.status(400).json({ message: error.message || "Could not approve comment." });
+      logError("listComments", error);
+      res.status(500).json({ message: "Could not load comments." });
     }
   },
 
