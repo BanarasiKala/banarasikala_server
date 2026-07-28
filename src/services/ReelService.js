@@ -214,6 +214,9 @@ const serializeComment = (row) => {
     created_at: plain.created_at,
     parent_id: plain.parent_id ?? null,
     author: plain.Customer?.name || "Guest",
+    // Null for the many customers who never set one — the client falls back to the
+    // initial rather than shipping a stock silhouette for most of the thread.
+    author_avatar: plain.Customer?.avatar_url || null,
     // The client marks the reader's own comments; it never renders the id itself.
     author_id: plain.customer_id,
   };
@@ -261,7 +264,7 @@ const addComment = async (reelId, customerId, text, parentId = null) => {
   // Returned in full so the client can drop it straight into the open thread. It is live
   // the moment it is written, so there is nothing to wait for and nothing to re-fetch.
   const withAuthor = await ReelComment.findByPk(created.id, {
-    include: [{ model: Customer, attributes: ["id", "name"] }],
+    include: [{ model: Customer, attributes: ["id", "name", "avatar_url"] }],
   });
   return serializeComment(withAuthor);
 };
@@ -277,7 +280,7 @@ const listComments = async (reelId) => {
   const rows = await ReelComment.findAll({
     where: { reel_id: reelId },
     order: [["created_at", "ASC"]],
-    include: [{ model: Customer, attributes: ["id", "name"] }],
+    include: [{ model: Customer, attributes: ["id", "name", "avatar_url"] }],
   });
 
   const roots = [];
