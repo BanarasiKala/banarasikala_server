@@ -1,16 +1,27 @@
 const AdminReview = require('../models/AdminReview');
+const { sequelize } = require('../config/db');
 
 // The table is created lazily the first time this controller (or the storefront fallback) runs
 // — CREATE TABLE IF NOT EXISTS, never altering an existing one, matching how other bolt-on
 // tables self-create in this codebase (global schema sync is off; see config/db.js). Memoised
 // so it runs once per process; on failure the promise is cleared so a later call can retry.
+//
+// Columns added AFTER the table first shipped need their own ALTER: sync({ force: false }) is
+// CREATE TABLE IF NOT EXISTS and does nothing at all to a table that already exists, so a new
+// model attribute would be missing on every deployment that ran the old code. The ALTER is
+// IF NOT EXISTS, so it is a no-op on a fresh table sync just created.
 let ensured = null;
 const ensureTable = () => {
   if (!ensured) {
-    ensured = AdminReview.sync({ force: false }).catch((error) => {
-      ensured = null;
-      throw error;
-    });
+    ensured = AdminReview.sync({ force: false })
+      .then(() => sequelize.query(
+        `ALTER TABLE "${AdminReview.options.schema}"."${AdminReview.options.tableName}" `
+        + `ADD COLUMN IF NOT EXISTS "is_verified" BOOLEAN NOT NULL DEFAULT FALSE`,
+      ))
+      .catch((error) => {
+        ensured = null;
+        throw error;
+      });
   }
   return ensured;
 };
@@ -51,6 +62,7 @@ const toPublicReview = (row) => ({
   images: Array.isArray(row.images) ? row.images : [],
   Customer: { name: row.reviewer_name },
   created_at: row.review_date || row.created_at,
+  is_verified: Boolean(row.is_verified),
   is_seed: true,
 });
 
@@ -115,6 +127,7 @@ exports.create = async (req, res) => {
       review_date: req.body.review_date ? new Date(req.body.review_date) : null,
       display_order: toInt(req.body.display_order) ?? 0,
       is_active: req.body.is_active === undefined ? true : Boolean(req.body.is_active),
+      is_verified: Boolean(req.body.is_verified),
     });
     return res.status(201).json({ success: true, data: row });
   } catch (error) {
@@ -149,6 +162,7 @@ exports.update = async (req, res) => {
     if (req.body.review_date !== undefined) row.review_date = req.body.review_date ? new Date(req.body.review_date) : null;
     if (req.body.display_order !== undefined) row.display_order = toInt(req.body.display_order) ?? 0;
     if (req.body.is_active !== undefined) row.is_active = Boolean(req.body.is_active);
+    if (req.body.is_verified !== undefined) row.is_verified = Boolean(req.body.is_verified);
 
     await row.save();
     return res.status(200).json({ success: true, data: row });
@@ -168,6 +182,35 @@ exports.remove = async (req, res) => {
   } catch (error) {
     console.error('AdminReview delete error:', error);
     return res.status(500).json({ success: false, message: 'Failed to delete review.' });
+  }
+};
+
+/**
+ * Set the Verified Buyer badge on every seed review at once — for one product when a
+ * `productId` is given, otherwise across the catalogue.
+ *
+ * Toggling thirty seed reviews one at a time is the kind of task that gets abandoned halfway,
+ * which leaves a product showing some badged reviews and some not for no reason a shopper
+ * could infer.
+ */
+exports.setVerifiedBulk = async (req, res) => {
+  try {
+    await ensureTable();
+    const verified = Boolean(req.body.is_verified);
+    const productId = toInt(req.body.product_id ?? req.body.productId);
+
+    const [updated] = await AdminReview.update(
+      { is_verified: verified },
+      { where: productId ? { product_id: productId } : {} },
+    );
+    return res.status(200).json({
+      success: true,
+      updated,
+      message: `${updated} seed review${updated === 1 ? '' : 's'} marked ${verified ? 'verified' : 'unverified'}.`,
+    });
+  } catch (error) {
+    console.error('AdminReview bulk verify error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update reviews.' });
   }
 };
 

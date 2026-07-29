@@ -341,6 +341,57 @@ exports.approveFeedback = async (req, res) => {
   }
 };
 
+/**
+ * Turn the "Verified Buyer" badge on or off for one customer review.
+ *
+ * Every row here IS from a delivered order, so the flag starts true and this exists for the
+ * exceptions — a review the admin has reason to show without vouching for it.
+ */
+exports.setFeedbackVerified = async (req, res) => {
+  try {
+    await ensureFeedbackColumns();
+    const feedback = await Feedback.findByPk(req.params.id);
+    if (!feedback) {
+      return res.status(404).json({ success: false, message: 'Feedback not found' });
+    }
+
+    feedback.is_verified = Boolean(req.body.is_verified);
+    await feedback.save();
+
+    return res.status(200).json({ success: true, data: { id: feedback.id, is_verified: feedback.is_verified } });
+  } catch (error) {
+    console.error('Set feedback verified error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update the verified badge' });
+  }
+};
+
+/**
+ * Set the badge across every customer review at once, or every review of one product.
+ *
+ * The one-at-a-time route is unusable at catalogue scale, and a half-finished pass is worse
+ * than either state: a shopper reading two badged reviews and one unbadged infers something
+ * about the unbadged one that is not true.
+ */
+exports.setFeedbackVerifiedBulk = async (req, res) => {
+  try {
+    await ensureFeedbackColumns();
+    const verified = Boolean(req.body.is_verified);
+    const productId = toInt(req.body.product_id ?? req.body.productId);
+    // Product reviews only — a general site testimonial has no purchase to be verified about.
+    const where = productId ? { product_id: productId } : { product_id: { [Op.not]: null } };
+
+    const [updated] = await Feedback.update({ is_verified: verified }, { where });
+    return res.status(200).json({
+      success: true,
+      updated,
+      message: `${updated} review${updated === 1 ? '' : 's'} marked ${verified ? 'verified' : 'unverified'}.`,
+    });
+  } catch (error) {
+    console.error('Bulk feedback verified error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update the verified badges' });
+  }
+};
+
 exports.deleteFeedback = async (req, res) => {
   try {
     await ensureFeedbackColumns();

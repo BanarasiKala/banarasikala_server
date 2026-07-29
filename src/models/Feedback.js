@@ -54,6 +54,13 @@ const Feedback = sequelize.define('Feedback', {
   is_approved: {
     type: DataTypes.BOOLEAN,
     defaultValue: false
+  },
+  // Shows the "Verified Buyer" badge on the storefront. True by default: a row only exists
+  // here because a customer reviewed a product on an order that reached them.
+  is_verified: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: true
   }
 }, {
   tableName: 'feedbacks',

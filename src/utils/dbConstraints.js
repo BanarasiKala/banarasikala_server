@@ -78,6 +78,11 @@ const ensureFeedbackColumns = async () => {
     `ADD COLUMN IF NOT EXISTS "product_id" INTEGER`,
     `ADD COLUMN IF NOT EXISTS "title" VARCHAR(255)`,
     `ADD COLUMN IF NOT EXISTS "images" JSONB DEFAULT '[]'::jsonb`,
+    // Drives the "Verified Buyer" badge on the storefront. Defaults TRUE because every row in
+    // this table came from a customer reviewing a product on a delivered order — they are, by
+    // construction, a verified buyer. Admin can clear it on a specific review; the flag exists
+    // so that decision is possible, not because the default is in doubt.
+    `ADD COLUMN IF NOT EXISTS "is_verified" BOOLEAN NOT NULL DEFAULT TRUE`,
   ];
   try {
     for (const clause of columns) {

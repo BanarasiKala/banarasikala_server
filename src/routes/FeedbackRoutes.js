@@ -16,6 +16,10 @@ router.post('/general', authMiddleware, FeedbackController.submitGeneralFeedback
 // Admin routes
 router.get('/pending', authMiddleware, adminMiddleware, FeedbackController.getPendingFeedback);
 router.put('/approve/:id', authMiddleware, adminMiddleware, FeedbackController.approveFeedback);
+// Declared BEFORE '/:id' below — Express matches in order, and 'verified' would otherwise be
+// read as an id by the delete route if the paths ever converged.
+router.put('/verified/bulk', authMiddleware, adminMiddleware, FeedbackController.setFeedbackVerifiedBulk);
+router.put('/verified/:id', authMiddleware, adminMiddleware, FeedbackController.setFeedbackVerified);
 router.delete('/:id', authMiddleware, adminMiddleware, FeedbackController.deleteFeedback);
 
 module.exports = router;

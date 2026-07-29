@@ -57,6 +57,14 @@ const AdminReview = sequelize.define('AdminReview', {
     allowNull: false,
     defaultValue: true,
   },
+  // Whether this seed review carries the "Verified Buyer" badge. Unlike a real feedback row
+  // there is no purchase behind it, so there is nothing to derive it from — the admin decides
+  // per review, and the default is off.
+  is_verified: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  },
 }, {
   tableName: 'admin_reviews',
   schema: 'vns_saree',
