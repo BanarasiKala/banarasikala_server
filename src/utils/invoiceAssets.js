@@ -85,7 +85,16 @@ const invoiceLogo = () => {
   return uri;
 };
 
+// `sign.*` is listed too, and first, because that is the name the signature was actually
+// committed under. The invoice-signature.* names came first and are kept so an existing
+// deployment that used one keeps working — but a file sitting in src/assets called sign.jpeg is
+// unmistakably the signature, and silently ignoring it (which is what happened) is worse than
+// accepting either name.
 const SIGNATURE_CANDIDATES = [
+  "sign.png",
+  "sign.jpg",
+  "sign.jpeg",
+  "sign.webp",
   "invoice-signature.png",
   "invoice-signature.jpg",
   "invoice-signature.jpeg",
@@ -95,7 +104,7 @@ const SIGNATURE_CANDIDATES = [
 const invoiceSignature = () => {
   const uri = firstAvailable(SIGNATURE_CANDIDATES);
   // Not an error: a shop that has not supplied one gets the "Auth / Sign" circle.
-  if (!uri) warnOnce("signature", "no src/assets/invoice-signature.* found — invoices will print the Auth / Sign circle.");
+  if (!uri) warnOnce("signature", "no src/assets/sign.* or invoice-signature.* found — invoices will print the Auth / Sign circle.");
   return uri;
 };
 

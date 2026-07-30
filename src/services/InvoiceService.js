@@ -467,37 +467,13 @@ const renderInvoiceHtml = (order) => {
       text-decoration: none;
     }
 
-    .inv-print-bar {
-      width: 794px;
-      margin: 16px auto 0;
-      display: flex;
-      justify-content: flex-end;
-    }
-
-    .inv-print-bar button {
-      padding: 10px 22px;
-      border: 0;
-      border-radius: 8px;
-      background: #6b0018;
-      color: #ffe8b0;
-      font-family: 'Inter', sans-serif;
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-    }
-
     @media print {
       html, body { background: #fff; height: auto; }
       .page { margin: 0; box-shadow: none; width: 100%; }
-      .inv-print-bar { display: none; }
     }
   </style>
 </head>
 <body>
-
-  <div class="inv-print-bar">
-    <button type="button" onclick="window.print()">Download / Print invoice</button>
-  </div>
 
   <div class="page">
 
@@ -592,7 +568,7 @@ const renderInvoiceHtml = (order) => {
         </div>
         <div class="inv-thank">
           <div class="inv-thank-text">Thank you for your purchase!</div>
-          <div class="inv-thank-sub">Banarasi Kala — Weaving Heritage Since 2020</div>
+          <div class="inv-thank-sub">Banarasi Kala – The Promise of Quality</div>
           ${signatureUri
             ? `<div class="inv-sign">
             <img class="inv-sign-img" src="${signatureUri}" alt="" />
