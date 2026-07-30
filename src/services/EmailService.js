@@ -140,12 +140,17 @@ const emailShell = ({
   }
 </style>
 </head>
-<body style="margin:0;padding:0;background:#f6f6f4;-webkit-font-smoothing:antialiased;">
+<!-- White page, not the grey #f6f6f4 it used to be. The card is separated from the page by a
+     hairline instead of by a change of shade — the grey gutter read as a frame around the letter
+     and, on the many clients that force their own white body, showed up as two mismatched
+     backgrounds either side of it. Set on both <body> and the outer table because clients
+     disagree about which one they honour. -->
+<body style="margin:0;padding:0;background:#ffffff;-webkit-font-smoothing:antialiased;">
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${preheader}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f6f6f4;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#ffffff;">
   <tr>
     <td align="center" style="padding:24px 10px;">
-      <table role="presentation" class="m-wrap" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background:#ffffff;border-radius:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+      <table role="presentation" class="m-wrap" width="600" cellpadding="0" cellspacing="0" style="width:600px;max-width:100%;background:#ffffff;border:1px solid #ebebe8;border-radius:10px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
         <tr>
           <td style="padding:30px 32px 0;">
 

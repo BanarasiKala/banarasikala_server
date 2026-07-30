@@ -697,6 +697,25 @@ class OrderController {
 
       let discount_amount = 0;
       const itemSubtotal = Number(subtotal_amount || items.reduce((sum, item) => sum + (Number(item.price || 0) * Number(item.quantity || 1)), 0));
+      /**
+       * The MRP markdown — list price minus what was actually charged, per line.
+       *
+       * This was missing from the receipt's "You saved", which counted only the coupon, the
+       * delivery waiver and the prepaid discount. On a catalogue where almost everything is
+       * listed above its selling price, that is the largest component of the saving, so the
+       * email consistently understated it and disagreed with the order confirmation page.
+       *
+       * Deliberately mirrors getBreakdown() on the client (OrderConfirmation.jsx) and
+       * CheckoutFlow's mrpSavings: counted only where the MRP is genuinely higher than the
+       * price paid, so a product priced at or above its MRP contributes nothing rather than a
+       * negative. Read from the live product because OrderItem never snapshots an MRP.
+       */
+      const mrpSavings = items.reduce((sum, item) => {
+        const mrp = Number(productMap[item.id]?.mrp_price || 0);
+        const sell = Number(item.price || 0);
+        const qty = Math.max(1, Number(item.quantity || 1));
+        return sum + (mrp > sell ? (mrp - sell) * qty : 0);
+      }, 0);
       const actualShippingCharge = Math.max(0, Number(shipping_charge || 0));
       const actualShippingDiscount = actualShippingCharge;
       const effectiveShippingDiscountReason = actualShippingCharge > 0 ? (shipping_discount_reason || 'free_delivery') : null;
@@ -1001,7 +1020,7 @@ class OrderController {
           // final_total is already net of wallet (see above), so this is genuinely what is
           // due now — nothing for COD, the balance for prepaid.
           paidToday: normalizedPaymentMethod === 'COD' ? 0 : final_total,
-          saved: discount_amount + actualShippingDiscount + actualPaymentDiscount,
+          saved: mrpSavings + discount_amount + actualShippingDiscount + actualPaymentDiscount,
           placedAt: order.createdAt,
           shippingAddress: {
             name: orderAddress.name,
