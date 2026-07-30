@@ -95,6 +95,27 @@ const ensureFeedbackColumns = async () => {
   }
 };
 
+/**
+ * The customer-level "Verified Buyer" flag.
+ *
+ * Defaults TRUE: a customer row that has reviews is by definition someone who bought and
+ * received something. Turning this off is how an admin withholds the badge from one person
+ * across every review they have written, without hunting those reviews down one at a time.
+ */
+let customerColumnsEnsured = false;
+const ensureCustomerColumns = async () => {
+  if (customerColumnsEnsured) return;
+  try {
+    await sequelize.query(
+      `ALTER TABLE "${schema}"."customers" ADD COLUMN IF NOT EXISTS "is_verified" BOOLEAN NOT NULL DEFAULT TRUE`,
+    );
+    customerColumnsEnsured = true;
+    console.log("[DB] Customer columns ensured.");
+  } catch (error) {
+    console.warn("[DB] Could not ensure customer columns:", error.message);
+  }
+};
+
 const ensureIndexes = async () => {
   const indexes = [
     // customers
@@ -137,4 +158,10 @@ const ensureIndexes = async () => {
   console.log("[DB] Indexes ensured.");
 };
 
-module.exports = { ensureWalletConstraint, ensureProductOrderColumns, ensureFeedbackColumns, ensureIndexes };
+module.exports = {
+  ensureWalletConstraint,
+  ensureProductOrderColumns,
+  ensureFeedbackColumns,
+  ensureCustomerColumns,
+  ensureIndexes,
+};

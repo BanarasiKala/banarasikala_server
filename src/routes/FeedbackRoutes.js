@@ -15,6 +15,9 @@ router.post('/general', authMiddleware, FeedbackController.submitGeneralFeedback
 
 // Admin routes
 router.get('/pending', authMiddleware, adminMiddleware, FeedbackController.getPendingFeedback);
+// Everything, product reviews included — the public /approved above is general testimonials
+// only, which left approved product reviews unreachable from the moderation screen.
+router.get('/all', authMiddleware, adminMiddleware, FeedbackController.getAllFeedback);
 router.put('/approve/:id', authMiddleware, adminMiddleware, FeedbackController.approveFeedback);
 // Declared BEFORE '/:id' below — Express matches in order, and 'verified' would otherwise be
 // read as an id by the delete route if the paths ever converged.

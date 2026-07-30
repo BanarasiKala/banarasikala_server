@@ -7,7 +7,7 @@ const OrderItem = require('../models/OrderItem');
 const OrderItemAction = require('../models/OrderItemAction');
 const AdminReviewController = require('./AdminReviewController');
 const { generateUploadSignature, uploadBufferToCloudinary } = require('../config/cloudinary');
-const { ensureFeedbackColumns } = require('../utils/dbConstraints');
+const { ensureFeedbackColumns, ensureCustomerColumns } = require('../utils/dbConstraints');
 const { exchangeTargetsOf } = require('../utils/exchangeTargets');
 const { getSiteReviewFallback } = require('../utils/siteReviewFallback');
 
@@ -271,18 +271,27 @@ exports.getProductFeedback = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Product is required.' });
     }
 
+    await ensureCustomerColumns();
     const feedbacks = await Feedback.findAll({
       where: { product_id: productId, is_approved: true },
-      include: [{ model: Customer, attributes: ['name', 'avatar_url'] }],
+      include: [{ model: Customer, attributes: ['name', 'avatar_url', 'is_verified'] }],
       order: [['created_at', 'DESC']],
     });
 
     // Real customer reviews always win. Only when a product has none do the admin's seed
     // reviews stand in — and if there are no seed reviews either, the arrays are simply empty.
     if (feedbacks.length) {
+      // The badge is resolved HERE, not on the storefront, because it is the AND of two
+      // separate switches: the person (User Directory) and this individual review (Feedback
+      // Moderation). Either one turns it off. Sending both flags and letting the client
+      // combine them would put that rule in a place where a second caller could get it wrong.
+      const reviews = feedbacks.map((row) => ({
+        ...row.toJSON(),
+        is_verified: Boolean(row.is_verified) && row.Customer?.is_verified !== false,
+      }));
       return res.status(200).json({
         success: true,
-        data: { summary: serializeSummary(feedbacks), reviews: feedbacks },
+        data: { summary: serializeSummary(reviews), reviews },
       });
     }
 
@@ -338,6 +347,40 @@ exports.approveFeedback = async (req, res) => {
   } catch (error) {
     console.error('Approve feedback error:', error);
     res.status(500).json({ success: false, message: 'Failed to approve feedback' });
+  }
+};
+
+/**
+ * Every feedback row, for the moderation screen.
+ *
+ * The public `/approved` endpoint deliberately returns only general site testimonials — it
+ * feeds the home page, which is not about any one product. Admin was reading that same
+ * endpoint, so an approved PRODUCT review simply vanished from the moderation table the moment
+ * it was approved: visible while pending, unreachable forever after. Nothing could be edited,
+ * unverified, or removed after the fact.
+ *
+ * `?approved=true|false` filters; omitting it returns both.
+ */
+exports.getAllFeedback = async (req, res) => {
+  try {
+    await ensureFeedbackColumns();
+    const where = {};
+    if (req.query.approved === 'true') where.is_approved = true;
+    if (req.query.approved === 'false') where.is_approved = false;
+
+    const feedbacks = await Feedback.findAll({
+      where,
+      include: [
+        { model: Customer, attributes: ['name', 'email'] },
+        { model: Product, attributes: ['id', 'name', 'slug'] },
+      ],
+      order: [['created_at', 'DESC']],
+    });
+
+    return res.status(200).json({ success: true, data: feedbacks });
+  } catch (error) {
+    console.error('Get all feedback error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to fetch feedback' });
   }
 };
 

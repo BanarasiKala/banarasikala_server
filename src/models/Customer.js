@@ -62,6 +62,14 @@ const Customer = sequelize.define(
       type: DataTypes.STRING(255),
       allowNull: true,
     },
+    // Whether this person's reviews carry the "Verified Buyer" badge on the storefront. Not
+    // the same thing as email_verified / phone_verified above, which are about reaching them;
+    // this is about vouching for them publicly. Admin-controlled from User Directory.
+    is_verified: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
     referral_code: {
       type: DataTypes.STRING,
       allowNull: true,
