@@ -237,6 +237,8 @@ const totalsRow = (label, value, { strong = false, muted = false, credit = false
 const itemRowsHtml = (items = [], { struck = false } = {}) => (items || []).map((item) => {
   const qty = Number(item.quantity || 1);
   const lineTotal = Number(item.price || 0) * qty;
+  // Live product MRP, passed through from the controller; only shown when it is genuinely higher.
+  const lineMrp = Number(item.mrp_price || 0) * qty;
   const image = item.image || item.image_url || '';
   const dim = struck ? 'opacity:0.6;' : '';
   return `
@@ -253,7 +255,7 @@ const itemRowsHtml = (items = [], { struck = false } = {}) => (items || []).map(
         </div>
       </td>
       <td style="padding:0 0 18px;vertical-align:top;text-align:right;font-size:14px;color:#333;white-space:nowrap;${dim}">
-        ${money(lineTotal)}
+        ${lineMrp > lineTotal ? `<span style="color:#9aa0a6;font-size:12px;font-weight:400;">MRP: <s>${money(lineMrp)}</s></span><br />` : ''}${money(lineTotal)}
       </td>
     </tr>`;
 }).join('');
@@ -303,7 +305,7 @@ class EmailService {
     const supportEmail = config.supportEmail || config.emailUser;
 
     const {
-      subtotal = 0, couponDiscount = 0, couponCode = '',
+      subtotal = 0, mrpTotal = 0, couponDiscount = 0, couponCode = '',
       shipping = 0, shippingWaived = 0,
       platformFee = 0, codFee = 0, giftCharge = 0,
       prepaidDiscount = 0, walletUsed = 0, tax = 0,
@@ -327,14 +329,16 @@ class EmailService {
      * point of having waived it.
      */
     const lines = [
-      totalsRow('Subtotal', money(subtotal)),
+      totalsRow('Subtotal', mrpTotal > subtotal
+        ? `<span style="color:#9aa0a6;font-weight:400;">MRP: <s>${money(mrpTotal)}</s></span> ${money(subtotal)}`
+        : money(subtotal)),
       couponDiscount > 0
         ? totalsRow(`Discount${couponCode ? ` (${esc(couponCode)})` : ''}`, `-${money(couponDiscount)}`, { credit: true })
         : '',
       shipping > 0
         ? totalsRow('Delivery', money(shipping))
         : totalsRow('Delivery', shippingWaived > 0
-          ? `<span style="color:#0f7a5a;">FREE</span> <s style="color:#9aa0a6;font-weight:400;">${money(shippingWaived)}</s>`
+          ? `<s style="color:#9aa0a6;font-weight:400;">${money(shippingWaived)}</s> <span style="color:#0f7a5a;">FREE</span>`
           : '<span style="color:#0f7a5a;">FREE</span>'),
       platformFee > 0 ? totalsRow('Platform fee', money(platformFee)) : '',
       codFee > 0 ? totalsRow('Cash on Delivery fee', money(codFee)) : '',

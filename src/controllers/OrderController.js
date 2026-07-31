@@ -992,22 +992,39 @@ class OrderController {
        * both together, because that is the number the customer means by saved.
        */
       const emailShipping = Math.max(0, actualShippingCharge - actualShippingDiscount);
+      /**
+       * The delivery figure, net of the COD fee.
+       *
+       * `shipping_charge` is the courier's FULL quote and, on a COD order, that quote already
+       * contains the COD handling charge (see computeCourierShippingCharge: rate + cod_charges +
+       * orderValue x cod_multiplier). The receipt then bills that fee again on its own "Cash on
+       * Delivery fee" line — so the same money was being struck through as waived delivery AND
+       * charged, and "You saved" was inflated by it.
+       *
+       * Netted against actualCodFee (the floored fee), not the raw courier charge, because that
+       * is precisely what the COD line bills and what the confirmation page and checkout both
+       * subtract — so all three now show the same delivery number.
+       */
+      const emailDeliveryWaived = Math.max(0, actualShippingDiscount - actualCodFee);
       EmailService.sendOrderConfirmation(
         { ...order.toJSON(), total_amount: final_total },
         enrichedItems.map((item) => ({
           ...item,
           image: pickOrderItemImage(productMap[item.id], item.colorId || item.color_id),
+          mrp_price: Number(productMap[item.id]?.mrp_price || 0),
         })),
         {
           // The same figures seedPlacementLedger records, so the receipt and the ledger can
           // never tell different stories about one order.
           subtotal: itemSubtotal,
+          // List total before markdown — drives the struck MRP beside Subtotal.
+          mrpTotal: itemSubtotal + mrpSavings,
           couponDiscount: discount_amount,
           couponCode: order.coupon_code || '',
           shipping: emailShipping,
           // What delivery WOULD have cost. Drives the struck-through price beside "FREE" —
           // a waiver the customer cannot see the value of is a waiver they do not notice.
-          shippingWaived: actualShippingDiscount,
+          shippingWaived: emailDeliveryWaived,
           platformFee: actualPlatformFee,
           codFee: actualCodFee,
           giftCharge: actualGiftCharge,
@@ -1020,7 +1037,7 @@ class OrderController {
           // final_total is already net of wallet (see above), so this is genuinely what is
           // due now — nothing for COD, the balance for prepaid.
           paidToday: normalizedPaymentMethod === 'COD' ? 0 : final_total,
-          saved: mrpSavings + discount_amount + actualShippingDiscount + actualPaymentDiscount,
+          saved: mrpSavings + discount_amount + emailDeliveryWaived + actualPaymentDiscount,
           placedAt: order.createdAt,
           shippingAddress: {
             name: orderAddress.name,
