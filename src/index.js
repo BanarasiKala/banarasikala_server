@@ -38,6 +38,7 @@ const StatsRoutes = require("./routes/StatsRoutes");
 const BanarasRoyaleRoutes = require("./routes/BanarasRoyaleRoutes");
 const BoxSectionRoutes = require("./routes/BoxSectionRoutes");
 const MarketplaceRoutes = require("./routes/MarketplaceRoutes");
+const StoreInfoRoutes = require("./routes/StoreInfoRoutes");
 
 const app = express();
 
@@ -227,6 +228,10 @@ app.use("/api/coupons", CouponRoutes);
 app.use("/api/royale", BanarasRoyaleRoutes);
 app.use("/api/box-sections", BoxSectionRoutes);
 app.use("/api/marketplaces", MarketplaceRoutes);
+
+// Shop's own name/address/contact desk, read from the same config the invoice prints.
+// Public: the storefront footer and Contact page render it.
+app.use("/api/store-info", StoreInfoRoutes);
 
 // Feedback APIs.
 // Public: approved feedback list. Customer: submit feedback. Admin: moderation.
