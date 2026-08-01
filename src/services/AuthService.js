@@ -220,7 +220,7 @@ class AuthService {
     }
 
     if (!customer.password) {
-      throw new Error("This account uses Google Sign-In. Please log in with Google.");
+      throw new Error("You signed up with Google. Use the 'Continue with Google' button below to sign in.");
     }
 
     const isMatch = await bcrypt.compare(password, customer.password);
@@ -238,7 +238,7 @@ class AuthService {
   }
 
   async googleLogin(credential) {
-    if (!config.googleClientId) throw new Error("Google Sign-In is not configured.");
+    if (!config.googleClientId) throw new Error("Google sign-in is unavailable right now. Please use your email and password.");
 
     const client = new OAuth2Client(config.googleClientId);
     let payload;
@@ -249,7 +249,7 @@ class AuthService {
       });
       payload = ticket.getPayload();
     } catch {
-      throw new Error("Invalid Google credential. Please try again.");
+      throw new Error("We could not verify that Google account. Please try again.");
     }
 
     const googleId = payload.sub;
@@ -322,7 +322,7 @@ class AuthService {
     try {
       decoded = jwt.verify(pendingToken, config.jwtSecret);
     } catch {
-      throw new Error("Session expired. Please sign in with Google again.");
+      throw new Error("That took too long. Please tap 'Continue with Google' and try again.");
     }
     if (decoded.purpose !== "phone_verification") throw new Error("Invalid session token.");
 
@@ -349,7 +349,7 @@ class AuthService {
     try {
       decoded = jwt.verify(pendingToken, config.jwtSecret);
     } catch {
-      throw new Error("Session expired. Please sign in with Google again.");
+      throw new Error("That took too long. Please tap 'Continue with Google' and try again.");
     }
     if (decoded.purpose !== "phone_verification") throw new Error("Invalid session token.");
 
