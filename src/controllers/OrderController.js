@@ -38,6 +38,21 @@ const {
 const {
   ensureOrderItemActionSchema, getActionableQuantity, isDeliveredEnoughForPostDeliveryAction,
 } = require('../utils/orderItemActions');
+const { ensureRefundColumns } = require('../utils/dbConstraints');
+
+/**
+ * Proof-of-payment images, as [{ url }] — the same shape review images use, so the storefront
+ * lightbox opens them with no new component. Accepts bare URL strings too, because the admin
+ * upload widget and a manual paste produce different things. Capped at four: this is evidence
+ * of one transfer, not an album.
+ */
+const normalizeProofImages = (value) => (Array.isArray(value) ? value : [])
+  .map((image) => {
+    const url = typeof image === 'string' ? image : (image?.url || image?.secure_url);
+    return url ? { url: String(url).trim() } : null;
+  })
+  .filter(Boolean)
+  .slice(0, 4);
 const { ensureOrderTransactionTables, REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 const {
   ensureOrderModelV2Tables, SHIPMENT_TYPE, SHIPMENT_STATUS, ACTOR,
@@ -403,12 +418,24 @@ const serializeOrder = (order, feedbackRows = [], actionRows = []) => {
   json.refunds = refunds;
   const latestRefund = refunds[0] || null;
   if (latestRefund) {
+    json.refund_id = latestRefund.id;
     json.refund_status = latestRefund.status;
     json.refund_amount = latestRefund.amount;
     json.refund_note = latestRefund.note;
     json.refund_bank_details = latestRefund.bank_details;
     json.refund_payment_reference = latestRefund.gateway_refund_id;
     json.refund_processed_at = latestRefund.processed_at;
+    // What was QUOTED stays in refund_amount; these describe the post-inspection outcome.
+    // Null inspected_amount simply means nothing was adjusted.
+    json.refund_inspected_amount = latestRefund.inspected_amount;
+    json.refund_inspection_note = latestRefund.inspection_note;
+    json.refund_inspected_at = latestRefund.inspected_at;
+    json.refund_proof_images = Array.isArray(latestRefund.proof_images) ? latestRefund.proof_images : [];
+    // The single figure the customer is actually owed — the client should never have to
+    // decide which of the two to trust.
+    json.refund_payable_amount = latestRefund.inspected_amount != null
+      ? roundMoney(Number(latestRefund.inspected_amount))
+      : roundMoney(Number(latestRefund.amount || 0));
   }
   return json;
 };
@@ -1263,9 +1290,86 @@ class OrderController {
     }
   }
 
+  /**
+   * Admin: adjust a refund after physically inspecting the returned parcel.
+   *
+   * PATCH /api/orders/refunds/:refundId/inspection
+   *   { inspected_amount, inspection_note, proof_images? }
+   *
+   * ── Reduce-only ─────────────────────────────────────────────────────────────────────────
+   * The quoted `amount` is what the customer agreed to when they raised the return. Inspection
+   * can find the saree damaged or incomplete and lower it; it cannot raise it, because there is
+   * no policy under which a customer is owed more than the figure they accepted, and a silent
+   * increase would be indistinguishable from a data-entry slip.
+   *
+   * ── The note is customer-facing ─────────────────────────────────────────────────────────
+   * Required whenever the amount actually drops, and shown to them verbatim. A refund landing
+   * lighter than promised with no reason attached becomes a support ticket every time.
+   *
+   * ── Not editable once paid ──────────────────────────────────────────────────────────────
+   * After processed_at is stamped the money has left; changing the figure then would describe
+   * a payment that never happened.
+   */
+  async setRefundInspection(req, res) {
+    try {
+      await ensureRefundColumns();
+      const refund = await OrderRefund.findByPk(req.params.refundId);
+      if (!refund) return res.status(404).json({ message: 'Refund not found.' });
+      if (refund.processed_at) {
+        return res.status(400).json({ message: 'This refund has already been paid — its amount can no longer be changed.' });
+      }
+
+      const quoted = roundMoney(Number(refund.amount || 0));
+      const raw = Number(req.body.inspected_amount);
+      if (!Number.isFinite(raw) || raw < 0) {
+        return res.status(400).json({ message: 'Enter the amount to refund after inspection.' });
+      }
+      const inspected = roundMoney(raw);
+      if (inspected > quoted) {
+        return res.status(400).json({
+          message: `An inspection can only reduce the refund. The quoted amount is ${quoted.toFixed(2)}.`,
+        });
+      }
+
+      const note = String(req.body.inspection_note || '').trim();
+      if (inspected < quoted && note.length < 5) {
+        return res.status(400).json({
+          message: 'Please write the reason for the reduction — the customer is shown it beside the smaller amount.',
+        });
+      }
+
+      await refund.update({
+        inspected_amount: inspected,
+        inspection_note: note || null,
+        inspected_by: req.user?.id || null,
+        inspected_at: new Date(),
+        ...(req.body.proof_images !== undefined
+          ? { proof_images: normalizeProofImages(req.body.proof_images) }
+          : {}),
+      });
+
+      return res.status(200).json({
+        message: inspected < quoted
+          ? `Refund reduced to ${inspected.toFixed(2)} after inspection.`
+          : 'Inspection recorded — the full quoted refund stands.',
+        refund: {
+          id: refund.id,
+          amount: quoted,
+          inspected_amount: inspected,
+          inspection_note: refund.inspection_note,
+          inspected_at: refund.inspected_at,
+        },
+      });
+    } catch (error) {
+      console.error('[Order] setRefundInspection error:', error.message);
+      return res.status(500).json({ message: 'Unable to record the inspection right now.' });
+    }
+  }
+
   async updateRefundStatus(req, res) {
     try {
       await ensureOrderAccountingColumns();
+      await ensureRefundColumns();
       const order = await Order.findByPk(req.params.id);
       if (!order) return res.status(404).json({ message: 'Order not found' });
 
@@ -1283,6 +1387,11 @@ class OrderController {
         status: refundStatus,
         note: req.body.refund_note || refund.note,
         gateway_refund_id: req.body.refund_payment_reference || refund.gateway_refund_id,
+        // The transfer screenshot. A COD refund leaves no gateway trail the customer can look
+        // up for themselves, so this is the only evidence they will ever have that it was sent.
+        ...(req.body.proof_images !== undefined
+          ? { proof_images: normalizeProofImages(req.body.proof_images) }
+          : {}),
         ...(isCompleted ? { processed_at: new Date(), processed_by: req.user?.id || null } : {}),
       });
 

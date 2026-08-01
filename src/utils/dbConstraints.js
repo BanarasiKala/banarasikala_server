@@ -116,6 +116,33 @@ const ensureCustomerColumns = async () => {
   }
 };
 
+/**
+ * Post-inspection refund columns.
+ *
+ * Added after order_refunds shipped, so they need an explicit ALTER — the model's sync path is
+ * CREATE TABLE IF NOT EXISTS and does nothing at all to a table that already exists.
+ */
+let refundColumnsEnsured = false;
+const ensureRefundColumns = async () => {
+  if (refundColumnsEnsured) return;
+  const columns = [
+    `ADD COLUMN IF NOT EXISTS "inspected_amount" NUMERIC(10,2)`,
+    `ADD COLUMN IF NOT EXISTS "inspection_note" TEXT`,
+    `ADD COLUMN IF NOT EXISTS "inspected_by" INTEGER`,
+    `ADD COLUMN IF NOT EXISTS "inspected_at" TIMESTAMP WITH TIME ZONE`,
+    `ADD COLUMN IF NOT EXISTS "proof_images" JSONB DEFAULT '[]'::jsonb`,
+  ];
+  try {
+    for (const clause of columns) {
+      await sequelize.query(`ALTER TABLE "${schema}"."order_refunds" ${clause}`);
+    }
+    refundColumnsEnsured = true;
+    console.log("[DB] Refund inspection columns ensured.");
+  } catch (error) {
+    console.warn("[DB] Could not ensure refund columns:", error.message);
+  }
+};
+
 const ensureIndexes = async () => {
   const indexes = [
     // customers
@@ -163,5 +190,6 @@ module.exports = {
   ensureProductOrderColumns,
   ensureFeedbackColumns,
   ensureCustomerColumns,
+  ensureRefundColumns,
   ensureIndexes,
 };

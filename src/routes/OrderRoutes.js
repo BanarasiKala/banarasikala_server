@@ -38,6 +38,11 @@ router.post('/:orderId/item-actions', authMiddleware, OrderItemActionController.
 // Customer COD refund bank details and admin refund status.
 router.post('/:id/refund-bank-details', authMiddleware, OrderController.saveRefundBankDetails);
 router.patch('/:id/refund-status', authMiddleware, adminMiddleware, OrderController.updateRefundStatus);
+// Post-inspection adjustment. Keyed by REFUND id, not order id: an order can carry more than
+// one refund (a return and a later RTO), and only one of them is being inspected.
+// No collision with the '/:id/...' routes above — this path has three segments where those
+// have two, so Express can never confuse 'refunds' for an order id.
+router.patch('/refunds/:refundId/inspection', authMiddleware, adminMiddleware, OrderController.setRefundInspection);
 
 // Print-ready tax invoice (HTML) for a delivered order. Owner-only.
 router.get('/:id/invoice', authMiddleware, OrderController.getOrderInvoice);

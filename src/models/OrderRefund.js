@@ -79,6 +79,53 @@ const OrderRefund = sequelize.define('OrderRefund', {
     type: DataTypes.JSONB,
     allowNull: true,
   },
+  /**
+   * ── Post-inspection adjustment ────────────────────────────────────────────────────────
+   * What the customer is actually paid, once the returned saree has been opened and checked.
+   *
+   * `amount` above is the figure quoted when the return was REQUESTED and is never rewritten —
+   * the difference between the two is the audit trail, and overwriting it would erase what was
+   * promised. Null means no inspection adjustment: pay `amount`.
+   *
+   * Reduce-only, enforced in the controller. An inspection can find a saree damaged or
+   * incomplete and lower the refund; it can never raise it above what was quoted, because the
+   * quote is what the customer agreed to and a surprise increase has no policy behind it.
+   */
+  inspected_amount: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true,
+  },
+  /**
+   * Why it was reduced — WRITTEN FOR THE CUSTOMER, not for internal notes.
+   *
+   * This is shown to them verbatim beside the smaller figure. A refund that arrives lighter
+   * than promised with no reason is a support ticket every single time, so the controller
+   * requires this whenever inspected_amount is below amount.
+   */
+  inspection_note: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  inspected_by: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  inspected_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  /**
+   * Proof that the money was sent — an NEFT receipt or a UPI screenshot, as [{ url }].
+   *
+   * Same shape as review images so the storefront's existing lightbox can open them with no
+   * new component. A COD refund leaves no gateway trail the customer can look up themselves,
+   * which is exactly why the screenshot matters.
+   */
+  proof_images: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: [],
+  },
   processed_at: {
     type: DataTypes.DATE,
     allowNull: true,

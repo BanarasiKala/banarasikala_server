@@ -978,9 +978,21 @@ class OrderItemActionController {
         where: { order_item_action_id: primaryAction.id },
         transaction,
       });
+      /**
+       * What is actually paid out.
+       *
+       * inspected_amount wins when it is set: it is the figure agreed after the parcel was
+       * opened and checked, and it is what the customer has already been shown. The stored
+       * amount is the quote from request time and is never rewritten, so paying it here
+       * would settle the ledger for more than the inspection concluded — and more than the
+       * customer was told to expect.
+       */
+      const inspectedAmount = refundRow?.inspected_amount != null
+        ? roundMoney(Number(refundRow.inspected_amount))
+        : null;
       const returnRefundAmount = roundMoney(Math.max(
         0,
-        refundRow ? Number(refundRow.amount || 0) : estimateTotal,
+        inspectedAmount ?? (refundRow ? Number(refundRow.amount || 0) : estimateTotal),
       ));
 
       // LEGACY ONLY. Retaining a payment-gateway charge on a full return was reverted —
