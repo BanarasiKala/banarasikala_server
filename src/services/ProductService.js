@@ -116,6 +116,36 @@ const DISPLAY_PRICE_SQL = `(CASE
     ELSE "Product"."selling_price"
   END)`;
 
+/**
+ * The rating a product actually shows, in SQL.
+ *
+ * Deliberately the same rule attachReviewSummaries applies in JS further down: approved
+ * customer reviews decide it, and ONLY a product with none of those falls back to the
+ * admin's seed reviews. AVG returns NULL over an empty set, so COALESCE performs that
+ * fallback without needing a count.
+ *
+ * It has to be expressed in SQL rather than filtered after the fetch, because the summary
+ * is attached post-query — filtering there would run after LIMIT/OFFSET and hand back short
+ * pages and a total that disagrees with them.
+ */
+const EFFECTIVE_RATING_SQL = `COALESCE(
+    (SELECT AVG(f."rating") FROM "vns_saree"."feedbacks" f
+      WHERE f."product_id" = "Product"."id" AND f."is_approved" = true),
+    (SELECT AVG(a."rating") FROM "vns_saree"."admin_reviews" a
+      WHERE a."product_id" = "Product"."id" AND a."is_active" = true)
+  )`;
+
+// Percentage off, against MRP. Guarded so a product with no MRP — or one priced at or above
+// it — is 0% rather than a divide-by-zero or a negative "discount".
+const DISCOUNT_PERCENT_SQL = `(CASE
+    WHEN COALESCE("Product"."mrp_price", 0) > 0
+      AND "Product"."mrp_price" > "Product"."selling_price"
+    THEN ROUND(
+      (("Product"."mrp_price" - "Product"."selling_price") / "Product"."mrp_price") * 100
+    )
+    ELSE 0
+  END)`;
+
 const toIntOrNull = (value) => {
   if (value === "" || value === null || value === undefined) return null;
   const num = parseInt(value, 10);
@@ -548,6 +578,8 @@ class ProductService {
       search = "",
       minPrice,
       maxPrice,
+      minRating,
+      minDiscount,
       limit: rawLimit,
       sortBy = "newest",
       specialCollection,
@@ -642,6 +674,29 @@ class ProductService {
     };
     addPriceBound(minPriceValue, ">=");
     addPriceBound(maxPriceValue, "<=");
+
+    // "4★ & up" / "40% off & up" — both are lower bounds on a computed expression, so they
+    // go in the same Op.and list the price bounds use rather than as plain column matches.
+    const addExpressionBound = (sql, value) => {
+      if (value === null) return;
+      queryOptions.where[Op.and] = [
+        ...(Array.isArray(queryOptions.where[Op.and]) ? queryOptions.where[Op.and] : []),
+        literal(`${sql} >= ${sequelize.escape(value)}`),
+      ];
+    };
+
+    const parseBound = (value, { min, max }) => {
+      if (value === undefined || value === null || String(value).trim() === "") return null;
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed <= min) return null;
+      return Math.min(parsed, max);
+    };
+
+    // A rating bound also excludes products with no rating at all: the subquery yields NULL
+    // for those and NULL >= 4 is unknown, so they drop out — which is what "4 stars and up"
+    // should mean.
+    addExpressionBound(EFFECTIVE_RATING_SQL, parseBound(minRating, { min: 0, max: 5 }));
+    addExpressionBound(DISCOUNT_PERCENT_SQL, parseBound(minDiscount, { min: 0, max: 100 }));
 
     if (status && ["active", "inactive"].includes(String(status))) queryOptions.where.status = String(status);
     if (specialCollection === "true") {
