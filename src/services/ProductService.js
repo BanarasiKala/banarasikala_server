@@ -504,6 +504,27 @@ const sanitizeProductPayload = (data = {}) => {
 };
 
 class ProductService {
+  /**
+   * Home-shaped product cards for a set of ids, returned in the order asked for.
+   *
+   * Exists so another service can render the very card the home page renders. The
+   * marketplace listings page needs the stock, delivery and review fields that its own
+   * slimmer projection never selected, and duplicating this projection there would let
+   * the two drift apart the first time a card gains a field.
+   */
+  async getHomeCards(ids = []) {
+    if (!ids.length) return [];
+    const rows = await Product.findAll({
+      where: { id: { [Op.in]: ids } },
+      attributes: HOME_PRODUCT_ATTRIBUTES,
+    });
+    const withReviews = await attachReviewSummaries(rows.map(normalizeProduct));
+    const byId = new Map(withReviews.map((product) => [product.id, toHomeProduct(product)]));
+    // Re-ordered against `ids`: findAll gives no guarantee, and the caller's order is
+    // the paging order the reader is scrolling through.
+    return ids.map((id) => byId.get(id)).filter(Boolean);
+  }
+
   parseCommaSeparated(value) {
     if (!value) return null;
     const values = String(value)

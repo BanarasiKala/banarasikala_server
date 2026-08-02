@@ -3,6 +3,7 @@ const { sequelize } = require("../config/db");
 const Marketplace = require("../models/Marketplace");
 const ProductMarketplaceLink = require("../models/ProductMarketplaceLink");
 const Product = require("../models/Product");
+const ProductService = require("./ProductService");
 
 // What a product card on a storefront page needs. Deliberately narrow: these cards link
 // OUT to the marketplace, so nothing that drives an on-site add-to-cart is fetched.
@@ -167,21 +168,14 @@ const getShowcase = async ({ limit = 60, offset = 0 } = {}) => {
     linksByProduct.set(plain.product_id, bucket);
   }
 
-  const products = pageRows.map((row) => {
-    const plain = row.get({ plain: true });
-    const images = Array.isArray(plain.images) ? plain.images : [];
-    const cover = images.find((img) => img.is_cover) || images[0] || null;
-    return {
-      id: plain.id,
-      name: plain.name,
-      slug: plain.slug,
-      selling_price: plain.selling_price,
-      mrp_price: plain.mrp_price,
-      discount_percent: plain.discount_percent,
-      image: cover?.url || null,
-      links: linksByProduct.get(plain.id) || [],
-    };
-  });
+  // The full home-page card shape, not the slim projection above: the listings page now
+  // renders the same card the home page does, so it needs stock, delivery and review
+  // fields to drive Add to Cart / Notify Me and the delivery estimate.
+  const cards = await ProductService.getHomeCards(productIds);
+  const products = cards.map((card) => ({
+    ...card,
+    links: linksByProduct.get(card.id) || [],
+  }));
 
   // findAndCountAll with a GROUP BY returns one count row per group.
   const total = Array.isArray(count) ? count.length : count;
