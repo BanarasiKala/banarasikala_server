@@ -207,6 +207,41 @@ const listLinksForProduct = async (productId) => {
   });
 };
 
+/**
+ * The same links as listLinksForProduct, for many products in one query.
+ *
+ * Product cards appear in grids — a page can hold thirty of them — so asking per card
+ * would mean thirty round trips to draw one row of logos. This returns a map keyed by
+ * product id instead, letting a grid resolve every card from a single request.
+ *
+ * Products with no links are simply absent from the map rather than present with an
+ * empty array: the caller defaults to "no badges" anyway, and sending a key per
+ * unlisted product would be most of the payload on a catalogue that is mostly unlisted.
+ */
+const listLinksForProducts = async (productIds = []) => {
+  const ids = [...new Set(productIds.map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+  if (ids.length === 0) return {};
+
+  const rows = await ProductMarketplaceLink.findAll({
+    where: { product_id: { [Op.in]: ids }, is_active: true },
+    include: [{ model: Marketplace, where: { status: "live" }, required: true }],
+    order: [[Marketplace, "display_order", "ASC"]],
+  });
+
+  return rows.reduce((map, row) => {
+    const plain = row.get({ plain: true });
+    (map[plain.product_id] ||= []).push({
+      marketplace_id: plain.marketplace_id,
+      slug: plain.Marketplace.slug,
+      name: plain.Marketplace.name,
+      icon: plain.Marketplace.icon,
+      accent_color: plain.Marketplace.accent_color,
+      url: plain.url,
+    });
+    return map;
+  }, {});
+};
+
 // ─── Admin: channels ────────────────────────────────────────────────────────
 
 const listAllMarketplaces = async () => {
@@ -484,6 +519,7 @@ module.exports = {
   getMarketplacePage,
   getShowcase,
   listLinksForProduct,
+  listLinksForProducts,
   listAllMarketplaces,
   createMarketplace,
   updateMarketplace,

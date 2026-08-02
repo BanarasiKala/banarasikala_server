@@ -49,6 +49,23 @@ const MarketplaceController = {
     }
   },
 
+  // Links for a batch of products, so a grid of cards costs one request rather than one
+  // per card. Capped because the ids arrive in the query string and this is public.
+  async linksForProducts(req, res) {
+    try {
+      const ids = String(req.query.productIds || "")
+        .split(",")
+        .map((id) => parseInt(id, 10))
+        .filter(Number.isInteger)
+        .slice(0, 100);
+      if (ids.length === 0) return res.json({ links: {} });
+      res.json({ links: await MarketplaceService.listLinksForProducts(ids) });
+    } catch (error) {
+      logError("linksForProducts", error);
+      res.status(500).json({ message: "Could not load marketplace links." });
+    }
+  },
+
   async linksForProduct(req, res) {
     try {
       const links = await MarketplaceService.listLinksForProduct(req.params.productId);

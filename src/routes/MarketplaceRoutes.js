@@ -22,6 +22,8 @@ router.put("/admin/product/:productId/links", ...admin, MarketplaceController.sa
 router.get("/", MarketplaceController.list);
 // One page for every channel — must sit above /:slug so it is not read as a slug.
 router.get("/showcase", MarketplaceController.showcase);
+// Batch lookup for grids of product cards. Static, so it sits above /:slug.
+router.get("/links", MarketplaceController.linksForProducts);
 // Two segments, so it cannot be swallowed by the one-segment /:slug below.
 router.get("/product/:productId", MarketplaceController.linksForProduct);
 router.get("/:slug", MarketplaceController.getPage);
