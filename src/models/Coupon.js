@@ -95,6 +95,14 @@ const Coupon = sequelize.define(
       defaultValue: false,
       comment: "Show this coupon on homepage",
     },
+    // Whether the storefront prints "Valid till …" / "Ends in …" on the coupon card.
+    // Defaults false: an expiry is a promise to the customer, so showing one is a decision
+    // the admin makes per coupon rather than something every coupon starts out doing.
+    show_validity: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      comment: "Show this coupon's expiry to customers",
+    },
     banner_text: {
       type: DataTypes.STRING,
       allowNull: true,

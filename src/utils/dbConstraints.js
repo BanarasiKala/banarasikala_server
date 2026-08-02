@@ -185,9 +185,29 @@ const ensureIndexes = async () => {
   console.log("[DB] Indexes ensured.");
 };
 
+/**
+ * The per-coupon "show the expiry to customers" flag.
+ *
+ * Added the same way as the other late columns here rather than through a migration, because
+ * schema sync is skipped on boot. FALSE by default so existing coupons keep printing no
+ * expiry until someone opts them in — the storefront should not start making promises about
+ * dates nobody reviewed.
+ */
+const ensureCouponColumns = async () => {
+  try {
+    await sequelize.query(
+      `ALTER TABLE "${schema}"."coupons" ADD COLUMN IF NOT EXISTS "show_validity" BOOLEAN NOT NULL DEFAULT FALSE`,
+    );
+    console.log("[DB] Coupon display columns ensured.");
+  } catch (error) {
+    console.warn("[DB] Could not ensure coupon columns:", error.message);
+  }
+};
+
 module.exports = {
   ensureWalletConstraint,
   ensureProductOrderColumns,
+  ensureCouponColumns,
   ensureFeedbackColumns,
   ensureCustomerColumns,
   ensureRefundColumns,
