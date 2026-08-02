@@ -81,10 +81,6 @@ const renderInvoiceHtml = (order) => {
 
   const subtotal = toNumber(order.subtotal_amount);
   const total = toNumber(order.total_amount);
-  // The listed price is GST-inclusive, so the tax is carved out of the goods
-  // value rather than added on top — the total below is unaffected by it.
-  const gstPercent = config.invoiceGstPercent;
-  const gstAmount = round2(subtotal - (subtotal / (1 + gstPercent / 100)));
 
   const invoiceNumber = `INV-${order.order_number || order.id}`;
   const invoiceDate = order.delivered_at || order.createdAt;
@@ -548,10 +544,6 @@ const renderInvoiceHtml = (order) => {
             <td colspan="4">Subtotal</td>
             <td>${rupees(subtotal)}</td>
           </tr>${renderChargeRow('Delivery Charge', order.shipping_charge)}${renderChargeRow('Platform Fee', order.platform_fee)}${renderChargeRow('Cash on Delivery Fee', order.cod_fee)}${renderChargeRow('Gift Packaging', order.gift_charge)}${renderChargeRow('Re-dispatch Charges', order.redispatch_charge)}${renderChargeRow(`Coupon Discount${order.coupon_code ? ` (${order.coupon_code})` : ''}`, order.discount_amount, 'discount')}${renderChargeRow('Online Payment Discount', order.payment_discount, 'discount')}${renderChargeRow('Paid from Wallet', order.wallet_amount, 'discount')}
-          <tr class="tf-row-light">
-            <td colspan="4">GST (${gstPercent}% incl.)</td>
-            <td>${rupees(gstAmount)}</td>
-          </tr>
           <tr class="tf-total">
             <td colspan="4" style="font-family:'Cinzel',serif; letter-spacing:0.06em">Total Payable</td>
             <td>${rupees(total)}</td>
