@@ -100,6 +100,7 @@ const serializeReel = (reel, { products = [], commentCount = 0, isLiked = false 
     description: plain.description,
     video_url: plain.video_url,
     thumbnail_url: plain.thumbnail_url,
+    preview_url: plain.preview_url,
     like_count: plain.like_count,
     view_count: plain.view_count,
     comment_count: commentCount,

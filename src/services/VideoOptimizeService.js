@@ -31,6 +31,37 @@ const URL_COLUMNS = [
   ["reels", "video_url", "text"],
 ];
 
+/**
+ * How hard to encode, decided by what the clip is FOR.
+ *
+ * A reel fills a phone screen in the player and earns real bitrate. A muted decorative loop
+ * sitting behind a heading does not — the Banaras Royale backdrop was shipping 15.6 MB to fill
+ * a 352x418 box, which is most of a mobile visitor's first-page budget spent on wallpaper.
+ */
+const PROFILES = {
+  feature: { height: 1920, qvbr: 7, maxBitrate: 2500000 },
+  backdrop: { height: 720, qvbr: 6, maxBitrate: 1000000 },
+};
+const TABLE_PROFILE = {
+  banaras_royale: "backdrop",
+  box_sections: "backdrop",
+  occasions: "backdrop",
+  products: "feature",
+  reels: "feature",
+};
+
+/**
+ * The reel bags on the home page are 79x97 CSS pixels and play three of these at once. Feeding
+ * them the full master cost 39 MB before the visitor had scrolled a pixel.
+ *
+ * 480 tall covers a 79px tile even at 3x device pixels with room to spare, and the tile is
+ * muted and aria-hidden so the variant carries no audio track at all. It is not trimmed:
+ * MediaConvert's input clipping applies to the whole input, so shortening the preview would
+ * shorten the master with it — not worth a second job to save a megabyte.
+ */
+const PREVIEW = { height: 480, qvbr: 4, maxBitrate: 300000 };
+const PREVIEW_TABLES = new Set(["reels"]);
+
 const MAX_ATTEMPTS = 3;
 // A handful per sweep. MediaConvert bills per job and a runaway loop should cost pennies.
 const SUBMIT_BATCH = 5;
@@ -70,9 +101,16 @@ const keyFromUrl = (url) => {
 
 const outputUrlFor = (url) => url.replace(/\.mp4$/i, "-web.mp4");
 
-/** Every video url currently referenced by the app that is not already optimised. */
+/**
+ * Every video url currently referenced by the app that is not already optimised, paired with
+ * the table that referenced it — that is what picks the encode profile.
+ *
+ * First table wins if a url somehow appears in two: the file is encoded once, so a single
+ * profile has to be chosen, and URL_COLUMNS order puts the more demanding surfaces last only
+ * by coincidence. In practice an upload lands in exactly one table.
+ */
 const findUnoptimised = async () => {
-  const found = new Set();
+  const found = new Map(); // url -> table
   for (const [table, col] of URL_COLUMNS) {
     const [rows] = await sequelize.query(
       `SELECT CAST("${col}" AS text) AS v FROM "vns_saree"."${table}"
@@ -81,11 +119,14 @@ const findUnoptimised = async () => {
     rows.forEach((r) => {
       // jsonb columns hold several urls in one value, so pull them all out.
       (String(r.v).match(/https?:\/\/[^"'\s,\\]+?\.mp4/gi) || []).forEach((u) => {
-        if (!/-web\.mp4$/i.test(u)) found.add(u);
+        // Anything this pipeline produced is already optimised — feeding an output back in
+        // would encode it a second time and land on -web-web.mp4.
+        if (/-(web|preview|bg)\.mp4$/i.test(u)) return;
+        if (!found.has(u)) found.set(u, table);
       });
     });
   }
-  return [...found];
+  return [...found.entries()].map(([url, table]) => ({ url, table }));
 };
 
 /** Point every reference at the optimised file. */
@@ -103,7 +144,13 @@ const repointUrl = async (oldUrl, newUrl) => {
   return rows;
 };
 
-const submitJob = async (sourceUrl) => {
+/**
+ * @param sourceUrl the original CDN url
+ * @param sourceTable which table referenced it, which is what decides the encode profile and
+ *   whether a tile-sized preview is worth producing. Unknown/missing falls back to `feature`,
+ *   so a new caller that forgets to pass it gets quality rather than a silent downgrade.
+ */
+const submitJob = async (sourceUrl, sourceTable) => {
   const c = cfg();
   const { mc, s3 } = clients();
   const key = keyFromUrl(sourceUrl);
@@ -112,6 +159,38 @@ const submitJob = async (sourceUrl) => {
   const head = await s3.send(new HeadObjectCommand({ Bucket: c.bucket, Key: key }));
   const dir = key.includes("/") ? key.slice(0, key.lastIndexOf("/") + 1) : "";
   const base = key.slice(dir.length).replace(/\.mp4$/i, "");
+  const profile = PROFILES[TABLE_PROFILE[sourceTable]] || PROFILES.feature;
+  const wantsPreview = PREVIEW_TABLES.has(sourceTable);
+
+  const previewGroup = {
+    Name: "Preview",
+    OutputGroupSettings: {
+      Type: "FILE_GROUP_SETTINGS",
+      FileGroupSettings: { Destination: `s3://${c.bucket}/${dir}${base}` },
+    },
+    Outputs: [{
+      NameModifier: "-preview",
+      ContainerSettings: {
+        Container: "MP4",
+        Mp4Settings: { CslgAtom: "INCLUDE", FreeSpaceBox: "EXCLUDE", MoovPlacement: "PROGRESSIVE_DOWNLOAD" },
+      },
+      VideoDescription: {
+        Height: PREVIEW.height,
+        ScalingBehavior: "DEFAULT",
+        CodecSettings: {
+          Codec: "H_264",
+          H264Settings: {
+            RateControlMode: "QVBR",
+            QvbrSettings: { QvbrQualityLevel: PREVIEW.qvbr },
+            MaxBitrate: PREVIEW.maxBitrate,
+            SceneChangeDetect: "TRANSITION_DETECTION",
+          },
+        },
+      },
+      // No AudioDescriptions at all: the tile is muted and hidden from assistive tech, so an
+      // audio track would be bytes nobody can ever hear.
+    }],
+  };
 
   const job = await mc.send(new CreateJobCommand({
     Role: c.role,
@@ -138,7 +217,7 @@ const submitJob = async (sourceUrl) => {
             Mp4Settings: { CslgAtom: "INCLUDE", FreeSpaceBox: "EXCLUDE", MoovPlacement: "PROGRESSIVE_DOWNLOAD" },
           },
           VideoDescription: {
-            Height: 1920,
+            Height: profile.height,
             ScalingBehavior: "DEFAULT",
             CodecSettings: {
               Codec: "H_264",
@@ -146,8 +225,8 @@ const submitJob = async (sourceUrl) => {
                 // QVBR spends bitrate where the picture needs it, which suits fabric: flat
                 // studio backdrops cost little and the zari detail keeps what it needs.
                 RateControlMode: "QVBR",
-                QvbrSettings: { QvbrQualityLevel: 7 },
-                MaxBitrate: 2500000,
+                QvbrSettings: { QvbrQualityLevel: profile.qvbr },
+                MaxBitrate: profile.maxBitrate,
                 SceneChangeDetect: "TRANSITION_DETECTION",
               },
             },
@@ -159,13 +238,47 @@ const submitJob = async (sourceUrl) => {
             },
           }],
         }],
-      }],
+      }, {
+        /**
+         * A poster frame, produced by the same job at no extra cost — MediaConvert bills per
+         * minute of video output, not per still.
+         *
+         * It has to ride alongside the video output rather than being its own job: a job whose
+         * only output is frame capture is rejected outright ("You must include at least one
+         * output that has full video").
+         *
+         * Two captures at 1fps gives frames at roughly t=0s and t=1s. The t=1s frame is the one
+         * used, because phone exports very often open on a black or half-exposed frame.
+         */
+        Name: "Thumbnail",
+        OutputGroupSettings: {
+          Type: "FILE_GROUP_SETTINGS",
+          FileGroupSettings: { Destination: `s3://${c.bucket}/${dir}${base}` },
+        },
+        Outputs: [{
+          NameModifier: "-poster",
+          ContainerSettings: { Container: "RAW" },
+          VideoDescription: {
+            Width: 720,
+            CodecSettings: {
+              Codec: "FRAME_CAPTURE",
+              FrameCaptureSettings: {
+                FramerateNumerator: 1,
+                FramerateDenominator: 1,
+                MaxCaptures: 2,
+                Quality: 80,
+              },
+            },
+          },
+        }],
+      }, ...(wantsPreview ? [previewGroup] : [])],
     },
   }));
 
   return {
     jobId: job.Job.Id,
     outputUrl: outputUrlFor(sourceUrl),
+    previewUrl: wantsPreview ? sourceUrl.replace(/\.mp4$/i, "-preview.mp4") : null,
     sourceBytes: head.ContentLength || null,
   };
 };
@@ -192,15 +305,84 @@ const stampCacheControl = async (key) => {
   return head.ContentLength;
 };
 
+/**
+ * Settles which poster frame actually landed, stamps it cacheable, and writes it onto the
+ * reel that owns it.
+ *
+ * Only reels get the url written back: occasions, box sections and Banaras Royale already
+ * carry their own curated images, and a frame grabbed from the middle of a clip is a worse
+ * poster than a photograph someone chose. Reels are the one place with nothing at all — the
+ * storefront already reads `reel.thumbnail_url` into the <video poster> attribute and has
+ * been quietly falling back to undefined for every row.
+ */
+const resolvePoster = async (row) => {
+  const c = cfg();
+  const { s3 } = clients();
+  const base = row.source_url.replace(/\.mp4$/i, "");
+  // Prefer the t=1s frame; fall back to t=0s if the clip was too short for a second capture.
+  const candidates = [`${base}-poster.0000001.jpg`, `${base}-poster.0000000.jpg`];
+
+  for (const url of candidates) {
+    const key = keyFromUrl(url);
+    try {
+      await s3.send(new HeadObjectCommand({ Bucket: c.bucket, Key: key }));
+      await stampCacheControl(key);
+      const [, meta] = await sequelize.query(
+        `UPDATE "vns_saree"."reels" SET thumbnail_url = :poster
+         WHERE video_url = :video AND (thumbnail_url IS NULL OR thumbnail_url = '')`,
+        { replacements: { poster: url, video: row.output_url } },
+      );
+      if (meta.rowCount) console.log(`[VideoOptimize] poster set on ${meta.rowCount} reel(s)`);
+      return url;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+};
+
+/**
+ * Stamps the tile-sized variant cacheable and hands it to the reel that owns it.
+ *
+ * Kept separate from the master url: `reels.video_url` still points at the full-quality file,
+ * which is what the reels player streams. Only the home-page bags read `preview_url`, and they
+ * fall back to the master if it is missing, so a job that produced no preview degrades to the
+ * old behaviour rather than to a blank tile.
+ */
+const publishPreview = async (row) => {
+  if (!row.preview_url) return null;
+  const c = cfg();
+  const { s3 } = clients();
+  const key = keyFromUrl(row.preview_url);
+  try {
+    await s3.send(new HeadObjectCommand({ Bucket: c.bucket, Key: key }));
+    await stampCacheControl(key);
+    const [, meta] = await sequelize.query(
+      `UPDATE "vns_saree"."reels" SET preview_url = :preview WHERE video_url = :video`,
+      { replacements: { preview: row.preview_url, video: row.output_url } },
+    );
+    if (meta.rowCount) console.log(`[VideoOptimize] preview set on ${meta.rowCount} reel(s)`);
+    return row.preview_url;
+  } catch {
+    return null;
+  }
+};
+
 /** Queue anything referenced by the app that has not been optimised yet. */
 const queueNewVideos = async () => {
-  const urls = await findUnoptimised();
-  if (!urls.length) return 0;
-  const existing = await VideoJob.findAll({ where: { source_url: urls }, attributes: ["source_url"] });
+  const items = await findUnoptimised();
+  if (!items.length) return 0;
+  const existing = await VideoJob.findAll({
+    where: { source_url: items.map((i) => i.url) },
+    attributes: ["source_url"],
+  });
   const known = new Set(existing.map((r) => r.source_url));
-  const fresh = urls.filter((u) => !known.has(u));
+  const fresh = items.filter((i) => !known.has(i.url));
   if (!fresh.length) return 0;
-  await VideoJob.bulkCreate(fresh.map((source_url) => ({ source_url, status: "pending" })), { ignoreDuplicates: true });
+  await VideoJob.bulkCreate(
+    fresh.map((i) => ({ source_url: i.url, source_table: i.table, status: "pending" })),
+    { ignoreDuplicates: true },
+  );
   console.log(`[VideoOptimize] queued ${fresh.length} new video(s)`);
   return fresh.length;
 };
@@ -213,8 +395,15 @@ const submitPending = async () => {
   });
   for (const row of pending) {
     try {
-      const { jobId, outputUrl, sourceBytes } = await submitJob(row.source_url);
-      await row.update({ job_id: jobId, output_url: outputUrl, source_bytes: sourceBytes, status: "processing", attempts: row.attempts + 1 });
+      const { jobId, outputUrl, previewUrl, sourceBytes } = await submitJob(row.source_url, row.source_table);
+      await row.update({
+        job_id: jobId,
+        output_url: outputUrl,
+        preview_url: previewUrl,
+        source_bytes: sourceBytes,
+        status: "processing",
+        attempts: row.attempts + 1,
+      });
       console.log(`[VideoOptimize] submitted ${jobId} for ${row.source_url.split("/").pop()}`);
     } catch (e) {
       const attempts = row.attempts + 1;
@@ -238,7 +427,9 @@ const pollProcessing = async () => {
         const outKey = keyFromUrl(row.output_url);
         const bytes = await stampCacheControl(outKey);
         const changed = await repointUrl(row.source_url, row.output_url);
-        await row.update({ status: "complete", output_bytes: bytes || null });
+        const poster = await resolvePoster(row);
+        await publishPreview(row);
+        await row.update({ status: "complete", output_bytes: bytes || null, poster_url: poster || null });
         const saved = row.source_bytes && bytes
           ? ` (${(100 - (Number(bytes) / Number(row.source_bytes)) * 100).toFixed(0)}% smaller)`
           : "";

@@ -40,6 +40,21 @@ const VideoJob = sequelize.define(
       defaultValue: "pending",
       comment: "pending | processing | complete | error | skipped",
     },
+    poster_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      comment: "Frame grabbed from the clip, used as the <video poster>",
+    },
+    preview_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      comment: "Tile-sized silent variant, for thumbnails that would otherwise stream the master",
+    },
+    source_table: {
+      type: DataTypes.STRING(64),
+      allowNull: true,
+      comment: "Which table referenced the file; decides the encode profile",
+    },
     source_bytes: { type: DataTypes.BIGINT, allowNull: true },
     output_bytes: { type: DataTypes.BIGINT, allowNull: true },
     attempts: {

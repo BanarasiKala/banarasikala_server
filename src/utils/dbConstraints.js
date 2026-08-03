@@ -220,6 +220,7 @@ const ensureVideoJobsTable = async () => {
         "output_url"    TEXT,
         "job_id"        VARCHAR(255),
         "status"        VARCHAR(32) NOT NULL DEFAULT 'pending',
+        "poster_url"    TEXT,
         "source_bytes"  BIGINT,
         "output_bytes"  BIGINT,
         "attempts"      INTEGER NOT NULL DEFAULT 0,
@@ -229,6 +230,19 @@ const ensureVideoJobsTable = async () => {
       )`);
     await sequelize.query(
       `CREATE INDEX IF NOT EXISTS "video_jobs_status_idx" ON "${schema}"."video_jobs" ("status")`,
+    );
+    // Added after the table shipped, so existing installs get them too.
+    for (const clause of [
+      `ADD COLUMN IF NOT EXISTS "poster_url" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "preview_url" TEXT`,
+      // Which table referenced the file, which is what picks the encode profile.
+      `ADD COLUMN IF NOT EXISTS "source_table" VARCHAR(64)`,
+    ]) {
+      await sequelize.query(`ALTER TABLE "${schema}"."video_jobs" ${clause}`);
+    }
+    // The tile-sized reel variant the home-page bags play instead of the full master.
+    await sequelize.query(
+      `ALTER TABLE "${schema}"."reels" ADD COLUMN IF NOT EXISTS "preview_url" TEXT`,
     );
     console.log("[DB] Video optimisation queue ensured.");
   } catch (error) {

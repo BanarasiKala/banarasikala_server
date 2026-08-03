@@ -28,6 +28,12 @@ const Reel = sequelize.define('Reel', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+  // Tile-sized silent copy for the home-page bags, written by the optimisation pipeline.
+  // The full-screen player always uses video_url.
+  preview_url: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
   // Featured product ids, e.g. [12, 45]. Products are resolved at read time.
   product_ids: {
     type: DataTypes.JSONB,
