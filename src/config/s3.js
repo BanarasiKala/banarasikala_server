@@ -23,6 +23,16 @@ const s3Client =
     : null;
 
 /**
+ * How long a browser may keep an uploaded video before asking again.
+ *
+ * `immutable` is safe because every key is minted with a timestamp + random suffix below —
+ * a given URL's bytes never change, so there is nothing to revalidate. Without this the
+ * objects land with no Cache-Control at all and every page view re-downloads them, which is
+ * what the whole media library had to be back-filled for.
+ */
+const VIDEO_CACHE_CONTROL = "public, max-age=31536000, immutable";
+
+/**
  * Returns a short-lived pre-signed PUT URL the browser can upload to directly,
  * plus the permanent public URL where the video will live after upload.
  */
@@ -39,6 +49,7 @@ const generateS3PresignedUploadUrl = async (fileName = "video.webm", contentType
     Bucket: config.s3Bucket,
     Key: key,
     ContentType: contentType,
+    CacheControl: VIDEO_CACHE_CONTROL,
   });
 
   const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: 300 }); // valid 5 min
@@ -49,7 +60,10 @@ const generateS3PresignedUploadUrl = async (fileName = "video.webm", contentType
     : `https://${config.s3Bucket}.s3.${config.s3Region}.amazonaws.com`;
   const publicUrl = `${baseUrl}/${key}`;
 
-  return { uploadUrl, publicUrl };
+  // cacheControl is returned, not just applied: CacheControl is part of the signature, so the
+  // browser's PUT must send back the identical header or S3 rejects it as a mismatch. Handing
+  // the caller the exact string removes the chance of the two drifting apart.
+  return { uploadUrl, publicUrl, cacheControl: VIDEO_CACHE_CONTROL };
 };
 
 /**
