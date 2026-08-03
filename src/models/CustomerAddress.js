@@ -27,6 +27,16 @@ const CustomerAddress = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    // Where order mail for THIS address goes. Checkout pre-fills it with the account
+    // email, so for most shoppers it is simply their own; an order placed for someone
+    // else carries the receiver's, and both mailboxes are then kept updated.
+    //
+    // Nullable, and it has to stay that way: every address saved before this column
+    // existed has none, and checkout falls back to the account email for those.
+    email: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
     alternate_phone: {
       type: DataTypes.STRING,
       allowNull: true,

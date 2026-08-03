@@ -245,9 +245,12 @@ const renderInvoiceHtml = (order) => {
       flex-direction: column;
     }
 
+    /* Two cards normally (Sold By / Shipped To), three when the order was billed somewhere
+       other than where it shipped. auto-fit rather than a fixed 1fr 1fr so the third card
+       joins the row instead of wrapping onto a line of its own. */
     .inv-address-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
       gap: 16px;
       margin-bottom: 20px;
     }
@@ -524,6 +527,16 @@ const renderInvoiceHtml = (order) => {
             ${order.phone ? `Phone: ${escapeHtml(order.phone)}` : ''}
           </p>
         </div>
+        ${order.billing_address ? `
+        <div class="inv-address-card">
+          <div class="inv-address-card-title">Billed To</div>
+          <p>
+            <strong>${escapeHtml(order.billing_address.name || 'Customer')}</strong>
+            ${escapeHtml(order.billing_address.line || '')}<br />
+            ${escapeHtml([order.billing_address.city, order.billing_address.state].filter(Boolean).join(', '))}${order.billing_address.pincode ? ` – ${escapeHtml(order.billing_address.pincode)}` : ''}<br />
+            ${order.billing_address.phone ? `Phone: ${escapeHtml(order.billing_address.phone)}` : ''}
+          </p>
+        </div>` : ''}
       </div>
 
       <div class="inv-table-title">Order Items</div>

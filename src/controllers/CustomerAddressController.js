@@ -1,7 +1,41 @@
+const { DataTypes } = require("sequelize");
 const CustomerAddress = require("../models/CustomerAddress");
+const { sequelize } = require("../config/db");
+const { config } = require("../config/env");
+const { normalizeEmail } = require("../utils/emailAddress");
 
 const MAX_ADDRESSES = 3;
 let cachedAddressColumns = null;
+
+/**
+ * customer_addresses.email, added the only way columns are added here.
+ *
+ * Global schema sync is off (see config/db.js), so a new column needs an explicit,
+ * idempotent migration. Run lazily on the first address request rather than at boot
+ * because that is where getAddressColumns() already reads the table — and the ORDER of
+ * those two matters: describeTable() caches, so a describe that ran before the column
+ * landed would filter `email` straight back out of every write for the life of the
+ * process. Hence the await inside getAddressColumns rather than a fire-and-forget.
+ */
+let addressSchemaReady = null;
+const ensureAddressSchema = () => {
+  if (!addressSchemaReady) {
+    addressSchemaReady = (async () => {
+      const qi = sequelize.getQueryInterface();
+      const table = { tableName: "customer_addresses", schema: config.dbSchema };
+      const columns = await qi.describeTable(table);
+      if (!columns.email) {
+        await qi.addColumn(table, "email", { type: DataTypes.STRING, allowNull: true });
+      }
+    })().catch((error) => {
+      // Clear the promise so the next request retries. Caching a rejection would leave
+      // the address book permanently broken after one transient DB blip.
+      addressSchemaReady = null;
+      throw error;
+    });
+  }
+  return addressSchemaReady;
+};
 
 const cleanText = (value) => {
   if (value === undefined || value === null) return null;
@@ -17,6 +51,7 @@ const cleanCoordinate = (value) => {
 
 const getAddressColumns = async () => {
   if (cachedAddressColumns) return cachedAddressColumns;
+  await ensureAddressSchema();
   const description = await CustomerAddress.describe();
   cachedAddressColumns = new Set(Object.keys(description));
   return cachedAddressColumns;
@@ -71,6 +106,7 @@ class CustomerAddressController {
         label,
         name,
         phone,
+        email,
         alternate_phone,
         country,
         house_building,
@@ -95,11 +131,19 @@ class CustomerAddressController {
         return res.status(400).json({ message: "Please enter Flat, House no. or Building." });
       }
 
+      // Rejected rather than quietly dropped: a typo'd receiver email that saves silently
+      // means the person the parcel is going to hears nothing and nobody finds out until
+      // they ask where it is.
+      if (cleanText(email) && !normalizeEmail(email)) {
+        return res.status(400).json({ message: "Please enter a valid receiver email address." });
+      }
+
       const payload = await keepExistingColumns({
         customer_id: req.user.id,
         label: cleanText(label),
         name: cleanText(name),
         phone: cleanText(phone),
+        email: normalizeEmail(email),
         alternate_phone: cleanText(alternate_phone),
         country: cleanText(country) || "India",
         house_building: primaryAddress,
@@ -144,6 +188,7 @@ class CustomerAddressController {
         label,
         name,
         phone,
+        email,
         alternate_phone,
         country,
         house_building,
@@ -161,10 +206,15 @@ class CustomerAddressController {
         is_default,
       } = req.body || {};
 
+      if (email !== undefined && cleanText(email) && !normalizeEmail(email)) {
+        return res.status(400).json({ message: "Please enter a valid receiver email address." });
+      }
+
       let payload = {};
       if (label !== undefined) payload.label = cleanText(label);
       if (name !== undefined) payload.name = cleanText(name);
       if (phone !== undefined) payload.phone = cleanText(phone);
+      if (email !== undefined) payload.email = normalizeEmail(email);
       if (alternate_phone !== undefined) payload.alternate_phone = cleanText(alternate_phone);
       if (country !== undefined) payload.country = cleanText(country) || "India";
       if (house_building !== undefined || address_line1 !== undefined) {

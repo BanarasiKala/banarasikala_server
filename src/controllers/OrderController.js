@@ -39,6 +39,7 @@ const {
   ensureOrderItemActionSchema, getActionableQuantity, isDeliveredEnoughForPostDeliveryAction,
 } = require('../utils/orderItemActions');
 const { ensureRefundColumns } = require('../utils/dbConstraints');
+const { normalizeEmail, isSameEmail } = require('../utils/emailAddress');
 
 /**
  * Proof-of-payment images, as [{ url }] — the same shape review images use, so the storefront
@@ -55,7 +56,7 @@ const normalizeProofImages = (value) => (Array.isArray(value) ? value : [])
   .slice(0, 4);
 const { ensureOrderTransactionTables, REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
 const {
-  ensureOrderModelV2Tables, SHIPMENT_TYPE, SHIPMENT_STATUS, ACTOR,
+  ensureOrderModelV2Tables, SHIPMENT_TYPE, SHIPMENT_STATUS, ACTOR, ADDRESS_TYPE,
   LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE, RTO_RESOLUTION,
   RTO_REDISPATCH_WINDOW_MS, rtoEventTime, isWithinRedispatchWindow,
 } = require('../utils/orderModelV2');
@@ -141,8 +142,15 @@ const computeCancellationNonRefundable = ({ isCod, redispatchedEvents = [], plat
 // Rebuild the legacy order shape (address fields, money breakdown, AWB, status
 // timeline) from the V2 associations so the frontend contract is unchanged.
 const hydrateV2Fields = (json) => {
-  // Shipping address → current version of order_addresses
-  const addresses = Array.isArray(json.Addresses) ? json.Addresses : [];
+  // Shipping address → current version of order_addresses.
+  //
+  // Filtered to SHIPPING rows FIRST. The `is_current` find would already skip a billing row
+  // (they are written is_current: false), but the version-sort fallback beneath it would
+  // not — on an order whose shipping row somehow lost its flag, that fallback would hand the
+  // billing address to the courier fields below. Narrowing the set makes it unreachable.
+  // `!a.type` keeps rows written before the column existed, which are all shipping.
+  const addresses = (Array.isArray(json.Addresses) ? json.Addresses : [])
+    .filter((a) => !a.type || a.type === ADDRESS_TYPE.SHIPPING);
   const currentAddress = addresses.find((a) => a.is_current)
     || addresses.slice().sort((a, b) => (b.version || 0) - (a.version || 0))[0]
     || null;
@@ -153,7 +161,38 @@ const hydrateV2Fields = (json) => {
     json.pincode = currentAddress.pincode;
     json.phone = currentAddress.phone;
     json.customer_name = json.customer_name || currentAddress.name;
+    // Only surfaced when it is someone OTHER than the buyer. Echoing the buyer's own
+    // address back as a "receiver" would have every order page announcing that updates
+    // are being sent to the person reading it.
+    json.receiver_email = !isSameEmail(currentAddress.email, json.customer_email)
+      ? (currentAddress.email || null)
+      : null;
   }
+
+  /**
+   * Billing address, surfaced only when it is genuinely a different place.
+   *
+   * On an ordinary order the buyer's default address IS the delivery address, and printing
+   * the same lines twice under two headings is what made the old "Billing address" column
+   * meaningless. Null here means "nothing to distinguish", and every reader treats that as
+   * "bill to the delivery address".
+   */
+  const billingRow = (Array.isArray(json.Addresses) ? json.Addresses : [])
+    .find((a) => a.type === ADDRESS_TYPE.BILLING) || null;
+  const sameAsShipping = billingRow && currentAddress
+    && String(billingRow.line || '').trim() === String(currentAddress.line || '').trim()
+    && String(billingRow.pincode || '') === String(currentAddress.pincode || '');
+  json.billing_address = billingRow && !sameAsShipping
+    ? {
+      name: billingRow.name,
+      line: billingRow.line,
+      city: billingRow.city,
+      state: billingRow.state,
+      pincode: billingRow.pincode,
+      phone: billingRow.phone,
+      email: billingRow.email,
+    }
+    : null;
 
   // Money breakdown → order_ledger
   Object.assign(json, deriveOrderTotals(Array.isArray(json.Ledger) ? json.Ledger : []));
@@ -628,6 +667,7 @@ class OrderController {
       await ensureOrderModelV2Tables();
       const {
         customer_name, customer_email, address, city, state, pincode, phone,
+        receiver_email = null,
         subtotal_amount, shipping_charge = 0, shipping_discount_reason = null,
         selected_courier_data = null, items, coupon_code, wallet_amount = 0,
         is_gift = false, gift_message = null,
@@ -904,13 +944,30 @@ class OrderController {
       await order.update({ order_number: orderNumber }, { transaction: t });
       order.order_number = orderNumber;
 
+      /**
+       * Who the parcel is going to, as opposed to who bought it.
+       *
+       * Checkout pre-fills this with the shopper's own email, so on an ordinary order it is
+       * simply the buyer again and every mail path below collapses back to one recipient.
+       * When it differs, the order was placed for someone else and both people are kept
+       * informed from here on.
+       *
+       * Falls back to the buyer's own address when the client sends nothing — orders from
+       * older clients, and the saved addresses that predate the field, must not end up with
+       * a shipping snapshot that nobody can be written to.
+       */
+      const buyerEmail = customer?.email || customer_email;
+      const receiverEmail = normalizeEmail(receiver_email) || normalizeEmail(buyerEmail);
+
       // ── order_addresses (version 1 snapshot) + current pointer
       const orderAddress = await OrderAddress.create({
         order_id: order.id,
+        type: ADDRESS_TYPE.SHIPPING,
         version: 1,
         is_current: true,
         name: customer_name || customer?.name,
         phone,
+        email: receiverEmail,
         line: address,
         city,
         state: state || 'Uttar Pradesh',
@@ -918,6 +975,58 @@ class OrderController {
       }, { transaction: t });
       await order.update({ current_address_id: orderAddress.id }, { transaction: t });
       order.current_address_id = orderAddress.id;
+
+      /**
+       * ── order_addresses (BILLING snapshot) ────────────────────────────────────────────
+       *
+       * The buyer's DEFAULT saved address is their billing address: it is where they live,
+       * and it is the one place in the address book that is unambiguously about them rather
+       * than about somewhere they occasionally send things.
+       *
+       * Read from the database rather than taken from the request. The client knows which
+       * address is default, but billing is the record of who was charged — accepting the
+       * browser's word for it would let a tampered request bill a stranger's address, and
+       * there is no reason to trust input we can look up authoritatively.
+       *
+       * The PERSON is always the account holder, whatever receiver name happens to sit on
+       * that address row. You can label your default address for your mother and still be
+       * the one paying; billing names the payer, not the doormat.
+       *
+       * Falls back to the delivery address (guests, and shoppers who have never saved one),
+       * which reproduces exactly today's behaviour of the two being identical.
+       */
+      let billingAddress = null;
+      if (customer?.id) {
+        const CustomerAddress = require('../models/CustomerAddress');
+        const defaultAddress = await CustomerAddress.findOne({
+          where: { customer_id: customer.id },
+          // No default flagged (the first saved address does not set one) — fall back to
+          // the oldest, which is the same address the checkout preselects.
+          order: [['is_default', 'DESC'], ['created_at', 'ASC']],
+          transaction: t,
+        });
+        if (defaultAddress) {
+          const billingLine = [
+            defaultAddress.house_building || defaultAddress.address_line1,
+            defaultAddress.area_street || defaultAddress.address_line2,
+            defaultAddress.landmark,
+          ].filter(Boolean).join(', ');
+          billingAddress = await OrderAddress.create({
+            order_id: order.id,
+            type: ADDRESS_TYPE.BILLING,
+            version: 1,
+            // Never current — see the model. A reverse pickup must not find this row.
+            is_current: false,
+            name: customer.name || customer_name,
+            phone: defaultAddress.phone || phone,
+            email: normalizeEmail(buyerEmail),
+            line: billingLine || address,
+            city: defaultAddress.city || city,
+            state: defaultAddress.state || state || 'Uttar Pradesh',
+            pincode: defaultAddress.pincode || pincode,
+          }, { transaction: t });
+        }
+      }
 
       // ── order_items (price snapshot)
       const orderItems = enrichedItems.map((item, index) => ({
@@ -1074,6 +1183,31 @@ class OrderController {
             pincode: orderAddress.pincode,
             phone: orderAddress.phone,
           },
+          // Null when there is no separate billing snapshot (guest, or no saved address).
+          // The template then prints the delivery address under both headings, as before.
+          billingAddress: billingAddress
+            ? {
+              name: billingAddress.name,
+              line: billingAddress.line,
+              city: billingAddress.city,
+              state: billingAddress.state,
+              pincode: billingAddress.pincode,
+              phone: billingAddress.phone,
+            }
+            : null,
+          // When this is not the buyer's own mailbox, the receipt goes to both — the
+          // receiver's copy written to them ("… has sent you an order") rather than
+          // forwarded. Same address on both sides means one email, not two identical ones.
+          receiverEmail,
+          /**
+           * The buyer's ACCOUNT name, which `order.customer_name` is not.
+           *
+           * customer_name carries whatever was typed into the delivery address, so on an
+           * order sent to someone else it is the receiver's name. Left to it, the buyer's
+           * own receipt greeted them as the receiver and the receiver's copy announced
+           * that they had sent themselves an order.
+           */
+          buyerName: customer?.name || customer_name,
           paymentLabel: normalizedPaymentMethod === 'COD'
             ? 'Cash on Delivery'
             : `Paid online${normalizedGateway ? ` (${normalizedGateway})` : ''}`,

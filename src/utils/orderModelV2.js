@@ -46,6 +46,10 @@ const ACTOR = Object.freeze({
 
 const SHIPMENT_TYPE = Object.freeze({ FORWARD: 'FORWARD', REVERSE: 'REVERSE' });
 
+// order_addresses.type. SHIPPING is where the parcel goes; BILLING is who is charged, taken
+// from the buyer's default saved address. See the model for why BILLING is never is_current.
+const ADDRESS_TYPE = Object.freeze({ SHIPPING: 'SHIPPING', BILLING: 'BILLING' });
+
 const SHIPMENT_STATUS = Object.freeze({
   CREATED: 'CREATED',
   DISPATCHED: 'DISPATCHED',
@@ -196,6 +200,29 @@ const ensureOrderModelV2Tables = async () => {
     await require('../models/OrderRefund').sync();
   }
 
+  // 5. Additive: order_addresses.email — the receiver's email, snapshotted alongside the
+  // name and phone it belongs with. Model.sync() above is CREATE TABLE IF NOT EXISTS, so
+  // on an existing table it adds nothing; this is what actually lands the column.
+  const orderAddressesTable = { tableName: 'order_addresses', schema: config.dbSchema };
+  try {
+    const orderAddressColumns = await qi.describeTable(orderAddressesTable);
+    if (!orderAddressColumns.email) {
+      await qi.addColumn(orderAddressesTable, 'email', { type: DataTypes.STRING, allowNull: true });
+    }
+    // order_addresses.type — SHIPPING or BILLING. NOT NULL with a DEFAULT, which is what
+    // backfills every existing row: they are all delivery addresses, which is exactly what
+    // the default says. No separate UPDATE needed and no window where the column is null.
+    if (!orderAddressColumns.type) {
+      await qi.addColumn(orderAddressesTable, 'type', {
+        type: DataTypes.STRING,
+        allowNull: false,
+        defaultValue: 'SHIPPING',
+      });
+    }
+  } catch {
+    // Fresh database — the sync above created the table with the column already on it.
+  }
+
   modelV2Ready = true;
 };
 
@@ -203,6 +230,7 @@ module.exports = {
   ensureOrderModelV2Tables,
   ORDER_STATUS,
   ACTOR,
+  ADDRESS_TYPE,
   SHIPMENT_TYPE,
   SHIPMENT_STATUS,
   RTO_RESOLUTION,

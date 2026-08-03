@@ -2,7 +2,10 @@ const nodemailer = require('nodemailer');
 const dns = require('dns');
 const { config } = require('../config/env');
 const { buildPreferenceUrl } = require('../utils/emailPreferenceToken');
+const { normalizeEmail } = require('../utils/emailAddress');
 const OrderItem = require('../models/OrderItem');
+const OrderAddress = require('../models/OrderAddress');
+const Customer = require('../models/Customer');
 const Product = require('../models/Product');
 
 // Resolve the same product thumbnail the storefront shows for an order line:
@@ -280,6 +283,79 @@ const addressLines = (address) => (address ? [
 
 const sectionHeading = (text) => `<div style="border-top:1px solid #e8e8e6;margin-top:22px;padding-top:22px;font-size:15px;font-weight:700;color:#222;padding-bottom:16px;">${text}</div>`;
 
+/**
+ * Everyone who should hear about an order, in the order they are told.
+ *
+ * An order can be placed for somebody else — checkout captures a receiver email on the
+ * delivery address, defaulted to the shopper's own. Both people need every update: the
+ * buyer because they paid for it, the receiver because it is arriving at their door and
+ * they are the one who will be asked to take delivery.
+ *
+ * The dedupe is the whole point of routing through here. On the overwhelming majority of
+ * orders the receiver IS the buyer, and sending "your order" and "someone sent you an
+ * order" to the same inbox, two minutes apart, about the same parcel, would be worse than
+ * not having the feature. So: at most two entries, never the same mailbox twice, and the
+ * buyer always first.
+ *
+ * @returns {Array<{email: string, isReceiver: boolean}>}
+ */
+const orderRecipients = (buyerEmail, receiverEmail) => {
+  const buyer = normalizeEmail(buyerEmail);
+  const receiver = normalizeEmail(receiverEmail);
+  const recipients = [];
+  if (buyer) recipients.push({ email: buyer, isReceiver: false });
+  if (receiver && receiver !== buyer) recipients.push({ email: receiver, isReceiver: true });
+  return recipients;
+};
+
+/**
+ * Who to greet on each copy — the buyer and the receiver, told apart properly.
+ *
+ * `orders.customer_name` is NOT the buyer's name. It is whatever was typed into the
+ * delivery address, which on an order sent to someone else is the RECEIVER. Greeting the
+ * buyer with it produced two emails that both opened "Hi <receiver>", and a receiver copy
+ * that read "<receiver> has sent you an order" — the buyer's own name never appeared on
+ * either. The buyer's real name lives on their account row, so that is where it is read
+ * from, with the address name as the fallback for a guest who has no account.
+ *
+ * sendOrderStatusUpdate is reached from five call sites across three controllers, none of
+ * which has an address or a customer to hand — a cancellation fires from a controller
+ * holding an order row and nothing else. Rather than make all five fetch and pass them (the
+ * same queries written five times, and a sixth caller added later would silently stop
+ * mailing the receiver), the email looks them up itself, as it already does for the items.
+ */
+const loadOrderContacts = async (order) => {
+  const contacts = { receiverEmail: null, receiverName: '', buyerName: order?.customer_name || '' };
+  if (!order?.id) return contacts;
+
+  try {
+    const address = await OrderAddress.findOne({
+      where: { order_id: order.id, is_current: true },
+      attributes: ['email', 'name'],
+    });
+    contacts.receiverEmail = normalizeEmail(address?.email);
+    contacts.receiverName = address?.name || '';
+  } catch (error) {
+    // Never lose the buyer's notification over the receiver's copy.
+    console.error('EmailService: could not load receiver address:', error.message);
+  }
+
+  try {
+    const where = order.customer_id
+      ? { id: order.customer_id }
+      : (normalizeEmail(order.customer_email) ? { email: order.customer_email } : null);
+    if (where) {
+      const customer = await Customer.findOne({ where, attributes: ['name'] });
+      if (customer?.name) contacts.buyerName = customer.name;
+    }
+  } catch (error) {
+    // Falls back to the address name — a slightly-off greeting beats no email.
+    console.error('EmailService: could not load buyer name:', error.message);
+  }
+
+  return contacts;
+};
+
 class EmailService {
   generateOtp() {
     return String(Math.floor(100000 + Math.random() * 900000));
@@ -293,12 +369,16 @@ class EmailService {
    * second, independently-derived figure, and the day the two disagree is the day someone is
    * looking at a receipt that contradicts what their card was charged.
    *
+   * Sent to the buyer and, when the order was placed for someone else, to the receiver as
+   * well — one build of the receipt, addressed twice. See orderRecipients.
+   *
    * @param {object} order   The order row (order_number, customer_name/email, payment_method).
    * @param {Array}  items   [{ name, quantity, price, image, sku }]
-   * @param {object} summary Every money line, already resolved.
+   * @param {object} summary Every money line, already resolved, plus `receiverEmail`.
    */
   async sendOrderConfirmation(order, items = [], summary = {}) {
-    if (!order?.customer_email) return;
+    const recipients = orderRecipients(order?.customer_email, summary?.receiverEmail);
+    if (recipients.length === 0) return;
 
     const orderNumber = order.order_number || `#${order.id ?? ''}`;
     const storeUrl = (config.frontendUrl || '').replace(/\/$/, '');
@@ -348,6 +428,27 @@ class EmailService {
       walletUsed > 0 ? totalsRow('Wallet credit used', `-${money(walletUsed)}`, { credit: true }) : '',
     ].filter(Boolean).join('');
 
+    /**
+     * Two address columns only when there are genuinely two addresses.
+     *
+     * Nothing was ever passed for billing, so the template fell back to `billingAddress ||
+     * shippingAddress` and printed the same lines under both headings on every receipt ever
+     * sent. A pair of columns that always agree teaches the reader the pair means nothing,
+     * which is worse than not showing it: on the one order where they DO differ, nobody
+     * looks. So the columns collapse to a single "Delivery address" when the buyer is being
+     * billed where the parcel is going, and split into "Delivery address" / "Billed to" only
+     * when the order is being sent somewhere else.
+     */
+    const sameAddress = !billingAddress || (
+      String(billingAddress.line || '').trim() === String(shippingAddress?.line || '').trim()
+      && String(billingAddress.pincode || '') === String(shippingAddress?.pincode || '')
+    );
+    const addressColumns = sameAddress
+      ? infoColumn('Delivery address', addressLines(shippingAddress))
+      : `${infoColumn('Delivery address', addressLines(shippingAddress))}${infoColumn('Billed to', addressLines(billingAddress))}`;
+
+    // Identical on both copies. The receiver's framing is carried entirely by the heading
+    // and the opening line — a panel below them repeating it just said the same thing twice.
     const body = `
             <div style="border-top:1px solid #e8e8e6;padding-top:22px;font-size:15px;font-weight:700;color:#222;padding-bottom:18px;">Order summary</div>
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${itemRowsHtml(items)}</table>
@@ -371,8 +472,7 @@ class EmailService {
             ${sectionHeading('Customer information')}
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
               <tr>
-                ${infoColumn('Shipping address', addressLines(shippingAddress))}
-                ${infoColumn('Billing address', addressLines(billingAddress || shippingAddress))}
+                ${addressColumns}
               </tr>
               <tr>
                 ${infoColumn('Payment', paymentLabel)}
@@ -380,32 +480,61 @@ class EmailService {
               </tr>
             </table>`;
 
-    const mailOptions = {
+    /**
+     * The buyer, from `summary.buyerName` — their ACCOUNT name.
+     *
+     * Not `order.customer_name`: that field holds the delivery name, which on an order sent
+     * to someone else is the receiver. Using it greeted the buyer with the receiver's name
+     * and produced "<receiver> has sent you an order" on the receiver's own copy.
+     */
+    const buyerName = summary.buyerName || order.customer_name || 'A friend';
+    const receiverName = shippingAddress?.name || '';
+    const placedLabel = placedAt
+      ? esc(new Date(placedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }))
+      : '';
+
+    /**
+     * The receiver gets no "View your order" button.
+     *
+     * The order page is gated on the BUYER's login (OrderController checks the signed-in
+     * email against the order's), so that button would take the receiver to a 403 — worse
+     * than no button at all. Their updates arrive by email instead, which is the whole
+     * arrangement. The shell still offers "Visit our store" beneath, as it does on the
+     * OTP mail that likewise has no action to take.
+     */
+    const mailFor = ({ isReceiver }) => ({
       from: `"Banarasi Kala" <${config.emailUser}>`,
-      to: order.customer_email,
       replyTo: supportEmail,
-      subject: `Order ${orderNumber} confirmed | Banarasi Kala`,
+      subject: isReceiver
+        ? `${buyerName} has sent you an order | Banarasi Kala`
+        : `Order ${orderNumber} confirmed | Banarasi Kala`,
       html: emailShell({
         orderNumber: esc(orderNumber),
-        placedLabel: placedAt
-          ? esc(new Date(placedAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }))
-          : '',
-        heading: 'Thank you for your purchase!',
-        intro: `Hi ${esc(order.customer_name || 'there')}, we&rsquo;re getting your order ready to be shipped. We will notify you when it has been sent.`,
-        ctaLabel: 'View your order',
-        ctaUrl: `${storeUrl}/order-confirmation?orderId=${order.id ?? ''}`,
+        placedLabel,
+        heading: isReceiver ? `${esc(buyerName)} has sent you an order` : 'Thank you for your purchase!',
+        intro: isReceiver
+          ? `Hi ${esc(receiverName || 'there')}, <strong>${esc(buyerName)}</strong> has placed an order for you at Banarasi Kala. We&rsquo;re getting it ready to be shipped to your address, and we will let you know the moment it is on its way.`
+          : `Hi ${esc(buyerName)}, we&rsquo;re getting your order ready to be shipped. We will notify you when it has been sent.`,
+        ctaLabel: isReceiver ? '' : 'View your order',
+        ctaUrl: isReceiver ? '' : `${storeUrl}/order-confirmation?orderId=${order.id ?? ''}`,
         body,
         supportEmail: esc(supportEmail),
         storeUrl: esc(storeUrl),
-        preheader: `Order ${esc(orderNumber)} confirmed &middot; ${money(total)}`,
+        preheader: isReceiver
+          ? `${esc(buyerName)} has sent you an order &middot; ${esc(orderNumber)}`
+          : `Order ${esc(orderNumber)} confirmed &middot; ${money(total)}`,
       }),
-    };
+    });
 
-    try {
-      await transporter.sendMail(mailOptions);
-      console.log(`Order confirmation email sent to ${order.customer_email}`);
-    } catch (error) {
-      console.error('Error sending order confirmation email:', error);
+    // Sequential, and each send guarded on its own: a bounce at the receiver's address must
+    // not cost the buyer the receipt for what they just paid for.
+    for (const recipient of recipients) {
+      try {
+        await transporter.sendMail({ ...mailFor(recipient), to: recipient.email });
+        console.log(`Order confirmation email sent to ${recipient.email}${recipient.isReceiver ? ' (receiver)' : ''}`);
+      } catch (error) {
+        console.error(`Error sending order confirmation email to ${recipient.email}:`, error);
+      }
     }
   }
 
@@ -431,9 +560,13 @@ class EmailService {
 
   async sendOrderStatusUpdate(order, status) {
     try {
-      if (!order?.customer_email) return;
-      const normalizedStatus = String(status || order.status || 'Updated').trim();
+      const normalizedStatus = String(status || order?.status || 'Updated').trim();
       if (!EmailService.EMAILED_STATUSES.has(normalizedStatus)) return;
+
+      // Looked up here for the same reason the items below are — no caller has them.
+      const contacts = await loadOrderContacts(order);
+      const recipients = orderRecipients(order?.customer_email, contacts.receiverEmail);
+      if (recipients.length === 0) return;
 
       const isCancelled = normalizedStatus === 'Cancelled';
       const orderNumber = order.order_number || `#${order.id ?? ''}`;
@@ -482,13 +615,42 @@ class EmailService {
 
       const banner = `<div style="display:inline-block;background:${tone.bg};border:1px solid ${tone.border};color:${tone.text};font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;padding:7px 16px;border-radius:999px;margin-top:24px;">${tone.label}</div>`;
 
-      const heading = isCancelled ? 'Your order has been cancelled' : 'Your order has been delivered';
-      const intro = isCancelled
-        ? `Hi ${esc(order.customer_name || 'there')}, order <strong>${esc(orderNumber)}</strong> has been cancelled.${
-          isCod
-            ? ' Nothing was charged for this order, so there is no refund to process.'
-            : ' Your refund has been initiated and will reach the original payment method in 5&ndash;7 working days.'}`
-        : `Hi ${esc(order.customer_name || 'there')}, order <strong>${esc(orderNumber)}</strong> has been delivered. We hope it brings a little Banaras into your day.`;
+      // Account name, not the delivery name — see loadOrderContacts.
+      const buyerName = contacts.buyerName || 'A friend';
+      const receiverName = contacts.receiverName || '';
+
+      /**
+       * The same event, told from each side.
+       *
+       * The refund sentences only ever go to the buyer: they are the one who paid and the
+       * one the money is going back to. Telling the receiver their refund is on its way
+       * would be wrong twice over — it is not their refund, and it invites them to go
+       * looking for money in their bank account that was never theirs.
+       */
+      const headingFor = (isReceiver) => {
+        if (isCancelled) {
+          return isReceiver
+            ? `The order ${esc(buyerName)} sent you has been cancelled`
+            : 'Your order has been cancelled';
+        }
+        return isReceiver
+          ? `The order ${esc(buyerName)} sent you has been delivered`
+          : 'Your order has been delivered';
+      };
+
+      const introFor = (isReceiver) => {
+        if (isCancelled) {
+          return isReceiver
+            ? `Hi ${esc(receiverName || 'there')}, order <strong>${esc(orderNumber)}</strong>, which <strong>${esc(buyerName)}</strong> placed for you, has been cancelled. Nothing will now be delivered to your address.`
+            : `Hi ${esc(buyerName)}, order <strong>${esc(orderNumber)}</strong> has been cancelled.${
+              isCod
+                ? ' Nothing was charged for this order, so there is no refund to process.'
+                : ' Your refund has been initiated and will reach the original payment method in 5&ndash;7 working days.'}`;
+        }
+        return isReceiver
+          ? `Hi ${esc(receiverName || 'there')}, order <strong>${esc(orderNumber)}</strong> from <strong>${esc(buyerName)}</strong> has been delivered to your address. We hope it brings a little Banaras into your day.`
+          : `Hi ${esc(buyerName)}, order <strong>${esc(orderNumber)}</strong> has been delivered. We hope it brings a little Banaras into your day.`;
+      };
 
       /**
        * Cancelled lines are struck through and dimmed.
@@ -497,7 +659,7 @@ class EmailService {
        * cancellation raises — but showing them at full strength reads as a receipt for goods
        * that are on their way, which is the opposite of what happened.
        */
-      const body = `
+      const body = (isReceiver) => `
             <div style="border-top:1px solid #e8e8e6;padding-top:22px;font-size:15px;font-weight:700;color:#222;padding-bottom:18px;">${isCancelled ? 'Cancelled items' : 'Your order'}</div>
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${itemRowsHtml(items, { struck: isCancelled })}</table>
 
@@ -506,10 +668,10 @@ class EmailService {
               <tr><td style="padding-top:12px;">
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
                   ${totalsRow(isCancelled ? 'Order value' : 'Order total', money(goodsTotal), { strong: true })}
-                  ${isCancelled && !isCod
+                  ${isCancelled && !isCod && !isReceiver
     ? totalsRow('Refund status', '<span style="color:#0f7a5a;">Initiated</span>', { muted: true })
     : ''}
-                  ${isCancelled && isCod
+                  ${isCancelled && isCod && !isReceiver
     ? totalsRow('Amount charged', money(0), { muted: true })
     : ''}
                 </table>
@@ -518,14 +680,17 @@ class EmailService {
 
             ${isCancelled ? `
             <div style="margin-top:22px;padding:16px 18px;background:#faf8f6;border:1px solid #eee7e0;border-radius:8px;font-size:13px;color:#6b7177;line-height:1.7;">
-              ${isCod
-    ? 'This was a Cash on Delivery order, so no money changed hands. You can reorder any time from our store.'
-    : 'Refunds are returned to the original payment method. Bank processing times vary, so allow up to 7 working days before raising it with us.'}
+              ${isReceiver
+    ? `Nothing was charged to you for this order &mdash; ${esc(buyerName)} arranged it, and anything owed goes back to them. Do reply to this email if you were expecting the parcel and would like our help.`
+    : isCod
+      ? 'This was a Cash on Delivery order, so no money changed hands. You can reorder any time from our store.'
+      : 'Refunds are returned to the original payment method. Bank processing times vary, so allow up to 7 working days before raising it with us.'}
             </div>` : ''}`;
 
-      const mailOptions = {
+      // As on the confirmation: no order-page button for the receiver, whose email address
+      // does not open the buyer's order.
+      const mailFor = ({ isReceiver }) => ({
         from: `"Banarasi Kala" <${config.emailUser}>`,
-        to: order.customer_email,
         replyTo: supportEmail,
         subject: isCancelled
           ? `Order ${orderNumber} cancelled | Banarasi Kala`
@@ -535,22 +700,30 @@ class EmailService {
           placedLabel: order.createdAt
             ? esc(new Date(order.createdAt).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }))
             : '',
-          heading,
-          intro,
-          ctaLabel: 'View your order',
-          ctaUrl: order.id ? `${storeUrl}/order-confirmation?orderId=${order.id}` : `${storeUrl}/my-orders`,
+          heading: headingFor(isReceiver),
+          intro: introFor(isReceiver),
+          ctaLabel: isReceiver ? '' : 'View your order',
+          ctaUrl: isReceiver
+            ? ''
+            : (order.id ? `${storeUrl}/order-confirmation?orderId=${order.id}` : `${storeUrl}/my-orders`),
           banner,
-          body,
+          body: body(isReceiver),
           supportEmail: esc(supportEmail),
           storeUrl: esc(storeUrl),
           preheader: isCancelled
-            ? `Order ${esc(orderNumber)} cancelled${isCod ? '' : ' &middot; refund initiated'}`
+            ? `Order ${esc(orderNumber)} cancelled${isCod || isReceiver ? '' : ' &middot; refund initiated'}`
             : `Order ${esc(orderNumber)} delivered`,
         }),
-      };
+      });
 
-      await transporter.sendMail(mailOptions);
-      console.log(`Order status update email sent to ${order.customer_email} for status: ${normalizedStatus}`);
+      for (const recipient of recipients) {
+        try {
+          await transporter.sendMail({ ...mailFor(recipient), to: recipient.email });
+          console.log(`Order status update email sent to ${recipient.email}${recipient.isReceiver ? ' (receiver)' : ''} for status: ${normalizedStatus}`);
+        } catch (error) {
+          console.error(`Error sending order status email to ${recipient.email}:`, error);
+        }
+      }
     } catch (error) {
       console.error('Error sending order status email:', error);
     }
