@@ -204,10 +204,43 @@ const ensureCouponColumns = async () => {
   }
 };
 
+/**
+ * The queue behind automatic video optimisation.
+ *
+ * Created here rather than by sequelize.sync() for the same reason as every other late table:
+ * schema sync is skipped on boot. Keyed on source_url so a file referenced from several
+ * tables is still optimised once.
+ */
+const ensureVideoJobsTable = async () => {
+  try {
+    await sequelize.query(`
+      CREATE TABLE IF NOT EXISTS "${schema}"."video_jobs" (
+        "id"            SERIAL PRIMARY KEY,
+        "source_url"    TEXT NOT NULL UNIQUE,
+        "output_url"    TEXT,
+        "job_id"        VARCHAR(255),
+        "status"        VARCHAR(32) NOT NULL DEFAULT 'pending',
+        "source_bytes"  BIGINT,
+        "output_bytes"  BIGINT,
+        "attempts"      INTEGER NOT NULL DEFAULT 0,
+        "error_message" TEXT,
+        "created_at"    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        "updated_at"    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+    await sequelize.query(
+      `CREATE INDEX IF NOT EXISTS "video_jobs_status_idx" ON "${schema}"."video_jobs" ("status")`,
+    );
+    console.log("[DB] Video optimisation queue ensured.");
+  } catch (error) {
+    console.warn("[DB] Could not ensure video_jobs table:", error.message);
+  }
+};
+
 module.exports = {
   ensureWalletConstraint,
   ensureProductOrderColumns,
   ensureCouponColumns,
+  ensureVideoJobsTable,
   ensureFeedbackColumns,
   ensureCustomerColumns,
   ensureRefundColumns,

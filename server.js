@@ -5,7 +5,8 @@ const app = require("./src");
 const { connectDB } = require("./src/config/db");
 const { config } = require("./src/config/env");
 const WalletService = require("./src/services/WalletService");
-const { ensureWalletConstraint, ensureProductOrderColumns, ensureCouponColumns, ensureIndexes } = require("./src/utils/dbConstraints");
+const { ensureWalletConstraint, ensureProductOrderColumns, ensureCouponColumns, ensureVideoJobsTable, ensureIndexes } = require("./src/utils/dbConstraints");
+const VideoOptimizeService = require("./src/services/VideoOptimizeService");
 const { cleanupUnverifiedCustomers } = require("./src/utils/customerVerificationSchema");
 const { ensureOrderTransactionTables } = require("./src/utils/orderTransactions");
 
@@ -55,6 +56,7 @@ const startServer = async () => {
     await ensureWalletConstraint();
     await ensureProductOrderColumns();
     await ensureCouponColumns();
+    await ensureVideoJobsTable();
     await ensureIndexes();
 
     // startHeartbeat();
@@ -66,6 +68,9 @@ const startServer = async () => {
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(`Environment: ${config.nodeEnv}`);
+      // Started after listen so a slow AWS call can never delay the port opening. No-ops
+      // when MediaConvert is unconfigured, so a dev machine without AWS keys is unaffected.
+      VideoOptimizeService.start();
     });
   } catch (error) {
     console.error("Failed to start server:", error);
