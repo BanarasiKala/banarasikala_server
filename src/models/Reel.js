@@ -28,9 +28,15 @@ const Reel = sequelize.define('Reel', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
-  // Tile-sized silent copy for the home-page bags, written by the optimisation pipeline.
-  // The full-screen player always uses video_url.
+  // Down-scaled silent copies written by the optimisation pipeline: preview_url for the 79x97
+  // home-page bags, card_url for the 158x284 "Banaras in Motion" rail. The full-screen player
+  // always uses video_url — at 3x it is already slightly under-resolution, so it must not be
+  // swapped for either of these.
   preview_url: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  card_url: {
     type: DataTypes.TEXT,
     allowNull: true,
   },

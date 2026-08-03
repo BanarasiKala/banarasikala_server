@@ -235,15 +235,19 @@ const ensureVideoJobsTable = async () => {
     for (const clause of [
       `ADD COLUMN IF NOT EXISTS "poster_url" TEXT`,
       `ADD COLUMN IF NOT EXISTS "preview_url" TEXT`,
+      `ADD COLUMN IF NOT EXISTS "card_url" TEXT`,
       // Which table referenced the file, which is what picks the encode profile.
       `ADD COLUMN IF NOT EXISTS "source_table" VARCHAR(64)`,
     ]) {
       await sequelize.query(`ALTER TABLE "${schema}"."video_jobs" ${clause}`);
     }
-    // The tile-sized reel variant the home-page bags play instead of the full master.
-    await sequelize.query(
-      `ALTER TABLE "${schema}"."reels" ADD COLUMN IF NOT EXISTS "preview_url" TEXT`,
-    );
+    // Down-scaled reel variants: `preview_url` for the 79x97 home-page bags, `card_url` for the
+    // 158x284 Banaras in Motion rail. The full-screen player keeps using video_url.
+    for (const column of ["preview_url", "card_url"]) {
+      await sequelize.query(
+        `ALTER TABLE "${schema}"."reels" ADD COLUMN IF NOT EXISTS "${column}" TEXT`,
+      );
+    }
     console.log("[DB] Video optimisation queue ensured.");
   } catch (error) {
     console.warn("[DB] Could not ensure video_jobs table:", error.message);

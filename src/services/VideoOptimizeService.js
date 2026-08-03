@@ -17,6 +17,7 @@
 const { MediaConvertClient, CreateJobCommand, GetJobCommand } = require("@aws-sdk/client-mediaconvert");
 const { S3Client, HeadObjectCommand, CopyObjectCommand } = require("@aws-sdk/client-s3");
 const { sequelize } = require("../config/db");
+const { config } = require("../config/env");
 const VideoJob = require("../models/VideoJob");
 
 const CACHE_CONTROL = "public, max-age=31536000, immutable";
@@ -40,7 +41,18 @@ const URL_COLUMNS = [
  */
 const PROFILES = {
   feature: { height: 1920, qvbr: 7, maxBitrate: 2500000 },
-  backdrop: { height: 720, qvbr: 6, maxBitrate: 1000000 },
+  /**
+   * 1080 rather than the 720 this started at.
+   *
+   * 720 was picked off the CSS box (352x418 for the Banaras Royale stage) without accounting
+   * for device pixel ratio or for `object-fit: cover`. The clip is 9:16 cropped into a
+   * 0.84-aspect box, so WIDTH is the binding constraint, not height: 406px of source stretched
+   * across 1056 device px is a 2.6x upscale on a 3x phone. 1080 tall brings that to 1.74x.
+   *
+   * Not 1920: that would be pixel-exact but costs ~15 MB for a backdrop that sits behind a
+   * scrim with a polaroid and a heading on top of it.
+   */
+  backdrop: { height: 1080, qvbr: 6, maxBitrate: 1500000 },
 };
 const TABLE_PROFILE = {
   banaras_royale: "backdrop",
@@ -60,7 +72,18 @@ const TABLE_PROFILE = {
  * shorten the master with it — not worth a second job to save a megabyte.
  */
 const PREVIEW = { height: 480, qvbr: 4, maxBitrate: 300000 };
-const PREVIEW_TABLES = new Set(["reels"]);
+
+/**
+ * The "Banaras in Motion" rail on the home page: 158x284 CSS, so 474x852 device pixels at 3x.
+ * Feeding it the 1080x1920 master is a 2.25x oversample — about five times the pixels it can
+ * show. 960 tall covers 852 with a little headroom.
+ *
+ * Deliberately separate from PREVIEW rather than one variant serving both: the bags need only
+ * 297 device px, and making them download a 960-tall file would triple what every home-page
+ * visitor pays for three tiles that are always on screen.
+ */
+const CARD = { height: 960, qvbr: 5, maxBitrate: 800000 };
+const VARIANT_TABLES = new Set(["reels"]);
 
 const MAX_ATTEMPTS = 3;
 // A handful per sweep. MediaConvert bills per job and a runaway loop should cost pennies.
@@ -102,6 +125,24 @@ const keyFromUrl = (url) => {
 const outputUrlFor = (url) => url.replace(/\.mp4$/i, "-web.mp4");
 
 /**
+ * Is this url something this pipeline produced?
+ *
+ * Named suffixes, matched on the TAIL rather than as a fixed list of whole names, so a
+ * hand-rolled variant like `-v2-bg.mp4` is recognised without anyone remembering to extend a
+ * list. This has now bitten twice: a re-encode written to `-bg.mp4` was swept back in and
+ * re-encoded to `-bg-web.mp4`, and then `-bg1080.mp4` was swept into `-bg1080-web.mp4` by a
+ * server whose deployed copy predated the fix.
+ *
+ * Two lessons are baked in here. First, the check has to survive a name nobody anticipated —
+ * hence `-bg` matching any `*-bg.mp4`. Second, and more important: this is only the cheap
+ * first pass. `findUnoptimised` also excludes every url recorded in video_jobs, and any one-off
+ * script that writes a file MUST record it there, or that guard is blind to it by construction.
+ */
+const isOurOutput = (url) => /-(web|preview|card|poster|bg)\.mp4$/i.test(url)
+  // -bg1080.mp4, -bg720.mp4: a height-tagged backdrop encode.
+  || /-bg\d+\.mp4$/i.test(url);
+
+/**
  * Every video url currently referenced by the app that is not already optimised, paired with
  * the table that referenced it — that is what picks the encode profile.
  *
@@ -124,7 +165,9 @@ const findUnoptimised = async () => {
   const [produced] = await sequelize.query(
     `SELECT output_url AS u FROM "vns_saree"."video_jobs" WHERE output_url IS NOT NULL
      UNION
-     SELECT preview_url AS u FROM "vns_saree"."video_jobs" WHERE preview_url IS NOT NULL`,
+     SELECT preview_url AS u FROM "vns_saree"."video_jobs" WHERE preview_url IS NOT NULL
+     UNION
+     SELECT card_url AS u FROM "vns_saree"."video_jobs" WHERE card_url IS NOT NULL`,
   );
   const ours = new Set(produced.map((r) => r.u));
 
@@ -138,7 +181,7 @@ const findUnoptimised = async () => {
       (String(r.v).match(/https?:\/\/[^"'\s,\\]+?\.mp4/gi) || []).forEach((u) => {
         // Anything this pipeline produced is already optimised — feeding an output back in
         // would encode it a second time and land on -web-web.mp4.
-        if (/-(web|preview|bg)\.mp4$/i.test(u) || ours.has(u)) return;
+        if (isOurOutput(u) || ours.has(u)) return;
         if (!found.has(u)) found.set(u, table);
       });
     });
@@ -177,37 +220,41 @@ const submitJob = async (sourceUrl, sourceTable) => {
   const dir = key.includes("/") ? key.slice(0, key.lastIndexOf("/") + 1) : "";
   const base = key.slice(dir.length).replace(/\.mp4$/i, "");
   const profile = PROFILES[TABLE_PROFILE[sourceTable]] || PROFILES.feature;
-  const wantsPreview = PREVIEW_TABLES.has(sourceTable);
+  const wantsVariants = VARIANT_TABLES.has(sourceTable);
 
-  const previewGroup = {
-    Name: "Preview",
+  /**
+   * A silent, down-scaled copy for a surface that shows the clip small.
+   *
+   * No AudioDescriptions at all: every surface these feed is muted and aria-hidden, so an
+   * audio track would be bytes nobody can ever hear.
+   */
+  const variantGroup = (name, suffix, spec) => ({
+    Name: name,
     OutputGroupSettings: {
       Type: "FILE_GROUP_SETTINGS",
       FileGroupSettings: { Destination: `s3://${c.bucket}/${dir}${base}` },
     },
     Outputs: [{
-      NameModifier: "-preview",
+      NameModifier: suffix,
       ContainerSettings: {
         Container: "MP4",
         Mp4Settings: { CslgAtom: "INCLUDE", FreeSpaceBox: "EXCLUDE", MoovPlacement: "PROGRESSIVE_DOWNLOAD" },
       },
       VideoDescription: {
-        Height: PREVIEW.height,
+        Height: spec.height,
         ScalingBehavior: "DEFAULT",
         CodecSettings: {
           Codec: "H_264",
           H264Settings: {
             RateControlMode: "QVBR",
-            QvbrSettings: { QvbrQualityLevel: PREVIEW.qvbr },
-            MaxBitrate: PREVIEW.maxBitrate,
+            QvbrSettings: { QvbrQualityLevel: spec.qvbr },
+            MaxBitrate: spec.maxBitrate,
             SceneChangeDetect: "TRANSITION_DETECTION",
           },
         },
       },
-      // No AudioDescriptions at all: the tile is muted and hidden from assistive tech, so an
-      // audio track would be bytes nobody can ever hear.
     }],
-  };
+  });
 
   const job = await mc.send(new CreateJobCommand({
     Role: c.role,
@@ -288,14 +335,18 @@ const submitJob = async (sourceUrl, sourceTable) => {
             },
           },
         }],
-      }, ...(wantsPreview ? [previewGroup] : [])],
+      }, ...(wantsVariants ? [
+        variantGroup("Preview", "-preview", PREVIEW),
+        variantGroup("Card", "-card", CARD),
+      ] : [])],
     },
   }));
 
   return {
     jobId: job.Job.Id,
     outputUrl: outputUrlFor(sourceUrl),
-    previewUrl: wantsPreview ? sourceUrl.replace(/\.mp4$/i, "-preview.mp4") : null,
+    previewUrl: wantsVariants ? sourceUrl.replace(/\.mp4$/i, "-preview.mp4") : null,
+    cardUrl: wantsVariants ? sourceUrl.replace(/\.mp4$/i, "-card.mp4") : null,
     sourceBytes: head.ContentLength || null,
   };
 };
@@ -359,27 +410,29 @@ const resolvePoster = async (row) => {
 };
 
 /**
- * Stamps the tile-sized variant cacheable and hands it to the reel that owns it.
+ * Stamps a down-scaled variant cacheable and hands it to the reel that owns it.
  *
  * Kept separate from the master url: `reels.video_url` still points at the full-quality file,
- * which is what the reels player streams. Only the home-page bags read `preview_url`, and they
- * fall back to the master if it is missing, so a job that produced no preview degrades to the
- * old behaviour rather than to a blank tile.
+ * which is what the full-screen player streams — and which measurement says is if anything
+ * slightly UNDER-resolution for a 3x phone, so it must not be swapped for a variant. Only the
+ * small surfaces read these columns, and each falls back to the master when its column is
+ * empty, so a job that produced no variant degrades to the old behaviour rather than to a
+ * blank tile.
  */
-const publishPreview = async (row) => {
-  if (!row.preview_url) return null;
+const publishVariant = async (row, column, url) => {
+  if (!url) return null;
   const c = cfg();
   const { s3 } = clients();
-  const key = keyFromUrl(row.preview_url);
+  const key = keyFromUrl(url);
   try {
     await s3.send(new HeadObjectCommand({ Bucket: c.bucket, Key: key }));
     await stampCacheControl(key);
     const [, meta] = await sequelize.query(
-      `UPDATE "vns_saree"."reels" SET preview_url = :preview WHERE video_url = :video`,
-      { replacements: { preview: row.preview_url, video: row.output_url } },
+      `UPDATE "vns_saree"."reels" SET "${column}" = :url WHERE video_url = :video`,
+      { replacements: { url, video: row.output_url } },
     );
-    if (meta.rowCount) console.log(`[VideoOptimize] preview set on ${meta.rowCount} reel(s)`);
-    return row.preview_url;
+    if (meta.rowCount) console.log(`[VideoOptimize] ${column} set on ${meta.rowCount} reel(s)`);
+    return url;
   } catch {
     return null;
   }
@@ -412,11 +465,12 @@ const submitPending = async () => {
   });
   for (const row of pending) {
     try {
-      const { jobId, outputUrl, previewUrl, sourceBytes } = await submitJob(row.source_url, row.source_table);
+      const { jobId, outputUrl, previewUrl, cardUrl, sourceBytes } = await submitJob(row.source_url, row.source_table);
       await row.update({
         job_id: jobId,
         output_url: outputUrl,
         preview_url: previewUrl,
+        card_url: cardUrl,
         source_bytes: sourceBytes,
         status: "processing",
         attempts: row.attempts + 1,
@@ -445,7 +499,8 @@ const pollProcessing = async () => {
         const bytes = await stampCacheControl(outKey);
         const changed = await repointUrl(row.source_url, row.output_url);
         const poster = await resolvePoster(row);
-        await publishPreview(row);
+        await publishVariant(row, "preview_url", row.preview_url);
+        await publishVariant(row, "card_url", row.card_url);
         await row.update({ status: "complete", output_bytes: bytes || null, poster_url: poster || null });
         const saved = row.source_bytes && bytes
           ? ` (${(100 - (Number(bytes) / Number(row.source_bytes)) * 100).toFixed(0)}% smaller)`
@@ -473,14 +528,37 @@ const sweep = async () => {
 };
 
 /**
+ * May this process run the sweeper at all?
+ *
+ * Having the AWS keys is not enough of a test, because a developer's .env has them too and
+ * points at the production database. That combination means every backend started on a laptop
+ * becomes a second, invisible writer to live data — it re-encodes videos and repoints their
+ * urls on a 60-second timer, using whatever code it happened to start with. A bare
+ * `node server.js` has no file watcher, so it keeps that code even after the file is fixed.
+ *
+ * That is not hypothetical: a stale local process twice re-encoded already-optimised videos
+ * and reverted corrections minutes after they were made, and the cause took a while to find
+ * precisely because nothing about it was visible from the machine doing it.
+ *
+ * So the sweeper runs in production, or where someone has explicitly asked for it with
+ * VIDEO_OPTIMIZE=1 — which is the right switch when deliberately testing the pipeline locally.
+ */
+const isEnabled = () => process.env.VIDEO_OPTIMIZE === "1" || config.nodeEnv === "production";
+
+/**
  * Starts the background loop. Deliberately infrequent: uploads are occasional and a job takes
  * ~10s, so a minute of latency costs nothing and keeps both the API calls and the database
  * polling negligible.
  */
 let timer = null;
 const start = ({ intervalMs = 60000 } = {}) => {
-  if (timer || !isConfigured()) {
-    if (!isConfigured()) console.log("[VideoOptimize] not configured — set MEDIACONVERT_ROLE_ARN/ENDPOINT to enable");
+  if (timer) return;
+  if (!isEnabled()) {
+    console.log(`[VideoOptimize] idle in ${config.nodeEnv} — set VIDEO_OPTIMIZE=1 to run it here`);
+    return;
+  }
+  if (!isConfigured()) {
+    console.log("[VideoOptimize] not configured — set MEDIACONVERT_ROLE_ARN/ENDPOINT to enable");
     return;
   }
   console.log("[VideoOptimize] watching for unoptimised videos");

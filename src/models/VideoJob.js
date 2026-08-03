@@ -50,6 +50,11 @@ const VideoJob = sequelize.define(
       allowNull: true,
       comment: "Tile-sized silent variant, for thumbnails that would otherwise stream the master",
     },
+    card_url: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      comment: "Rail-sized silent variant, between the preview and the master",
+    },
     source_table: {
       type: DataTypes.STRING(64),
       allowNull: true,
