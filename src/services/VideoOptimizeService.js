@@ -281,4 +281,17 @@ const start = ({ intervalMs = 60000 } = {}) => {
   if (timer.unref) timer.unref();
 };
 
-module.exports = { start, sweep, queueNewVideos, submitPending, pollProcessing, findUnoptimised, repointUrl, isConfigured };
+module.exports = {
+  start,
+  sweep,
+  queueNewVideos,
+  submitPending,
+  pollProcessing,
+  findUnoptimised,
+  repointUrl,
+  isConfigured,
+  // Exported so a single file can be re-run by hand — useful when one job fails and the
+  // whole sweep should not be repeated to retry it.
+  submitJob,
+  stampCacheControl,
+};
