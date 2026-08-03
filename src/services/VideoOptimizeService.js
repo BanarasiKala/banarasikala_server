@@ -111,6 +111,23 @@ const outputUrlFor = (url) => url.replace(/\.mp4$/i, "-web.mp4");
  */
 const findUnoptimised = async () => {
   const found = new Map(); // url -> table
+
+  /**
+   * Everything this pipeline has ever produced, read back from the queue itself.
+   *
+   * The suffix test below is a first line of defence and it is not sufficient on its own: a
+   * re-encode written to -bg.mp4 was swept straight back in and re-encoded to -bg-web.mp4
+   * before that suffix was added to the pattern. Any new output name would repeat it. Asking
+   * the table which urls are outputs cannot go stale that way — a file we made is a file we
+   * recorded making.
+   */
+  const [produced] = await sequelize.query(
+    `SELECT output_url AS u FROM "vns_saree"."video_jobs" WHERE output_url IS NOT NULL
+     UNION
+     SELECT preview_url AS u FROM "vns_saree"."video_jobs" WHERE preview_url IS NOT NULL`,
+  );
+  const ours = new Set(produced.map((r) => r.u));
+
   for (const [table, col] of URL_COLUMNS) {
     const [rows] = await sequelize.query(
       `SELECT CAST("${col}" AS text) AS v FROM "vns_saree"."${table}"
@@ -121,7 +138,7 @@ const findUnoptimised = async () => {
       (String(r.v).match(/https?:\/\/[^"'\s,\\]+?\.mp4/gi) || []).forEach((u) => {
         // Anything this pipeline produced is already optimised — feeding an output back in
         // would encode it a second time and land on -web-web.mp4.
-        if (/-(web|preview|bg)\.mp4$/i.test(u)) return;
+        if (/-(web|preview|bg)\.mp4$/i.test(u) || ours.has(u)) return;
         if (!found.has(u)) found.set(u, table);
       });
     });
