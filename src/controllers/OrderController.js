@@ -1428,6 +1428,20 @@ class OrderController {
         where: { order_id: order.id },
         order: [['created_at', 'DESC']],
       });
+      /**
+       * Locked once the money has gone.
+       *
+       * The storefront already hides the "Change" button at this point, but hiding a control
+       * is not enforcement — this route is reachable without it. Accepting a new account here
+       * would rewrite the record of where a completed transfer went: the proof under Refunds
+       * would show money sent to one account while the page named another, and neither the
+       * customer nor an admin could tell which was true.
+       */
+      if (refund?.processed_at) {
+        return res.status(400).json({
+          message: 'This refund has already been sent to the account on file, so it can no longer be changed. Please contact us if it did not reach you.',
+        });
+      }
       if (!refund) {
         refund = await OrderRefund.create({
           order_id: order.id,
