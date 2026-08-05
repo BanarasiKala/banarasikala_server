@@ -676,6 +676,13 @@ class OrderItemActionController {
           refund_quoted_amount: refundRow ? roundMoney(refundRow.amount) : null,
           refund_inspected_amount: refundRow?.inspected_amount != null ? roundMoney(refundRow.inspected_amount) : null,
           refund_inspected_at: refundRow?.inspected_at || null,
+          // Everything the queue's own inspection form binds to, so recording an inspection
+          // never requires a trip to the Orders page. The id is what PATCH .../inspection is
+          // keyed by; processed_at is what locks the form once the money has gone.
+          refund_id: refundRow?.id || null,
+          refund_inspection_note: refundRow?.inspection_note || "",
+          refund_inspection_images: Array.isArray(refundRow?.inspection_images) ? refundRow.inspection_images : [],
+          refund_processed_at: refundRow?.processed_at || null,
 
           replacement_shipment_id: replacementShipment?.id || null,
           replacement_booked: Boolean(replacementShipment?.shiprocket_order_id || replacementShipment?.awb_number),
