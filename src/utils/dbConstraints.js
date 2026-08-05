@@ -130,6 +130,10 @@ const ensureRefundColumns = async () => {
     `ADD COLUMN IF NOT EXISTS "inspection_note" TEXT`,
     `ADD COLUMN IF NOT EXISTS "inspected_by" INTEGER`,
     `ADD COLUMN IF NOT EXISTS "inspected_at" TIMESTAMP WITH TIME ZONE`,
+    // Kept apart from proof_images on purpose: one is the damage the inspection found, the
+    // other is the receipt for the money afterwards. Sharing a column filed the tear photo
+    // under "Payment proof" on the customer's order page.
+    `ADD COLUMN IF NOT EXISTS "inspection_images" JSONB DEFAULT '[]'::jsonb`,
     `ADD COLUMN IF NOT EXISTS "proof_images" JSONB DEFAULT '[]'::jsonb`,
   ];
   try {

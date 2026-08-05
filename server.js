@@ -5,7 +5,7 @@ const app = require("./src");
 const { connectDB } = require("./src/config/db");
 const { config } = require("./src/config/env");
 const WalletService = require("./src/services/WalletService");
-const { ensureWalletConstraint, ensureProductOrderColumns, ensureCouponColumns, ensureVideoJobsTable, ensureIndexes } = require("./src/utils/dbConstraints");
+const { ensureWalletConstraint, ensureProductOrderColumns, ensureCouponColumns, ensureVideoJobsTable, ensureRefundColumns, ensureIndexes } = require("./src/utils/dbConstraints");
 const VideoOptimizeService = require("./src/services/VideoOptimizeService");
 const { cleanupUnverifiedCustomers } = require("./src/utils/customerVerificationSchema");
 const { ensureOrderTransactionTables } = require("./src/utils/orderTransactions");
@@ -57,6 +57,10 @@ const startServer = async () => {
     await ensureProductOrderColumns();
     await ensureCouponColumns();
     await ensureVideoJobsTable();
+    // Must run at boot, not lazily on the admin refund routes: the OrderRefund model declares
+    // these columns, so every order READ selects them. Left to the first admin who opens the
+    // refund modal, a deploy that adds one breaks the customer's order page until then.
+    await ensureRefundColumns();
     await ensureIndexes();
 
     // startHeartbeat();

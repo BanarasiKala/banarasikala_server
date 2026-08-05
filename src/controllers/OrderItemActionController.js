@@ -648,9 +648,11 @@ class OrderItemActionController {
           forward_shipping_deduction: sum((m) => m.forward_shipping_deduction),
           reverse_shipping_deduction: sum((m) => m.reverse_shipping_deduction),
           // Prefer the refund row: it is the figure that will actually be paid,
-          // so the button can never promise a different number than it pays.
+          // so the button can never promise a different number than it pays. Once an
+          // inspection has been recorded, THAT is the figure — settlement pays it, so a
+          // button still labelled with the quote would name an amount nobody receives.
           estimated_refund_amount: refundRow && primary.action_type === ACTION_TYPES.RETURN
-            ? roundMoney(refundRow.amount)
+            ? roundMoney(refundRow.inspected_amount ?? refundRow.amount)
             : estimateSum,
 
           items: members.map((m) => ({
@@ -669,6 +671,11 @@ class OrderItemActionController {
           refund_status: refundRow?.status || null,
           refund_amount: refundRow ? roundMoney(refundRow.amount) : null,
           refund_bank_details: refundRow?.bank_details || null,
+          // What was quoted vs. what the inspection concluded, so the queue can say which of
+          // the two the button is about to pay — and warn when the parcel was never checked.
+          refund_quoted_amount: refundRow ? roundMoney(refundRow.amount) : null,
+          refund_inspected_amount: refundRow?.inspected_amount != null ? roundMoney(refundRow.inspected_amount) : null,
+          refund_inspected_at: refundRow?.inspected_at || null,
 
           replacement_shipment_id: replacementShipment?.id || null,
           replacement_booked: Boolean(replacementShipment?.shiprocket_order_id || replacementShipment?.awb_number),
@@ -1035,7 +1042,18 @@ class OrderItemActionController {
           //     to the value being returned.
           const orderTotals = deriveOrderTotals(await OrderLedger.findAll({ where: { order_id: fullOrder.id } }));
           const walletTotal = Number(orderTotals.wallet_amount || 0);
-          const refundAmt = Number(refund?.amount || 0);
+          /**
+           * The figure that was actually settled on the ledger above — the inspected amount
+           * whenever one was recorded, and only otherwise the quote.
+           *
+           * Sizing the split off `amount` instead paid out the FULL quote across the wallet and
+           * the gateway while the ledger had only been debited the reduced amount, so every
+           * inspection that cut a refund handed back the difference anyway and left the order
+           * carrying a permanent imbalance.
+           */
+          const refundAmt = Math.max(0, refund?.inspected_amount != null
+            ? Number(refund.inspected_amount)
+            : Number(refund?.amount || 0));
           const subtotal = Number(orderTotals.subtotal_amount || 0);
           const isFullReturn = Boolean(refund?.breakdown?.is_full_return);
           let walletShare = 0;

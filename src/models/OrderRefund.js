@@ -106,6 +106,18 @@ const OrderRefund = sequelize.define('OrderRefund', {
     type: DataTypes.TEXT,
     allowNull: true,
   },
+  /**
+   * What the inspection found, as [{ url }] — the tear, the missing zari, the wrong colour.
+   *
+   * Separate from proof_images below, which is the receipt for the money. They are two
+   * different claims made at two different moments, and the customer is shown each of them
+   * under its own heading; one column for both filed damage photos under "Payment proof".
+   */
+  inspection_images: {
+    type: DataTypes.JSONB,
+    allowNull: true,
+    defaultValue: [],
+  },
   inspected_by: {
     type: DataTypes.INTEGER,
     allowNull: true,

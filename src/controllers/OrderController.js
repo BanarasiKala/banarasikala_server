@@ -42,12 +42,13 @@ const { ensureRefundColumns } = require('../utils/dbConstraints');
 const { normalizeEmail, isSameEmail } = require('../utils/emailAddress');
 
 /**
- * Proof-of-payment images, as [{ url }] — the same shape review images use, so the storefront
- * lightbox opens them with no new component. Accepts bare URL strings too, because the admin
- * upload widget and a manual paste produce different things. Capped at four: this is evidence
- * of one transfer, not an album.
+ * Evidence images, as [{ url }] — the same shape review images use, so the storefront lightbox
+ * opens them with no new component. Used for both of the refund's photo sets: what the
+ * inspection found, and the receipt for the transfer afterwards. Accepts bare URL strings too,
+ * because the admin upload widget and a manual paste produce different things. Capped at four:
+ * each is evidence of one thing, not an album.
  */
-const normalizeProofImages = (value) => (Array.isArray(value) ? value : [])
+const normalizeEvidenceImages = (value) => (Array.isArray(value) ? value : [])
   .map((image) => {
     const url = typeof image === 'string' ? image : (image?.url || image?.secure_url);
     return url ? { url: String(url).trim() } : null;
@@ -469,6 +470,7 @@ const serializeOrder = (order, feedbackRows = [], actionRows = []) => {
     json.refund_inspected_amount = latestRefund.inspected_amount;
     json.refund_inspection_note = latestRefund.inspection_note;
     json.refund_inspected_at = latestRefund.inspected_at;
+    json.refund_inspection_images = Array.isArray(latestRefund.inspection_images) ? latestRefund.inspection_images : [];
     json.refund_proof_images = Array.isArray(latestRefund.proof_images) ? latestRefund.proof_images : [];
     // The single figure the customer is actually owed — the client should never have to
     // decide which of the two to trust.
@@ -1365,23 +1367,61 @@ class OrderController {
         return res.status(403).json({ message: 'This order does not belong to this customer.' });
       }
 
-      const accountHolderName = String(req.body.account_holder_name || '').trim();
-      const accountNumber = String(req.body.account_number || '').replace(/\s+/g, '');
-      const ifscCode = String(req.body.ifsc_code || '').trim().toUpperCase();
-      const bankName = String(req.body.bank_name || '').trim();
-      const branchName = String(req.body.branch_name || '').trim();
+      /**
+       * Two ways to be paid, one payload.
+       *
+       * A UPI id is the whole instruction on its own — the app resolves the name and the bank
+       * from it — so demanding an account number, an IFSC and a branch from someone who has a
+       * VPA is four fields of friction for nothing. `method` picks the branch; anything other
+       * than 'upi' stays on the bank path, which is also what older clients send by omitting
+       * the field entirely.
+       */
+      const method = String(req.body.method || 'bank').trim().toLowerCase() === 'upi' ? 'upi' : 'bank';
+      let details;
 
-      if (accountHolderName.length < 3) {
-        return res.status(400).json({ message: 'Please enter the bank account holder name.' });
-      }
-      if (!/^\d{6,18}$/.test(accountNumber)) {
-        return res.status(400).json({ message: 'Please enter a valid bank account number.' });
-      }
-      if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode)) {
-        return res.status(400).json({ message: 'Please enter a valid IFSC code.' });
-      }
-      if (bankName.length < 2) {
-        return res.status(400).json({ message: 'Please enter the bank name.' });
+      if (method === 'upi') {
+        const upiId = String(req.body.upi_id || '').trim();
+        // VPA grammar: handle@psp. Deliberately not a lookup — an unreachable id fails at
+        // transfer time and the admin re-asks; refusing a valid-but-unfamiliar PSP here
+        // would lock out the smaller banks entirely.
+        if (!/^[a-zA-Z0-9](?:[a-zA-Z0-9.\-_]{1,255})@[a-zA-Z]{2,64}$/.test(upiId)) {
+          return res.status(400).json({ message: 'Please enter a valid UPI ID, like name@bank.' });
+        }
+        details = {
+          method: 'upi',
+          upi_id: upiId,
+          updated_at: new Date().toISOString(),
+        };
+      } else {
+        const accountHolderName = String(req.body.account_holder_name || '').trim();
+        const accountNumber = String(req.body.account_number || '').replace(/\s+/g, '');
+        const ifscCode = String(req.body.ifsc_code || '').trim().toUpperCase();
+        const bankName = String(req.body.bank_name || '').trim();
+        const branchName = String(req.body.branch_name || '').trim();
+
+        if (accountHolderName.length < 3) {
+          return res.status(400).json({ message: 'Please enter the bank account holder name.' });
+        }
+        if (!/^\d{6,18}$/.test(accountNumber)) {
+          return res.status(400).json({ message: 'Please enter a valid bank account number.' });
+        }
+        if (!/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifscCode)) {
+          return res.status(400).json({ message: 'Please enter a valid IFSC code.' });
+        }
+        if (bankName.length < 2) {
+          return res.status(400).json({ message: 'Please enter the bank name.' });
+        }
+
+        details = {
+          method: 'bank',
+          account_holder_name: accountHolderName,
+          account_number_last4: accountNumber.slice(-4),
+          account_number: accountNumber,
+          ifsc_code: ifscCode,
+          bank_name: bankName,
+          branch_name: branchName || null,
+          updated_at: new Date().toISOString(),
+        };
       }
 
       let refund = await OrderRefund.findOne({
@@ -1398,15 +1438,7 @@ class OrderController {
         });
       }
       await refund.update({
-        bank_details: {
-          account_holder_name: accountHolderName,
-          account_number_last4: accountNumber.slice(-4),
-          account_number: accountNumber,
-          ifsc_code: ifscCode,
-          bank_name: bankName,
-          branch_name: branchName || null,
-          updated_at: new Date().toISOString(),
-        },
+        bank_details: details,
         payment_method: REFUND_PAYMENT_METHOD.BANK_TRANSFER,
         // "Bank Details Required" → "Bank Details Submitted" so the admin
         // queue shows the transfer is ready to make; other states unchanged.
@@ -1417,10 +1449,12 @@ class OrderController {
             : refund.status || REFUND_STATUS.PENDING,
       });
 
-      return res.status(200).json({ message: 'Bank details saved for refund.' });
+      return res.status(200).json({
+        message: method === 'upi' ? 'UPI ID saved for refund.' : 'Bank details saved for refund.',
+      });
     } catch (error) {
       console.error('[Order] saveRefundBankDetails error:', error.message);
-      return res.status(500).json({ message: 'Unable to save bank details right now.' });
+      return res.status(500).json({ message: 'Unable to save refund details right now.' });
     }
   }
 
@@ -1452,6 +1486,33 @@ class OrderController {
       if (refund.processed_at) {
         return res.status(400).json({ message: 'This refund has already been paid — its amount can no longer be changed.' });
       }
+      /**
+       * Locked at INITIATION, not at payment.
+       *
+       * processed_at alone was not enough. A prepaid refund is sent to Razorpay the moment an
+       * admin presses "Initiate refund", but that path only marks the row Processing —
+       * processed_at is stamped later, by the webhook or the lazy reconcile. In the gap between
+       * the two, this route would still accept a reduction, and the customer's order page would
+       * then show "reduced to X after inspection" while the full quoted amount had already
+       * reached their card. The inspection must be the thing that happens FIRST.
+       *
+       * The settlement's ledger entries are the marker, keyed to the action that owns this
+       * refund — the same signal initiateRefund uses to refuse settling twice.
+       */
+      if (refund.order_item_action_id) {
+        const settled = await OrderLedger.findOne({
+          where: {
+            reference_type: LEDGER_REFERENCE_TYPE.RETURN,
+            reference_id: refund.order_item_action_id,
+          },
+          attributes: ['id'],
+        });
+        if (settled) {
+          return res.status(400).json({
+            message: 'The refund for this return has already been initiated — inspect the parcel before initiating it, not after.',
+          });
+        }
+      }
 
       const quoted = roundMoney(Number(refund.amount || 0));
       const raw = Number(req.body.inspected_amount);
@@ -1477,8 +1538,10 @@ class OrderController {
         inspection_note: note || null,
         inspected_by: req.user?.id || null,
         inspected_at: new Date(),
-        ...(req.body.proof_images !== undefined
-          ? { proof_images: normalizeProofImages(req.body.proof_images) }
+        // Damage photos, not transfer receipts — this route must never write proof_images,
+        // which is the evidence that the money was sent and belongs to a later step.
+        ...(req.body.inspection_images !== undefined
+          ? { inspection_images: normalizeEvidenceImages(req.body.inspection_images) }
           : {}),
       });
 
@@ -1524,7 +1587,7 @@ class OrderController {
         // The transfer screenshot. A COD refund leaves no gateway trail the customer can look
         // up for themselves, so this is the only evidence they will ever have that it was sent.
         ...(req.body.proof_images !== undefined
-          ? { proof_images: normalizeProofImages(req.body.proof_images) }
+          ? { proof_images: normalizeEvidenceImages(req.body.proof_images) }
           : {}),
         ...(isCompleted ? { processed_at: new Date(), processed_by: req.user?.id || null } : {}),
       });

@@ -555,8 +555,18 @@ class EmailService {
    * Cancellation and delivery stay because both are terminal and both need an action or a
    * reassurance: a cancellation carries refund consequences, and a delivery notice is what a
    * customer checks against when a parcel is marked delivered but is not on the doorstep.
+   *
+   * ── The two return states ───────────────────────────────────────────────────────────────
+   * A return passes through Pickup Scheduled, Out For Pickup, Return Picked Up and Return
+   * Shipped on its way back, and none of those asks anything of the customer — they are the
+   * courier's progress, already drawn on the order page's return tracker.
+   *
+   * Only the two ends of that journey are mailed. "Return Initiated" confirms we heard the
+   * request at all, which is the moment a customer most doubts it worked. "Return Completed"
+   * is the parcel reaching us, which starts the inspection and the money — and on a COD order
+   * it is the point the customer is asked for bank details, so it must not be missed.
    */
-  static EMAILED_STATUSES = new Set(['Cancelled', 'Delivered']);
+  static EMAILED_STATUSES = new Set(['Cancelled', 'Delivered', 'Return Initiated', 'Return Completed']);
 
   async sendOrderStatusUpdate(order, status) {
     try {
@@ -565,10 +575,25 @@ class EmailService {
 
       // Looked up here for the same reason the items below are — no caller has them.
       const contacts = await loadOrderContacts(order);
-      const recipients = orderRecipients(order?.customer_email, contacts.receiverEmail);
-      if (recipients.length === 0) return;
+      const allRecipients = orderRecipients(order?.customer_email, contacts.receiverEmail);
+      if (allRecipients.length === 0) return;
 
       const isCancelled = normalizedStatus === 'Cancelled';
+      const isReturnInitiated = normalizedStatus === 'Return Initiated';
+      const isReturnReceived = normalizedStatus === 'Return Completed';
+      const isReturn = isReturnInitiated || isReturnReceived;
+
+      /**
+       * Once the parcel is back with us, everything left in a return is money — inspection,
+       * bank details, the refund — and the money is the buyer's. The receiver's part of it
+       * ended when they handed the parcel to the courier, so they are not told about a
+       * refund that was never theirs. They ARE told about the pickup, which happens at
+       * their address and needs them to be there.
+       */
+      const recipients = isReturnReceived
+        ? allRecipients.filter((recipient) => !recipient.isReceiver)
+        : allRecipients;
+      if (recipients.length === 0) return;
       const orderNumber = order.order_number || `#${order.id ?? ''}`;
       const storeUrl = (config.frontendUrl || 'https://banarasikala.com').replace(/\/$/, '');
       const supportEmail = config.supportEmail || config.emailUser;
@@ -611,7 +636,13 @@ class EmailService {
        */
       const tone = isCancelled
         ? { bg: '#fdecef', border: '#f3c4cd', text: '#93233c', label: 'Order cancelled' }
-        : { bg: '#e9f7ef', border: '#b7e2c8', text: '#12673a', label: 'Order delivered' };
+        : isReturnInitiated
+          // Amber, not green: the return is under way, not finished. A green badge here read
+          // as "refunded" to anyone skimming, weeks before any money moved.
+          ? { bg: '#fff6e8', border: '#f2ddb8', text: '#8a5a12', label: 'Return requested' }
+          : isReturnReceived
+            ? { bg: '#eef2fb', border: '#c9d5ef', text: '#2f4a86', label: 'Return received' }
+            : { bg: '#e9f7ef', border: '#b7e2c8', text: '#12673a', label: 'Order delivered' };
 
       const banner = `<div style="display:inline-block;background:${tone.bg};border:1px solid ${tone.border};color:${tone.text};font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;padding:7px 16px;border-radius:999px;margin-top:24px;">${tone.label}</div>`;
 
@@ -633,6 +664,13 @@ class EmailService {
             ? `The order ${esc(buyerName)} sent you has been cancelled`
             : 'Your order has been cancelled';
         }
+        if (isReturnInitiated) {
+          return isReceiver
+            ? `A return pickup has been arranged for the order ${esc(buyerName)} sent you`
+            : 'Your return request has been received';
+        }
+        // Receiver copies are filtered out for this one — buyer wording only.
+        if (isReturnReceived) return 'Your return has reached us';
         return isReceiver
           ? `The order ${esc(buyerName)} sent you has been delivered`
           : 'Your order has been delivered';
@@ -646,6 +684,14 @@ class EmailService {
               isCod
                 ? ' Nothing was charged for this order, so there is no refund to process.'
                 : ' Your refund has been initiated and will reach the original payment method in 5&ndash;7 working days.'}`;
+        }
+        if (isReturnInitiated) {
+          return isReceiver
+            ? `Hi ${esc(receiverName || 'there')}, a return has been requested on order <strong>${esc(orderNumber)}</strong>, which <strong>${esc(buyerName)}</strong> placed for you. A courier will collect the parcel from your address &mdash; please keep it packed and ready.`
+            : `Hi ${esc(buyerName)}, we have received your return request for order <strong>${esc(orderNumber)}</strong>. A courier will collect the parcel, and we will email you again the moment it reaches us.`;
+        }
+        if (isReturnReceived) {
+          return `Hi ${esc(buyerName)}, the return for order <strong>${esc(orderNumber)}</strong> has reached us. Our team will now check the saree and process your refund.`;
         }
         return isReceiver
           ? `Hi ${esc(receiverName || 'there')}, order <strong>${esc(orderNumber)}</strong> from <strong>${esc(buyerName)}</strong> has been delivered to your address. We hope it brings a little Banaras into your day.`
@@ -685,6 +731,20 @@ class EmailService {
     : isCod
       ? 'This was a Cash on Delivery order, so no money changed hands. You can reorder any time from our store.'
       : 'Refunds are returned to the original payment method. Bank processing times vary, so allow up to 7 working days before raising it with us.'}
+            </div>` : ''}
+
+            ${isReturn ? `
+            <div style="margin-top:22px;padding:16px 18px;background:#faf8f6;border:1px solid #eee7e0;border-radius:8px;font-size:13px;color:#6b7177;line-height:1.7;">
+              ${isReceiver
+    ? `Nothing is charged to you for this return &mdash; ${esc(buyerName)} placed the order, and anything owed goes back to them. Do reply to this email if the pickup does not suit you.`
+    : isReturnInitiated
+      ? 'The refund amount quoted for this return is shown on your order page, along with the pickup\'s progress.'
+      /* Said plainly and up front. A refund that later lands lighter than the quote, with the
+         reason buried on a page the customer never returned to, is the complaint this whole
+         inspection step exists to prevent. */
+      : `${isCod
+        ? 'You paid cash on delivery, so there is no card payment for us to reverse. Your order page will ask where to send the refund &mdash; a UPI ID or a bank account &mdash; and it cannot be sent until you tell us.'
+        : 'Your refund goes back to the original payment method. Allow up to 7 working days from the day it is initiated.'} If the saree reaches us damaged or incomplete, the refund can be adjusted &mdash; the revised amount, the reason and photographs will be on your order page.`}
             </div>` : ''}`;
 
       // As on the confirmation: no order-page button for the receiver, whose email address
@@ -694,7 +754,11 @@ class EmailService {
         replyTo: supportEmail,
         subject: isCancelled
           ? `Order ${orderNumber} cancelled | Banarasi Kala`
-          : `Order ${orderNumber} delivered | Banarasi Kala`,
+          : isReturnInitiated
+            ? `Return requested for order ${orderNumber} | Banarasi Kala`
+            : isReturnReceived
+              ? `We have received your return for order ${orderNumber} | Banarasi Kala`
+              : `Order ${orderNumber} delivered | Banarasi Kala`,
         html: emailShell({
           orderNumber: esc(orderNumber),
           placedLabel: order.createdAt
@@ -712,7 +776,11 @@ class EmailService {
           storeUrl: esc(storeUrl),
           preheader: isCancelled
             ? `Order ${esc(orderNumber)} cancelled${isCod || isReceiver ? '' : ' &middot; refund initiated'}`
-            : `Order ${esc(orderNumber)} delivered`,
+            : isReturnInitiated
+              ? `Return requested for order ${esc(orderNumber)} &middot; pickup being arranged`
+              : isReturnReceived
+                ? `Return received for order ${esc(orderNumber)} &middot; refund being processed`
+                : `Order ${esc(orderNumber)} delivered`,
         }),
       });
 
