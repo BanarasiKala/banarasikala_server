@@ -1593,10 +1593,23 @@ class OrderController {
       const refundStatus = String(req.body.refund_status || '').trim();
       if (!refundStatus) return res.status(400).json({ message: 'refund_status is required' });
 
-      const refund = await OrderRefund.findOne({
-        where: { order_id: order.id },
-        order: [['created_at', 'DESC']],
-      });
+      /**
+       * A specific refund when the caller names one, else the most recent.
+       *
+       * "Most recent" is ambiguous the moment an order carries more than one reverse request
+       * — a return and a refused exchange each own a row, and the exchange's was created when
+       * the exchange was RAISED, so date order does not track which one an admin is looking
+       * at. The Returns and Exchanges queues each settle the row they are showing, so they
+       * pass its id; the older Orders-page form has no such context and keeps the fallback.
+       *
+       * Still scoped to this order, so an id from another order cannot be settled through it.
+       */
+      const refund = req.body.refund_id
+        ? await OrderRefund.findOne({ where: { id: req.body.refund_id, order_id: order.id } })
+        : await OrderRefund.findOne({
+          where: { order_id: order.id },
+          order: [['created_at', 'DESC']],
+        });
       if (!refund) return res.status(404).json({ message: 'No refund record found for this order.' });
 
       const isCompleted = String(refundStatus).toLowerCase().includes('paid') || String(refundStatus).toLowerCase().includes('processed') || String(refundStatus).toLowerCase().includes('completed');

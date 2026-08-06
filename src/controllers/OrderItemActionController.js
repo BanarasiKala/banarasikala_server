@@ -694,6 +694,10 @@ class OrderItemActionController {
           refund_inspection_note: refundRow?.inspection_note || "",
           refund_inspection_images: Array.isArray(refundRow?.inspection_images) ? refundRow.inspection_images : [],
           refund_processed_at: refundRow?.processed_at || null,
+          // The settle step, so it too can happen in this queue rather than on the Orders
+          // page: the transfer receipt and the UTR / gateway refund id already recorded.
+          refund_proof_images: Array.isArray(refundRow?.proof_images) ? refundRow.proof_images : [],
+          refund_payment_reference: refundRow?.gateway_refund_id || "",
 
           replacement_shipment_id: replacementShipment?.id || null,
           replacement_booked: Boolean(replacementShipment?.shiprocket_order_id || replacementShipment?.awb_number),
