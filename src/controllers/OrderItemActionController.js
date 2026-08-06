@@ -2,7 +2,9 @@ const Order = require('../models/Order');
 const OrderItem = require('../models/OrderItem');
 const OrderItemAction = require('../models/OrderItemAction');
 const OrderRefund = require('../models/OrderRefund');
-const { REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
+const {
+  REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD, normalizeEvidenceImages,
+} = require('../utils/orderTransactions');
 const Product = require('../models/Product');
 const Color = require('../models/Color');
 const Customer = require('../models/Customer');
@@ -19,6 +21,7 @@ const { sequelize } = require('../config/db');
 const {
   ACTION_TYPES,
   ACTION_STATUS,
+  ITEM_STATUS,
   ensureOrderItemActionSchema,
   normalizeActionType,
   getActionableQuantity,
@@ -583,7 +586,10 @@ class OrderItemActionController {
       const settledRows = actionIds.length ? await OrderLedger.findAll({
         where: {
           entry_type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE,
-          reference_type: LEDGER_REFERENCE_TYPE.RETURN,
+          // Both reference spaces: a refused exchange settles under EXCHANGE, and without it
+          // here its "Refund initiated" badge would never light up and the admin could press
+          // the button a second time.
+          reference_type: { [Op.in]: [LEDGER_REFERENCE_TYPE.RETURN, LEDGER_REFERENCE_TYPE.EXCHANGE] },
           reference_id: { [Op.in]: actionIds },
         },
         attributes: ['reference_id'],
@@ -651,7 +657,12 @@ class OrderItemActionController {
           // so the button can never promise a different number than it pays. Once an
           // inspection has been recorded, THAT is the figure — settlement pays it, so a
           // button still labelled with the quote would name an amount nobody receives.
-          estimated_refund_amount: refundRow && primary.action_type === ACTION_TYPES.RETURN
+          // A return quotes a refund up front; an exchange only has one once it has been
+          // REFUSED, at which point the row carries the admin's figure. A passing exchange
+          // still owes goods, not money, so it keeps the (zero) estimate.
+          estimated_refund_amount: refundRow
+            && (primary.action_type === ACTION_TYPES.RETURN
+              || (primary.action_type === ACTION_TYPES.EXCHANGE && primary.status === ACTION_STATUS.REJECTED))
             ? roundMoney(refundRow.inspected_amount ?? refundRow.amount)
             : estimateSum,
 
@@ -687,6 +698,15 @@ class OrderItemActionController {
           replacement_shipment_id: replacementShipment?.id || null,
           replacement_booked: Boolean(replacementShipment?.shiprocket_order_id || replacementShipment?.awb_number),
           replacement_awb: replacementShipment?.awb_number || null,
+
+          /**
+           * The exchange verdict: null until inspected, then { passed, note, images, ... }.
+           *
+           * Read off the primary action's meta because one parcel gets one verdict for the
+           * whole request. This is what tells the queue whether to offer "Inspect parcel",
+           * "Ship replacement", or the refund the refusal created.
+           */
+          exchange_inspection: primary.meta?.exchange_inspection || null,
         };
       });
 
@@ -925,10 +945,24 @@ class OrderItemActionController {
         await transaction.rollback();
         return res.status(404).json({ message: 'Request not found.' });
       }
-      if (String(action.action_type || '').toLowerCase() !== ACTION_TYPES.RETURN) {
+      /**
+       * Returns, and exchanges that were REFUSED after inspection.
+       *
+       * A passing exchange still has nothing to pay — it is settled in goods. A failed one
+       * has been converted by setExchangeInspection into a real refund on its own row, and
+       * from here it is paid by exactly the same machinery: ledger entries, the wallet
+       * split, then Razorpay for prepaid or a manual bank/UPI transfer for COD. Only the
+       * ledger reference type differs, so the two can never mask each other's idempotency.
+       */
+      const actionType = String(action.action_type || '').toLowerCase();
+      const isExchangeRefund = actionType === ACTION_TYPES.EXCHANGE;
+      if (actionType !== ACTION_TYPES.RETURN && !isExchangeRefund) {
         await transaction.rollback();
-        return res.status(400).json({ message: 'Refunds can be initiated for return requests only.' });
+        return res.status(400).json({ message: 'Refunds can be initiated for return or exchange requests only.' });
       }
+      const ledgerRef = isExchangeRefund
+        ? LEDGER_REFERENCE_TYPE.EXCHANGE
+        : LEDGER_REFERENCE_TYPE.RETURN;
 
       // Settle the whole REQUEST, once. Every item in it is reversed in the
       // ledger, but the customer is paid a single amount — the OrderRefund row's
@@ -937,9 +971,20 @@ class OrderItemActionController {
       const groupActions = await loadActionGroup(action, { transaction, lock: true });
       const primaryAction = groupActions[0];
 
-      if (groupActions.some((row) => row.status !== ACTION_STATUS.COMPLETED)) {
+      /**
+       * A return must be COMPLETED; a refused exchange must be REJECTED.
+       *
+       * Those are the terminal states in which each one owes money, and they are opposites —
+       * a COMPLETED exchange owes goods, not cash, and must never reach a payout.
+       */
+      const requiredStatus = isExchangeRefund ? ACTION_STATUS.REJECTED : ACTION_STATUS.COMPLETED;
+      if (groupActions.some((row) => row.status !== requiredStatus)) {
         await transaction.rollback();
-        return res.status(400).json({ message: 'Complete the return first — initiate the refund once the items are received.' });
+        return res.status(400).json({
+          message: isExchangeRefund
+            ? 'Only an exchange that failed inspection can be refunded — inspect the parcel first.'
+            : 'Complete the return first — initiate the refund once the items are received.',
+        });
       }
 
       // Idempotency: the product-reversal ledger entry is the settlement marker.
@@ -947,7 +992,7 @@ class OrderItemActionController {
       const alreadySettled = await OrderLedger.findOne({
         where: {
           entry_type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE,
-          reference_type: LEDGER_REFERENCE_TYPE.RETURN,
+          reference_type: ledgerRef,
           reference_id: { [Op.in]: groupActions.map((row) => row.id) },
         },
         transaction,
@@ -964,23 +1009,55 @@ class OrderItemActionController {
       }
       const isCodOrder = String(order.payment_method || '').toUpperCase() === 'COD';
 
-      // Per-item reversal entries — the product value, pickup charge and coupon
-      // clawback belong to the item they came from.
       let estimateTotal = 0;
-      for (const groupAction of groupActions) {
-        const itemValue = roundMoney(Number(groupAction.item_amount || 0));
-        const deductions = roundMoney(Number(groupAction.forward_shipping_deduction || 0) + Number(groupAction.reverse_shipping_deduction || 0));
-        const couponAdjustment = roundMoney(Number(groupAction.meta?.coupon_adjustment || 0));
-        estimateTotal = roundMoney(estimateTotal + Number(groupAction.estimated_refund_amount ?? (itemValue - deductions - couponAdjustment)));
 
-        if (itemValue > 0) {
-          await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: itemValue, direction: LEDGER_DIRECTION.CREDIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: groupAction.id, note: 'Return — product value reversed' }, transaction);
+      if (isExchangeRefund) {
+        /**
+         * A refused exchange reverses EXACTLY what is being paid back, and nothing else.
+         *
+         * A return's entries balance because its deductions — the pickup charge, the coupon
+         * clawback — explain the gap between the item's value and the smaller sum the
+         * customer receives. A refused exchange has no such deductions: the shortfall is the
+         * admin's judgement of what a damaged saree is worth, which no entry type describes.
+         * Reversing the full item value against a smaller refund would leave that difference
+         * sitting on the order as a permanent imbalance, so the credit is sized to the
+         * payout and the sale stands for the remainder.
+         */
+        const refundRowForLedger = await OrderRefund.findOne({
+          where: { order_item_action_id: primaryAction.id },
+          transaction,
+        });
+        estimateTotal = roundMoney(Math.max(0, Number(
+          refundRowForLedger?.inspected_amount ?? refundRowForLedger?.amount ?? 0,
+        )));
+        if (estimateTotal > 0) {
+          await appendEntry(action.order_id, {
+            type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE,
+            amount: estimateTotal,
+            direction: LEDGER_DIRECTION.CREDIT,
+            referenceType: ledgerRef,
+            referenceId: primaryAction.id,
+            note: 'Exchange refused after inspection — product value reversed',
+          }, transaction);
         }
-        if (deductions > 0) {
-          await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.SHIPPING_CHARGE, amount: deductions, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: groupAction.id, note: 'Return — return pickup charge retained' }, transaction);
-        }
-        if (couponAdjustment > 0) {
-          await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.COUPON_DISCOUNT, amount: couponAdjustment, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: groupAction.id, note: 'Return — coupon benefit no longer earned by remaining items' }, transaction);
+      } else {
+        // Per-item reversal entries — the product value, pickup charge and coupon
+        // clawback belong to the item they came from.
+        for (const groupAction of groupActions) {
+          const itemValue = roundMoney(Number(groupAction.item_amount || 0));
+          const deductions = roundMoney(Number(groupAction.forward_shipping_deduction || 0) + Number(groupAction.reverse_shipping_deduction || 0));
+          const couponAdjustment = roundMoney(Number(groupAction.meta?.coupon_adjustment || 0));
+          estimateTotal = roundMoney(estimateTotal + Number(groupAction.estimated_refund_amount ?? (itemValue - deductions - couponAdjustment)));
+
+          if (itemValue > 0) {
+            await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PRODUCT_CHARGE, amount: itemValue, direction: LEDGER_DIRECTION.CREDIT, referenceType: ledgerRef, referenceId: groupAction.id, note: 'Return — product value reversed' }, transaction);
+          }
+          if (deductions > 0) {
+            await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.SHIPPING_CHARGE, amount: deductions, direction: LEDGER_DIRECTION.DEBIT, referenceType: ledgerRef, referenceId: groupAction.id, note: 'Return — return pickup charge retained' }, transaction);
+          }
+          if (couponAdjustment > 0) {
+            await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.COUPON_DISCOUNT, amount: couponAdjustment, direction: LEDGER_DIRECTION.DEBIT, referenceType: ledgerRef, referenceId: groupAction.id, note: 'Return — coupon benefit no longer earned by remaining items' }, transaction);
+          }
         }
       }
 
@@ -1017,11 +1094,18 @@ class OrderItemActionController {
       // customer money we never actually paid them.
       const gatewayCharge = roundMoney(Number(refundRow?.breakdown?.payment_gateway_charge || 0));
       if (gatewayCharge > 0) {
-        await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PAYMENT_FEE, amount: gatewayCharge, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: primaryAction.id, note: 'Return — payment gateway charge retained (legacy policy)' }, transaction);
+        await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.PAYMENT_FEE, amount: gatewayCharge, direction: LEDGER_DIRECTION.DEBIT, referenceType: ledgerRef, referenceId: primaryAction.id, note: 'Return — payment gateway charge retained (legacy policy)' }, transaction);
       }
 
       if (returnRefundAmount > 0) {
-        const refLedger = await appendEntry(action.order_id, { type: LEDGER_ENTRY_TYPE.REFUND, amount: returnRefundAmount, direction: LEDGER_DIRECTION.DEBIT, referenceType: LEDGER_REFERENCE_TYPE.RETURN, referenceId: primaryAction.id, note: 'Return refund' }, transaction);
+        const refLedger = await appendEntry(action.order_id, {
+          type: LEDGER_ENTRY_TYPE.REFUND,
+          amount: returnRefundAmount,
+          direction: LEDGER_DIRECTION.DEBIT,
+          referenceType: ledgerRef,
+          referenceId: primaryAction.id,
+          note: isExchangeRefund ? 'Exchange refused — refund' : 'Return refund',
+        }, transaction);
         await RefundTransaction.create({
           order_id: action.order_id, ledger_entry_id: refLedger?.id || null,
           gateway: isCodOrder ? 'bank_transfer' : 'original_gateway', amount: returnRefundAmount, status: 'Pending',
@@ -1069,8 +1153,11 @@ class OrderItemActionController {
               ? Math.min(walletTotal, refundAmt)
               : Math.min(walletTotal, refundAmt, Math.round((refundAmt / subtotal) * walletTotal * 100) / 100);
             if (walletShare > 0) {
-              // Per REQUEST, not per item — one wallet credit however many items.
-              const dedupeKey = `return_wallet:${primaryAction.id}`;
+              // Per REQUEST, not per item — one wallet credit however many items. Prefixed
+              // by type as well: an action id is only unique within its own type, so a
+              // return and a refused exchange on the same order would otherwise share a key
+              // and the second one would silently skip crediting the wallet.
+              const dedupeKey = `${isExchangeRefund ? 'exchange' : 'return'}_wallet:${primaryAction.id}`;
               const existing = await WalletTransaction.findOne({ where: { dedupe_key: dedupeKey } });
               if (!existing) {
                 await WalletTransaction.create({
@@ -1101,7 +1188,7 @@ class OrderItemActionController {
               }).catch((updateErr) => console.error('[Refund] Failed to mark wallet-only refund Completed:', updateErr.message));
             } else if (payment?.gateway_payment_id) {
               razorpayRefund(payment.gateway_payment_id, gatewayAmount, {
-                reason: 'Customer return approved',
+                reason: isExchangeRefund ? 'Exchange refused after inspection' : 'Customer return approved',
               }).then((gatewayRefund) => refund.update({ status: REFUND_STATUS.PROCESSING, gateway_refund_id: gatewayRefund?.id || null }))
                 .catch((err) => {
                   console.error('[Razorpay] Return refund failed:', err.message);
@@ -1119,13 +1206,248 @@ class OrderItemActionController {
       });
 
       return res.status(200).json({
-        message: `Refund of Rs. ${returnRefundAmount.toLocaleString('en-IN')} initiated.`,
+        message: `${isExchangeRefund ? 'Exchange refund' : 'Refund'} of Rs. ${returnRefundAmount.toLocaleString('en-IN')} initiated.`,
         amount: returnRefundAmount,
       });
     } catch (error) {
       await transaction.rollback();
       console.error('[OrderItemAction] initiate refund error:', error);
       return res.status(500).json({ message: 'Unable to initiate this refund right now.' });
+    }
+  }
+
+  /**
+   * Admin: record the physical inspection of a returned EXCHANGE parcel.
+   *
+   * POST /admin/item-actions/:actionId/exchange-inspection
+   *   { passed: boolean, note, inspection_images?, refund_amount? }
+   *
+   * This is the decision the exchange flow never had. The courier's terminal scan now leaves
+   * the request on RECEIVED — goods in the building, nothing concluded — and this endpoint
+   * settles it one way or the other for the WHOLE request group (one parcel, one verdict;
+   * splitting a single pickup item by item would leave half an exchange in limbo).
+   *
+   * ── Passed ──────────────────────────────────────────────────────────────────────────────
+   * Exactly the old behaviour, just later: COMPLETED, stock applied, item statuses set. The
+   * admin can then press "Ship replacement" as before.
+   *
+   * ── Failed ──────────────────────────────────────────────────────────────────────────────
+   * No replacement will ever ship, so the customer is made whole in money instead. The
+   * exchange's OWN refund row — created at 0 / "Not Required" when the exchange was raised —
+   * is converted in place rather than a second row being added, keeping one money record per
+   * request as everywhere else in this codebase.
+   *
+   * `refund_amount` is the admin's decision, not a computed figure: what a damaged saree is
+   * worth back is a judgement, and the exchange never quoted an amount to anchor it to. It
+   * is capped at the value of the goods, because paying out more than the item was sold for
+   * has no policy behind it and would almost always be a data-entry slip.
+   *
+   * ── Stock deliberately does NOT move on a failure ───────────────────────────────────────
+   * A saree that failed inspection is by definition not sellable, so shelving it would put
+   * damaged goods back on sale; and no replacement leaves the building, so nothing should be
+   * consumed either. The admin adjusts inventory by hand if the item turns out to be
+   * salvageable — which is a decision a person should make, not a side effect of a webhook.
+   */
+  async setExchangeInspection(req, res) {
+    const transaction = await sequelize.transaction();
+    try {
+      await ensureOrderItemActionSchema();
+      const action = await OrderItemAction.findByPk(req.params.actionId, {
+        transaction,
+        lock: Transaction.LOCK.UPDATE,
+      });
+      if (!action) {
+        await transaction.rollback();
+        return res.status(404).json({ message: 'Request not found.' });
+      }
+      if (String(action.action_type || '').toLowerCase() !== ACTION_TYPES.EXCHANGE) {
+        await transaction.rollback();
+        return res.status(400).json({ message: 'Only exchange requests are inspected this way.' });
+      }
+
+      const groupActions = await loadActionGroup(action, { transaction, lock: true });
+      const primaryAction = groupActions[0];
+
+      // The parcel has to be back. Anything earlier means there is nothing to look at.
+      if (groupActions.some((row) => row.status !== ACTION_STATUS.RECEIVED)) {
+        await transaction.rollback();
+        const already = groupActions.find((row) => [ACTION_STATUS.COMPLETED, ACTION_STATUS.REJECTED].includes(row.status));
+        return res.status(400).json({
+          message: already
+            ? 'This exchange has already been inspected.'
+            : 'The returned parcel has not been received yet — inspect it once the courier has delivered it back.',
+        });
+      }
+
+      const passed = req.body.passed === true || req.body.passed === 'true';
+      const note = String(req.body.note || '').trim();
+      const images = normalizeEvidenceImages(req.body.inspection_images);
+
+      // A refusal must be evidenced. The customer is shown both the reason and the photos,
+      // and "your exchange was refused" with neither attached is a support ticket every time.
+      if (!passed) {
+        if (note.length < 5) {
+          await transaction.rollback();
+          return res.status(400).json({ message: 'Please write what the inspection found — the customer is shown it verbatim.' });
+        }
+        if (!images.length) {
+          await transaction.rollback();
+          return res.status(400).json({ message: 'Attach at least one photo of the problem — a refused exchange has to be evidenced.' });
+        }
+      }
+
+      const order = await Order.findByPk(action.order_id, { transaction, lock: Transaction.LOCK.UPDATE });
+      if (!order) {
+        await transaction.rollback();
+        return res.status(404).json({ message: 'Order not found.' });
+      }
+
+      const now = new Date();
+      const inspectionMeta = {
+        exchange_inspection: {
+          passed,
+          note: note || null,
+          images,
+          inspected_by: req.user?.id || null,
+          inspected_at: now.toISOString(),
+        },
+      };
+
+      // ── Passed ──────────────────────────────────────────────────────────────────────────
+      if (passed) {
+        for (const row of groupActions) {
+          await row.update(
+            { status: ACTION_STATUS.COMPLETED, completed_at: now, reviewed_by: req.user?.id || null, reviewed_at: now, meta: { ...(row.meta || {}), ...inspectionMeta } },
+            { transaction },
+          );
+          const itemRow = await OrderItem.findByPk(row.order_item_id, { transaction });
+          if (!itemRow) continue;
+          // The stock movement the webhook deferred — same call, same arguments, just once
+          // the swap is known to be going ahead.
+          await OrderReturnService.applyCompletionStock({ action: row, orderItem: itemRow, transaction });
+          const completedQty = groupActions
+            .filter((a) => Number(a.order_item_id) === Number(itemRow.id))
+            .reduce((sum, a) => sum + Number(a.quantity || 0), 0);
+          await itemRow.update(
+            { status: statusAfterCompletedAction(ACTION_TYPES.EXCHANGE, completedQty >= Number(itemRow.quantity || 0)) },
+            { transaction },
+          );
+        }
+
+        await OrderStatusHistory.create({
+          order_id: order.id,
+          from_status: order.status,
+          to_status: order.status,
+          actor: ACTOR.ADMIN,
+          reason: `Exchange passed inspection${note ? ` — ${note}` : ''}`,
+        }, { transaction });
+
+        await transaction.commit();
+        return res.status(200).json({
+          message: 'Inspection passed — the replacement can now be shipped.',
+          passed: true,
+        });
+      }
+
+      // ── Failed ──────────────────────────────────────────────────────────────────────────
+      const goodsValue = roundMoney(groupActions.reduce((sum, row) => sum + Number(row.item_amount || 0), 0));
+      const raw = Number(req.body.refund_amount);
+      if (!Number.isFinite(raw) || raw < 0) {
+        await transaction.rollback();
+        return res.status(400).json({ message: 'Enter the amount to refund instead of the exchange.' });
+      }
+      const refundAmount = roundMoney(raw);
+      if (refundAmount > goodsValue) {
+        await transaction.rollback();
+        return res.status(400).json({
+          message: `The refund cannot exceed what was paid for the item(s) — ${goodsValue.toFixed(2)}.`,
+        });
+      }
+
+      for (const row of groupActions) {
+        await row.update({
+          status: ACTION_STATUS.REJECTED,
+          completed_at: now,
+          reviewed_by: req.user?.id || null,
+          reviewed_at: now,
+          reason: note,
+          meta: { ...(row.meta || {}), ...inspectionMeta },
+        }, { transaction });
+        const itemRow = await OrderItem.findByPk(row.order_item_id, { transaction });
+        if (itemRow) {
+          await itemRow.update({ status: ITEM_STATUS.EXCHANGE_REJECTED }, { transaction });
+        }
+      }
+
+      /**
+       * Convert the exchange's existing refund row rather than creating a second one.
+       *
+       * `amount` is what will be paid. `inspected_amount` is set to the SAME figure on
+       * purpose: every downstream payout path (initiateRefund, the wallet split, the
+       * storefront) already reads inspected_amount-then-amount, so writing both means none
+       * of them needs a special case for exchanges.
+       */
+      const isCod = String(order.payment_method || '').toUpperCase() === 'COD';
+      let refundRow = await OrderRefund.findOne({
+        where: { order_item_action_id: primaryAction.id },
+        transaction,
+      });
+      const refundFields = {
+        refund_type: REFUND_TYPE.EXCHANGE,
+        amount: refundAmount,
+        inspected_amount: refundAmount,
+        inspection_note: note,
+        inspection_images: images,
+        inspected_by: req.user?.id || null,
+        inspected_at: now,
+        status: refundAmount > 0 ? REFUND_STATUS.PENDING : REFUND_STATUS.NOT_REQUIRED,
+        payment_method: refundAmount > 0
+          // COD leaves no gateway trail to refund against, so it is paid by hand to the bank
+          // or UPI id the customer supplies. Prepaid goes back down the Razorpay payment.
+          ? (isCod ? REFUND_PAYMENT_METHOD.BANK_TRANSFER : REFUND_PAYMENT_METHOD.ORIGINAL_GATEWAY)
+          : REFUND_PAYMENT_METHOD.NOT_REQUIRED,
+        note: `Exchange refused after inspection. ${note}`.slice(0, 1000),
+      };
+
+      if (refundRow) {
+        await refundRow.update(refundFields, { transaction });
+      } else {
+        // Legacy exchanges raised before the flow created a refund row up front.
+        refundRow = await OrderRefund.create({
+          order_id: order.id,
+          order_item_action_id: primaryAction.id,
+          ...refundFields,
+        }, { transaction });
+      }
+
+      // COD has no gateway to fall back on, so ask for the payout details straight away —
+      // the same prompt a COD return raises, and the storefront already renders it.
+      if (refundAmount > 0 && isCod && !refundRow.bank_details) {
+        await refundRow.update({ status: 'Bank Details Required' }, { transaction });
+      }
+
+      await order.update({ status: 'Exchange Rejected' }, { transaction });
+      await OrderStatusHistory.create({
+        order_id: order.id,
+        from_status: 'Exchange Received',
+        to_status: 'Exchange Rejected',
+        actor: ACTOR.ADMIN,
+        reason: `Exchange failed inspection — ${note}`,
+      }, { transaction });
+
+      await transaction.commit();
+      return res.status(200).json({
+        message: refundAmount > 0
+          ? `Exchange refused. A refund of Rs. ${refundAmount.toLocaleString('en-IN')} is ready to initiate.`
+          : 'Exchange refused. No refund is payable.',
+        passed: false,
+        refund_amount: refundAmount,
+        refund_id: refundRow.id,
+      });
+    } catch (error) {
+      await transaction.rollback();
+      console.error('[OrderItemAction] exchange inspection error:', error);
+      return res.status(500).json({ message: 'Unable to record this inspection right now.' });
     }
   }
 
@@ -1150,6 +1472,22 @@ class OrderItemActionController {
       }
 
       const groupActions = await loadActionGroup(action);
+      /**
+       * COMPLETED now means "inspected and accepted", not merely "parcel arrived" — the
+       * courier scan leaves an exchange on RECEIVED. The two failure modes are reported
+       * separately because they need different things from the admin: one is a job still to
+       * do, the other is a decision already taken that this endpoint must not undo.
+       */
+      if (groupActions.some((row) => row.status === ACTION_STATUS.REJECTED)) {
+        return res.status(400).json({
+          message: 'This exchange failed inspection and was refunded instead — no replacement can be shipped for it.',
+        });
+      }
+      if (groupActions.some((row) => row.status === ACTION_STATUS.RECEIVED)) {
+        return res.status(400).json({
+          message: 'Inspect the returned parcel first — a replacement ships only once the exchange passes inspection.',
+        });
+      }
       if (groupActions.some((row) => row.status !== ACTION_STATUS.COMPLETED)) {
         return res.status(400).json({ message: 'Complete the exchange first — ship the replacement once the old item is received.' });
       }

@@ -783,29 +783,67 @@ class ShipRocketController {
           const openActions = allTypeActions.filter(
             (act) => ![ACTION_STATUS.COMPLETED, ACTION_STATUS.REJECTED, ACTION_STATUS.CANCELLED].includes(act.status),
           );
+          /**
+           * An EXCHANGE stops here for inspection; a RETURN closes as it always did.
+           *
+           * The parcel being back is not the same claim as the goods being acceptable, and
+           * for an exchange those two used to be collapsed into one scan: the courier's
+           * delivery event marked the request COMPLETED, moved stock, and handed the admin
+           * an order whose only remaining action was "Ship replacement". A saree that came
+           * back damaged, worn, or simply not the one that was sent could not be refused,
+           * because the sole rejection path ran BEFORE pickup.
+           *
+           * So an exchange lands on RECEIVED and waits for
+           * OrderItemActionController.setExchangeInspection to decide. A return needs no
+           * equivalent — its money only moves when an admin presses "Initiate refund", so
+           * its inspection already has a gap of its own to sit in.
+           */
+          const isExchangeReverse = reverseType === ACTION_TYPES.EXCHANGE;
+
           for (const act of openActions) {
-            await act.update({ status: ACTION_STATUS.COMPLETED, completed_at: new Date() }, { transaction });
+            await act.update(
+              isExchangeReverse
+                // completed_at stays null: this is not a terminal state.
+                ? { status: ACTION_STATUS.RECEIVED }
+                : { status: ACTION_STATUS.COMPLETED, completed_at: new Date() },
+              { transaction },
+            );
             const itemRow = await OrderItem.findByPk(act.order_item_id, { transaction });
             if (itemRow) {
-              // Stock moves HERE. This scan — not the admin's "Complete" button — is what
-              // normally closes a reverse request, and it used to update statuses and
-              // nothing else: a returned saree was never put back on the shelf and an
-              // exchanged saree was never taken off it. Only ever runs for actions that
-              // were still open, so a duplicate courier scan cannot double-move stock.
-              await OrderReturnService.applyCompletionStock({
-                action: act,
-                orderItem: itemRow,
-                transaction,
-              });
+              /**
+               * Stock moves HERE for a return, and at the INSPECTION for an exchange.
+               *
+               * Moving an exchange's stock on this scan committed both halves of a swap that
+               * might still be refused: it shelved the incoming saree (which may be the very
+               * damage the inspection is about to find) and consumed a unit of the outgoing
+               * one for a replacement that would never ship. Deferring costs nothing — the
+               * goods are in the building either way — and `applyCompletionStock` is called
+               * with the same arguments a moment later once the outcome is known.
+               */
+              if (!isExchangeReverse) {
+                // Only ever runs for actions that were still open, so a duplicate courier
+                // scan cannot double-move stock.
+                await OrderReturnService.applyCompletionStock({
+                  action: act,
+                  orderItem: itemRow,
+                  transaction,
+                });
+              }
 
-              const completedQty = allTypeActions
-                .filter((a) => Number(a.order_item_id) === Number(itemRow.id))
-                .filter((a) => a.id === act.id || a.status === ACTION_STATUS.COMPLETED)
-                .reduce((sum, a) => sum + Number(a.quantity || 0), 0);
-              await itemRow.update(
-                { status: statusAfterCompletedAction(reverseType, completedQty >= Number(itemRow.quantity || 0)) },
-                { transaction },
-              );
+              if (isExchangeReverse) {
+                // "Exchange Received" — the goods are back, nothing is decided. The web and
+                // app both already render this status.
+                await itemRow.update({ status: ITEM_STATUS.EXCHANGE_RECEIVED }, { transaction });
+              } else {
+                const completedQty = allTypeActions
+                  .filter((a) => Number(a.order_item_id) === Number(itemRow.id))
+                  .filter((a) => a.id === act.id || a.status === ACTION_STATUS.COMPLETED)
+                  .reduce((sum, a) => sum + Number(a.quantity || 0), 0);
+                await itemRow.update(
+                  { status: statusAfterCompletedAction(reverseType, completedQty >= Number(itemRow.quantity || 0)) },
+                  { transaction },
+                );
+              }
             }
           }
 

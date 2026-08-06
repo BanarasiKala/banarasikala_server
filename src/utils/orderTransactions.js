@@ -103,6 +103,24 @@ const ensureOrderTransactionTables = async () => {
   transactionTablesReady = true;
 };
 
+/**
+ * Coerce whatever the admin UI sent into the `[{ url }]` shape the evidence columns store —
+ * inspection photos and transfer receipts alike. Accepts bare URL strings and Cloudinary
+ * upload objects, drops anything without a url, and caps the set at four so one request
+ * cannot bloat a JSONB column.
+ *
+ * Shared rather than defined per controller: the refund inspection, the exchange inspection
+ * and the payment-proof upload all write columns the storefront renders through the SAME
+ * lightbox, so a shape that drifts in one of them breaks the viewer for all three.
+ */
+const normalizeEvidenceImages = (value) => (Array.isArray(value) ? value : [])
+  .map((image) => {
+    const url = typeof image === 'string' ? image : (image?.url || image?.secure_url);
+    return url ? { url: String(url).trim() } : null;
+  })
+  .filter(Boolean)
+  .slice(0, 4);
+
 module.exports = {
   PAYMENT_COLUMNS,
   ORDER_REFUND_COLUMNS,
@@ -110,4 +128,5 @@ module.exports = {
   REFUND_STATUS,
   REFUND_PAYMENT_METHOD,
   ensureOrderTransactionTables,
+  normalizeEvidenceImages,
 };

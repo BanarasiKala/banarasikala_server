@@ -13,6 +13,20 @@ const ACTION_STATUS = Object.freeze({
   REQUESTED: 'Requested',
   APPROVED: 'Approved',
   REJECTED: 'Rejected',
+  /**
+   * The goods are physically back with us, and nothing has been decided yet.
+   *
+   * EXCHANGES ONLY, and it exists because there was previously no such moment: the courier's
+   * terminal reverse scan flipped an exchange straight to COMPLETED, moved stock, and left
+   * the admin with no state in which to refuse one. A saree that comes back damaged, worn or
+   * simply not the one that was sent could not be turned down after pickup — the only
+   * rejection path ran BEFORE the parcel was collected.
+   *
+   * A return does not need this. Its money moves on an explicit "Initiate refund" press, so
+   * its inspection already has a gap to sit in; an exchange's goods move on an explicit
+   * "Ship replacement" press, but stock and status had already been committed by then.
+   */
+  RECEIVED: 'Received',
   COMPLETED: 'Completed',
   CANCELLED: 'Cancelled',
 });
@@ -33,6 +47,14 @@ const ITEM_STATUS = Object.freeze({
   // Reached only when the replacement shipment is DELIVERED (ShipRocketController.webhook,
   // forward branch, on a shipment carrying exchange_action_id).
   EXCHANGE_COMPLETED: 'Exchange Completed',
+  /**
+   * The returned saree failed inspection, so no replacement will ever ship.
+   *
+   * Terminal. The customer is made whole in money instead of goods — the exchange's own
+   * OrderRefund row (created at 0 / "Not Required") is converted into a real payout of the
+   * amount the admin decides. See OrderItemActionController.setExchangeInspection.
+   */
+  EXCHANGE_REJECTED: 'Exchange Rejected',
 });
 
 const ORDER_ITEM_ACTION_COLUMNS = {

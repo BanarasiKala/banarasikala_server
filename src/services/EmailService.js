@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const dns = require('dns');
+const { Op } = require('sequelize');
 const { config } = require('../config/env');
 const { buildPreferenceUrl } = require('../utils/emailPreferenceToken');
 const { normalizeEmail } = require('../utils/emailAddress');
@@ -566,7 +567,18 @@ class EmailService {
    * is the parcel reaching us, which starts the inspection and the money — and on a COD order
    * it is the point the customer is asked for bank details, so it must not be missed.
    */
-  static EMAILED_STATUSES = new Set(['Cancelled', 'Delivered', 'Return Initiated', 'Return Completed']);
+  static EMAILED_STATUSES = new Set([
+    'Cancelled', 'Delivered', 'Return Initiated', 'Return Completed',
+    /**
+     * "Exchange Initiated" was MISSING, and its absence was silent.
+     *
+     * The call site in OrderItemActionController has always passed it — every exchange
+     * request fired this method and was dropped by the allowlist above, so a customer who
+     * asked to swap a saree got no acknowledgement at all. It is the same moment as a return
+     * request: the point they most doubt the request registered.
+     */
+    'Exchange Initiated',
+  ]);
 
   async sendOrderStatusUpdate(order, status) {
     try {
@@ -581,7 +593,10 @@ class EmailService {
       const isCancelled = normalizedStatus === 'Cancelled';
       const isReturnInitiated = normalizedStatus === 'Return Initiated';
       const isReturnReceived = normalizedStatus === 'Return Completed';
+      const isExchangeInitiated = normalizedStatus === 'Exchange Initiated';
       const isReturn = isReturnInitiated || isReturnReceived;
+      // Every state that concerns ONE reverse request rather than the whole order.
+      const isReverseRequest = isReturn || isExchangeInitiated;
 
       /**
        * Once the parcel is back with us, everything left in a return is money — inspection,
@@ -608,19 +623,118 @@ class EmailService {
        * email fetches what it needs and stays self-sufficient.
        */
       let items = [];
+      /**
+       * What a reverse request is actually about.
+       *
+       * `exchangeTargets` are the sarees going OUT in a swap; `estimatedRefund` is what a
+       * return is expected to pay. Both stay null on the order-wide states (cancelled,
+       * delivered), which are still about every line.
+       */
+      let exchangeTargets = [];
+      let estimatedRefund = 0;
+
       if (order.id) {
         try {
           const rows = await OrderItem.findAll({
             where: { order_id: order.id },
             include: [{ model: Product, attributes: ['id', 'name', 'images'] }],
           });
-          items = rows.map((row) => ({
+
+          /**
+           * A return or exchange email listed the WHOLE order under the heading "Your order",
+           * which misdescribed the event twice: it implied every saree was going back, and it
+           * showed the order's full value as though that were the sum at stake. Someone
+           * returning one saree out of four read a mail that looked like a total reversal.
+           *
+           * So these states are scoped to the lines the request actually names, at the
+           * quantities the request names — a partial return of 1 of 3 is one line, quantity 1.
+           */
+          let quantityByItemId = null;
+          if (isReverseRequest) {
+            const OrderItemAction = require('../models/OrderItemAction');
+            const { ACTION_TYPES, ACTION_STATUS } = require('../utils/orderItemActions');
+            const { exchangeTargetsOf } = require('../utils/exchangeTargets');
+            const actionType = isExchangeInitiated ? ACTION_TYPES.EXCHANGE : ACTION_TYPES.RETURN;
+
+            /**
+             * Which rows this email is about, and it differs by state.
+             *
+             * "Initiated" is about the request just raised, so a settled one from an earlier
+             * week must not drag its items in. "Return Completed" is about the parcel that
+             * just arrived, whose rows are by definition COMPLETED — filtering those out (as
+             * an "open requests only" query would) left the list empty and silently fell back
+             * to the whole order, which is the very bug this scoping exists to fix.
+             */
+            const wantedStatuses = isReturnReceived
+              ? [ACTION_STATUS.COMPLETED]
+              : [ACTION_STATUS.INITIATED, ACTION_STATUS.REQUESTED, ACTION_STATUS.APPROVED, ACTION_STATUS.RECEIVED];
+
+            const actions = await OrderItemAction.findAll({
+              where: {
+                order_id: order.id,
+                action_type: actionType,
+                status: { [Op.in]: wantedStatuses },
+              },
+              order: [['id', 'ASC']],
+            });
+
+            if (actions.length) {
+              quantityByItemId = new Map();
+              const itemById = new Map(rows.map((row) => [Number(row.id), row]));
+              for (const act of actions) {
+                const key = Number(act.order_item_id);
+                quantityByItemId.set(key, (quantityByItemId.get(key) || 0) + Number(act.quantity || 0));
+                estimatedRefund += Number(act.estimated_refund_amount || 0);
+
+                // What the customer is swapping FOR. Read off the action, never off the order
+                // line: the line records what was BOUGHT, and one exchanged line can be split
+                // across several different sarees.
+                if (isExchangeInitiated) {
+                  for (const target of exchangeTargetsOf(act, itemById.get(key))) {
+                    exchangeTargets.push({
+                      product_id: target.product_id,
+                      name: target.product_name || '',
+                      quantity: target.quantity,
+                      color_id: target.color_id ?? null,
+                    });
+                  }
+                }
+              }
+            }
+          }
+
+          const scoped = quantityByItemId
+            ? rows.filter((row) => quantityByItemId.has(Number(row.id)))
+            : rows;
+
+          items = scoped.map((row) => ({
             name: row.product_name || row.Product?.name || 'Saree',
-            quantity: row.quantity,
+            quantity: quantityByItemId ? quantityByItemId.get(Number(row.id)) : row.quantity,
             price: Number(row.price || 0),
             sku: row.sku,
             image: pickOrderItemImage(row.Product, row.colorId || row.color_id),
           }));
+
+          // Fill in names/thumbnails for the outgoing sarees, which live on Product rather
+          // than on any order line of this order.
+          if (exchangeTargets.length) {
+            const targetProducts = await Product.findAll({
+              where: { id: [...new Set(exchangeTargets.map((t) => Number(t.product_id)).filter(Boolean))] },
+              attributes: ['id', 'name', 'images'],
+            });
+            const productById = new Map(targetProducts.map((p) => [Number(p.id), p]));
+            exchangeTargets = exchangeTargets.map((target) => {
+              const product = productById.get(Number(target.product_id));
+              return {
+                name: target.name || product?.name || 'Saree',
+                quantity: target.quantity,
+                image: pickOrderItemImage(product, target.color_id),
+                // An exchange is an even swap validated at the price already paid, so no
+                // second price is shown — printing one would read as a further charge.
+                price: 0,
+              };
+            });
+          }
         } catch (error) {
           // A missing thumbnail is not worth losing the notification over.
           console.error('EmailService: could not load items for status email:', error.message);
@@ -642,7 +756,11 @@ class EmailService {
           ? { bg: '#fff6e8', border: '#f2ddb8', text: '#8a5a12', label: 'Return requested' }
           : isReturnReceived
             ? { bg: '#eef2fb', border: '#c9d5ef', text: '#2f4a86', label: 'Return received' }
-            : { bg: '#e9f7ef', border: '#b7e2c8', text: '#12673a', label: 'Order delivered' };
+            // Amber for the same reason as a return request: under way, not finished. The
+            // replacement has not shipped and may yet be refused at inspection.
+            : isExchangeInitiated
+              ? { bg: '#fff6e8', border: '#f2ddb8', text: '#8a5a12', label: 'Exchange requested' }
+              : { bg: '#e9f7ef', border: '#b7e2c8', text: '#12673a', label: 'Order delivered' };
 
       const banner = `<div style="display:inline-block;background:${tone.bg};border:1px solid ${tone.border};color:${tone.text};font-size:12px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;padding:7px 16px;border-radius:999px;margin-top:24px;">${tone.label}</div>`;
 
@@ -671,6 +789,11 @@ class EmailService {
         }
         // Receiver copies are filtered out for this one — buyer wording only.
         if (isReturnReceived) return 'Your return has reached us';
+        if (isExchangeInitiated) {
+          return isReceiver
+            ? `An exchange pickup has been arranged for the order ${esc(buyerName)} sent you`
+            : 'Your exchange request has been received';
+        }
         return isReceiver
           ? `The order ${esc(buyerName)} sent you has been delivered`
           : 'Your order has been delivered';
@@ -686,12 +809,21 @@ class EmailService {
                 : ' Your refund has been initiated and will reach the original payment method in 5&ndash;7 working days.'}`;
         }
         if (isReturnInitiated) {
+          const count = items.length;
+          const what = count === 1 ? 'the saree below' : `the ${count} sarees below`;
           return isReceiver
-            ? `Hi ${esc(receiverName || 'there')}, a return has been requested on order <strong>${esc(orderNumber)}</strong>, which <strong>${esc(buyerName)}</strong> placed for you. A courier will collect the parcel from your address &mdash; please keep it packed and ready.`
-            : `Hi ${esc(buyerName)}, we have received your return request for order <strong>${esc(orderNumber)}</strong>. A courier will collect the parcel, and we will email you again the moment it reaches us.`;
+            ? `Hi ${esc(receiverName || 'there')}, a return has been requested on order <strong>${esc(orderNumber)}</strong>, which <strong>${esc(buyerName)}</strong> placed for you. A courier will collect ${esc(what)} from your address &mdash; please keep it packed and ready.`
+            : `Hi ${esc(buyerName)}, we have received your return request on order <strong>${esc(orderNumber)}</strong>. This covers ${esc(what)} only &mdash; the rest of your order is unaffected. A courier will collect it, and we will email you again the moment it reaches us.`;
         }
         if (isReturnReceived) {
           return `Hi ${esc(buyerName)}, the return for order <strong>${esc(orderNumber)}</strong> has reached us. Our team will now check the saree and process your refund.`;
+        }
+        if (isExchangeInitiated) {
+          const count = items.length;
+          const what = count === 1 ? 'the saree below' : `the ${count} sarees below`;
+          return isReceiver
+            ? `Hi ${esc(receiverName || 'there')}, an exchange has been requested on order <strong>${esc(orderNumber)}</strong>, which <strong>${esc(buyerName)}</strong> placed for you. A courier will collect ${esc(what)} from your address &mdash; please keep it packed and ready.`
+            : `Hi ${esc(buyerName)}, we have received your exchange request on order <strong>${esc(orderNumber)}</strong>. This covers ${esc(what)} only &mdash; the rest of your order is unaffected. A courier will collect it, and your replacement is sent once it reaches us and passes a quick check.`;
         }
         return isReceiver
           ? `Hi ${esc(receiverName || 'there')}, order <strong>${esc(orderNumber)}</strong> from <strong>${esc(buyerName)}</strong> has been delivered to your address. We hope it brings a little Banaras into your day.`
@@ -705,15 +837,51 @@ class EmailService {
        * cancellation raises — but showing them at full strength reads as a receipt for goods
        * that are on their way, which is the opposite of what happened.
        */
+      /**
+       * The heading names WHAT the list is, and on a reverse request that is not "Your
+       * order" — it is the subset being sent back. Getting this wrong is the whole
+       * complaint: the list underneath is already scoped, so a heading that says "Your
+       * order" tells the reader the scoping is a mistake.
+       */
+      const itemsHeading = isCancelled
+        ? 'Cancelled items'
+        : isExchangeInitiated
+          ? (items.length === 1 ? 'Item being exchanged' : 'Items being exchanged')
+          : isReturn
+            ? (items.length === 1 ? 'Item being returned' : 'Items being returned')
+            : 'Your order';
+
       const body = (isReceiver) => `
-            <div style="border-top:1px solid #e8e8e6;padding-top:22px;font-size:15px;font-weight:700;color:#222;padding-bottom:18px;">${isCancelled ? 'Cancelled items' : 'Your order'}</div>
+            <div style="border-top:1px solid #e8e8e6;padding-top:22px;font-size:15px;font-weight:700;color:#222;padding-bottom:18px;">${itemsHeading}</div>
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${itemRowsHtml(items, { struck: isCancelled })}</table>
+
+            ${isExchangeInitiated && exchangeTargets.length ? `
+            <div style="border-top:1px solid #e8e8e6;padding-top:22px;font-size:15px;font-weight:700;color:#222;padding-bottom:18px;">
+              ${exchangeTargets.length === 1 ? 'Being exchanged for' : 'Being exchanged for'}
+            </div>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${itemRowsHtml(exchangeTargets)}</table>
+            <div style="margin-top:-4px;padding-bottom:18px;font-size:12px;color:#6b7177;line-height:1.6;">
+              An even swap at the price you already paid &mdash; there is nothing more to pay, and delivery of the replacement is free.
+            </div>` : ''}
 
             ${goodsTotal > 0 ? `
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-top:1px solid #e8e8e6;">
               <tr><td style="padding-top:12px;">
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-                  ${totalsRow(isCancelled ? 'Order value' : 'Order total', money(goodsTotal), { strong: true })}
+                  ${totalsRow(
+    isCancelled ? 'Order value'
+      : isExchangeInitiated ? 'Value of items being exchanged'
+        : isReturn ? 'Value of items being returned'
+          : 'Order total',
+    money(goodsTotal),
+    { strong: true },
+  )}
+                  ${/* What a return is expected to pay, said in the mail rather than left on a
+                        page the customer has to go back to. Labelled "estimated" because an
+                        inspection can still adjust it — which the note below already warns. */
+    isReturnInitiated && !isReceiver && estimatedRefund > 0
+      ? totalsRow('Estimated refund', `<span style="color:#0f7a5a;">${money(estimatedRefund)}</span>`, { strong: true })
+      : ''}
                   ${isCancelled && !isCod && !isReceiver
     ? totalsRow('Refund status', '<span style="color:#0f7a5a;">Initiated</span>', { muted: true })
     : ''}
@@ -733,12 +901,21 @@ class EmailService {
       : 'Refunds are returned to the original payment method. Bank processing times vary, so allow up to 7 working days before raising it with us.'}
             </div>` : ''}
 
+            ${isExchangeInitiated ? `
+            <div style="margin-top:22px;padding:16px 18px;background:#faf8f6;border:1px solid #eee7e0;border-radius:8px;font-size:13px;color:#6b7177;line-height:1.7;">
+              ${isReceiver
+    ? `Nothing is charged to you for this exchange &mdash; ${esc(buyerName)} placed the order. Do reply to this email if the pickup does not suit you.`
+    /* Said now, not discovered later. The parcel is checked before the replacement is
+       sent, and a customer who was never told that reads a refusal as arbitrary. */
+    : 'Once the saree reaches us we check it before sending your replacement. If it arrives damaged or is not the saree that was sent, we cannot complete the exchange &mdash; we will explain why, with photographs, on your order page and refund you instead.'}
+            </div>` : ''}
+
             ${isReturn ? `
             <div style="margin-top:22px;padding:16px 18px;background:#faf8f6;border:1px solid #eee7e0;border-radius:8px;font-size:13px;color:#6b7177;line-height:1.7;">
               ${isReceiver
     ? `Nothing is charged to you for this return &mdash; ${esc(buyerName)} placed the order, and anything owed goes back to them. Do reply to this email if the pickup does not suit you.`
     : isReturnInitiated
-      ? 'The refund amount quoted for this return is shown on your order page, along with the pickup\'s progress.'
+      ? 'This is an estimate until the saree reaches us and is checked. The final amount, and the pickup\'s progress, are on your order page.'
       /* Said plainly and up front. A refund that later lands lighter than the quote, with the
          reason buried on a page the customer never returned to, is the complaint this whole
          inspection step exists to prevent. */
@@ -758,7 +935,9 @@ class EmailService {
             ? `Return requested for order ${orderNumber} | Banarasi Kala`
             : isReturnReceived
               ? `We have received your return for order ${orderNumber} | Banarasi Kala`
-              : `Order ${orderNumber} delivered | Banarasi Kala`,
+              : isExchangeInitiated
+                ? `Exchange requested for order ${orderNumber} | Banarasi Kala`
+                : `Order ${orderNumber} delivered | Banarasi Kala`,
         html: emailShell({
           orderNumber: esc(orderNumber),
           placedLabel: order.createdAt

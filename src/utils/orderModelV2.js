@@ -121,6 +121,15 @@ const LEDGER_REFERENCE_TYPE = Object.freeze({
   SHIPMENT: 'SHIPMENT',
   RTO_EVENT: 'RTO_EVENT',
   RETURN: 'RETURN',
+  /**
+   * Money paid out because an EXCHANGE failed inspection and was refunded instead.
+   *
+   * Its own reference space rather than reusing RETURN, because the settlement guards key on
+   * (reference_type, reference_id) to decide "has this already been paid?" — and an action id
+   * is only unique within its type. Sharing RETURN would let a return refund and an exchange
+   * refund on the same order mask each other's idempotency check.
+   */
+  EXCHANGE: 'EXCHANGE',
   PAYMENT: 'PAYMENT',
 });
 

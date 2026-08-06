@@ -243,9 +243,14 @@ class AuthService {
     const client = new OAuth2Client(config.googleClientId);
     let payload;
     try {
+      // An ARRAY of audiences, because Google mints an id_token against the client id of the
+      // platform that asked for it — web on the site, but the Android and iOS apps have
+      // their own. Verifying against the web id alone rejects every mobile sign-in. The
+      // array is still an allow-list: anything outside it is refused exactly as before, and
+      // with no extra ids configured this behaves identically to the single-audience form.
       const ticket = await client.verifyIdToken({
         idToken: credential,
-        audience: config.googleClientId,
+        audience: [config.googleClientId, ...config.googleExtraClientIds],
       });
       payload = ticket.getPayload();
     } catch {

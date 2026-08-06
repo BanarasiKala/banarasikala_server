@@ -48,14 +48,12 @@ const { normalizeEmail, isSameEmail } = require('../utils/emailAddress');
  * because the admin upload widget and a manual paste produce different things. Capped at four:
  * each is evidence of one thing, not an album.
  */
-const normalizeEvidenceImages = (value) => (Array.isArray(value) ? value : [])
-  .map((image) => {
-    const url = typeof image === 'string' ? image : (image?.url || image?.secure_url);
-    return url ? { url: String(url).trim() } : null;
-  })
-  .filter(Boolean)
-  .slice(0, 4);
-const { ensureOrderTransactionTables, REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD } = require('../utils/orderTransactions');
+const {
+  ensureOrderTransactionTables, REFUND_TYPE, REFUND_STATUS, REFUND_PAYMENT_METHOD,
+  // Moved to the shared util so the exchange inspection writes the same shape — see the
+  // note there on why these columns must not drift apart.
+  normalizeEvidenceImages,
+} = require('../utils/orderTransactions');
 const {
   ensureOrderModelV2Tables, SHIPMENT_TYPE, SHIPMENT_STATUS, ACTOR, ADDRESS_TYPE,
   LEDGER_ENTRY_TYPE, LEDGER_DIRECTION, LEDGER_REFERENCE_TYPE, RTO_RESOLUTION,
@@ -462,6 +460,14 @@ const serializeOrder = (order, feedbackRows = [], actionRows = []) => {
     json.refund_status = latestRefund.status;
     json.refund_amount = latestRefund.amount;
     json.refund_note = latestRefund.note;
+    /**
+     * Which kind of refund this is. The storefront needs it because the inspection fields
+     * below mean two different things: on a `return` a reduced figure is "we checked the
+     * parcel and adjusted your refund", while on an `exchange` it is "we refused the swap
+     * outright and are paying you instead" — and the second cannot be phrased as the first
+     * without misdescribing what happened to the order.
+     */
+    json.refund_type = latestRefund.refund_type;
     json.refund_bank_details = latestRefund.bank_details;
     json.refund_payment_reference = latestRefund.gateway_refund_id;
     json.refund_processed_at = latestRefund.processed_at;

@@ -104,6 +104,20 @@ const config = {
   referralMilestoneBonus: readNumberEnv("REFERRAL_MILESTONE_BONUS"),
   frontendUrl: appMode === "development" ? "http://localhost:5173" : process.env.FRONTEND_URL,
   googleClientId: process.env.GOOGLE_CLIENT_ID || null,
+  /**
+   * Extra client ids accepted as the `aud` of a Google id_token, comma separated.
+   *
+   * Google issues one client id PER PLATFORM, and the `aud` claim carries whichever one
+   * minted the token. The website's token is always the web client id, but the Android and
+   * iOS apps mint tokens against their own — so verifying against `googleClientId` alone
+   * rejects every mobile sign-in with "We could not verify that Google account".
+   *
+   * Empty by default, so behaviour is unchanged until the mobile client ids are created.
+   */
+  googleExtraClientIds: String(process.env.GOOGLE_EXTRA_CLIENT_IDS || "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean),
   s3AccessKeyId: process.env.AWS_ACCESS_KEY_ID || null,
   s3SecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || null,
   s3Region: process.env.AWS_REGION || "ap-south-1",
